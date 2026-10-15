@@ -380,6 +380,7 @@ public:
 	}
 
 	bool isSavingProject() const;
+	bool isSavingCheckpoint() const { return m_savingCheckpoint; }
 	// Sharing/export preferences cannot discard state from a recovery checkpoint.
 	bool shouldDiscardMidiConnections() const
 	{

@@ -2361,6 +2361,9 @@ def main():
         duplicate = first.call("track", "track.add", {"type": "instrument", "name": "Native lead"})
         assert duplicate.get("replayed") is True
         first.call("instrument", "instrument.load", {"track": 0, "instrument": "tripleoscillator"})
+        # Native instrument loading adopts the plugin display name. Set the
+        # fixture name afterwards so later history/order checks test that name.
+        first.call("track-name", "track.edit", {"track": 0, "name": "Native lead"})
         first.call("clip", "clip.add", {"track": 0, "position": 0})
         for index, key in enumerate([60, 64, 67, 72]):
             first.call("note-" + str(index), "note.add", {

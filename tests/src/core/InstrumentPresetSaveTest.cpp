@@ -8,7 +8,9 @@
 #include <stdexcept>
 #include <utility>
 #include "AudioEngine.h"
+#include "Clip.h"
 #include "ConfigManager.h"
+#include "ControllerConnection.h"
 #include "DataFile.h"
 #include "DummyEffect.h"
 #include "EffectChain.h"
@@ -58,7 +60,11 @@ protected:
 class RawInput final : public MidiClient
 {
 public:
-	bool isRaw() const override { return true; }
+	bool raw = true;
+	int subscriptions = 0;
+	bool isRaw() const override { return raw; }
+	QStringList readablePorts() const override { return raw ? QStringList{} : QStringList{"fixture-input", "Manual"}; }
+	void subscribeReadablePort(MidiPort*, const QString&, bool) override { ++subscriptions; }
 	void processOutEvent(const MidiEvent&, const TimePos&, const MidiPort*) override { }
 };
 class FailingPortHook final : public SerializingObjectHook
@@ -109,6 +115,7 @@ private slots:
 	void changedNativeSourceCannotPublishMixedPresetData()
 	{
 		QFETCH(int, action); auto target = seed(); QTemporaryDir directory; const auto path = directory.filePath("saved.xpf"); QVERIFY(write(path, "old")); bool invoked = false;
+		if (action == 3) { target->volumeModel()->setControllerConnection(new ControllerConnection(nullptr)); }
 		plugin(target)->onSave = [&] {
 			if (invoked) { return; } invoked = true;
 			if (action == 0) { target->volumeModel()->setValue(65); } if (action == 1) { plugin(target)->gain.setValue(.7f); } if (action == 2) { plugin(target)->gain.setStep(.1f); } if (action == 3) { target->volumeModel()->setUseControllerValue(false); }
@@ -177,6 +184,47 @@ private slots:
 		auto target = seed(); target->autoAssignMidiDevice(true); FailingPortHook hook; target->midiPort()->setHook(&hook); const auto detach = qScopeGuard([&] { target->midiPort()->setHook(nullptr); }); DataFile file(DataFile::Type::InstrumentTrackSettings);
 		QVERIFY_EXCEPTION_THROWN(target->saveSettings(file, file.content()), std::runtime_error); QVERIFY(target->midiPort()->isReadable()); QVERIFY(!target->isReplacingInstrument()); target->midiPort()->setHook(nullptr);
 		DataFile retry(DataFile::Type::InstrumentTrackSettings); target->saveSettings(retry, retry.content()); QVERIFY(target->midiPort()->isReadable());
+	}
+	void fullTrackSerializationPreservesCurrentMidiInput_data()
+	{
+		QTest::addColumn<bool>("raw"); QTest::addColumn<int>("state"); QTest::addColumn<bool>("checkpoint");
+		for (bool checkpoint : {false, true}) for (bool raw : {false, true}) for (int state = 0; state < (raw ? 3 : 4); ++state)
+		{ QTest::newRow(qPrintable(QString(checkpoint ? "checkpoint-" : "track-") + (raw ? "raw" : "named") + QString::number(state))) << raw << state << checkpoint; }
+	}
+	void fullTrackSerializationPreservesCurrentMidiInput()
+	{
+		QFETCH(bool, raw); QFETCH(int, state); QFETCH(bool, checkpoint); RawInput input; input.raw = raw;
+		auto previous = StudioMidiLearnTestAccess::exchange(&input);
+		ConfigManager::inst()->setValue("midi", "midiautoassign", "fixture-input");
+		const auto restore = qScopeGuard([&] { Engine::getSong()->clearProject(); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); StudioMidiLearnTestAccess::exchange(previous); });
+		auto target = seed(); target->autoAssignMidiDevice(true); auto port = target->midiPort();
+		if (state == 0) { if (raw) { port->setReadable(false); } else { port->subscribeReadablePort("fixture-input", false); } }
+		if (state == 1) { target->autoAssignMidiDevice(false); if (raw) { port->setReadable(true); } else { port->subscribeReadablePort("Manual"); } }
+		if (state == 3) { port->setReadable(false); }
+		const bool readable = port->isReadable(); const auto mode = port->mode(); const auto requested = port->requestedReadablePorts();
+		QSignalSpy changes(port, &MidiPort::modeChanged); input.subscriptions = 0;
+		QDomElement saved;
+		if (checkpoint)
+		{
+			QTemporaryDir directory; QJsonArray assets; const auto path = directory.filePath("checkpoint.mmp");
+			QVERIFY2(Engine::getSong()->saveProjectFile(path, false, true, &assets), qPrintable(Engine::getSong()->errorSummary()));
+			DataFile file(path); saved = file.elementsByTagName("midiport").at(0).toElement();
+		}
+		else
+		{
+			DataFile file(DataFile::Type::InstrumentTrackSettings); target->saveSettings(file, file.content());
+			saved = file.content().firstChildElement("instrumenttrack").firstChildElement("midiport");
+		}
+		QCOMPARE(port->isReadable(), readable); QCOMPARE(port->mode(), mode); QCOMPARE(port->requestedReadablePorts(), requested);
+		if (checkpoint || state != 2) { QCOMPARE(changes.count(), 0); QCOMPARE(input.subscriptions, 0); }
+		QVERIFY(!saved.isNull());
+		if (raw) { QCOMPARE(saved.attribute("readable").toInt(), !checkpoint && state == 2 ? 0 : int(readable)); }
+		else
+		{
+			QStringList names; const auto subscriptions = saved.firstChildElement("midisubscriptions");
+			for (auto item = subscriptions.firstChildElement("input"); !item.isNull(); item = item.nextSiblingElement("input")) { names.append(item.attribute("name")); }
+			QCOMPARE(names, state == 1 ? QStringList{"Manual"} : checkpoint && state == 2 ? QStringList{"fixture-input"} : QStringList{});
+		}
 	}
 	void recordingAndIndexChangesRetainTheSelectedExportIdentity()
 	{

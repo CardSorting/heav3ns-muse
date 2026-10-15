@@ -5626,7 +5626,11 @@ received CC value, queued events and recovery counters are transient; reopening
 a project awaits new input and begins with the native controller's zero value.
 Ordinary project saving can honor LMMS's discard-MIDI option. Recovery checkpoints
 always retain MIDI controller connections and instrument-port configuration,
-regardless of that option, without changing the option itself. Connection,
+including active automatic input, regardless of that option, without changing
+the option itself. Ordinary project/track exports still omit the active automatic
+assignment. Saving preserves an already disabled input or a manually configured
+input; it does not enable input merely because the automatic-assignment flag
+survived a prior restore. Connection,
 configuration and subscription mutations use durable history and receipt replay.
 
 Eleven native cases / 49 executions are authored for linear/log input, channel/CC
@@ -5635,7 +5639,10 @@ named routing, failure/recovery without synthetic CC changes, XML export options
 checkpoint rollback, undo/redo, reopening and replay. The automation-recording
 fixture now creates its controller through these capabilities. The executable
 harness covers CC setup, discovery, edits, rejection, history and native XML.
-None has compiled or run; physical devices and full-system behavior are unverified.
+That portion of the executable harness passed on macOS arm64/Qt 5 during the
+2026-10-15 stabilization run, after checkpoint MIDI preservation was repaired.
+This does not certify the full harness or physical devices; current limitations
+and broad regression results are retained in the engineering record.
 
 Detection, parameter-owned MIDI controller input and instrument CC dispatch share
 `MidiEvent::isValidControlChange()`. It checks event type, channel 0..15 and signed
@@ -8610,9 +8617,12 @@ and linked-control completion are validated before success. InstrumentTrack's
 native settings serializer checks weak owner, selected plugin and active CC state
 after returned model/group/plugin work. Preset mode omits the top-level MIDI port
 and now also skips the old automatic-input unsubscribe/resubscribe side effect.
-Full-track serialization retains its existing temporary auto-assignment behavior,
-with weak cleanup attempting restoration when port serialization fails. That is a
-software restoration attempt, not acknowledgment from a physical MIDI device.
+Ordinary full-track serialization temporarily suspends only an automatic input
+assignment that is currently active, with weak cleanup attempting restoration
+when port serialization fails. Disabled inputs and manually configured routing
+are preserved. Recovery checkpoints serialize active automatic input without
+suspending it, so rollback does not silently disable it. These are software state
+and restoration contracts, not acknowledgment from a physical MIDI device.
 
 DataFile's existing two-argument writeFile entry remains available. A new overload
 accepts a validation callback before backup publication and immediately before
@@ -8632,16 +8642,18 @@ verify the present artifact. The optional GUI save flow also checks weak dialog,
 window and track continuations and uses the shared precommit validation; existing
 native file diagnostics remain its failure path. GUI execution is unverified.
 
-InstrumentPresetSaveTest authors 13 cases / 29 scenarios for portable XML versus
+InstrumentPresetSaveTest covers portable XML versus
 live flags/values, source owner/plugin retirement, eight native source changes,
 standard/nonstandard serializer faults, reentry refusal, full-track clip checking
 versus preset omission, interpolation reads, four writer validation refusals,
 four late work faults after backup publication, automatic-input preservation,
 full-track restoration on MIDI-port hook failure, recording/current-row identity,
-and Runtime replay/reopen without rewriting an externally changed preset. All
-remain uncompiled/unrun. Most use native test classes and raw fake input; a separate
-Runtime case requests the actual tripleoscillator plugin but proves no execution
-or sound from its authored source.
+and Runtime replay/reopen without rewriting an externally changed preset. Its
+2026-10-15 macOS arm64/Qt 5 execution passed, including 14 additional raw/named
+input scenarios across ordinary export and recovery checkpoint capture. These
+check current live mode, requested subscriptions and serialized XML. Most use
+native test classes and controlled MIDI input; the Runtime preset case loads the
+actual TripleOscillator plugin but does not measure sound or physical MIDI.
 
 The snapshot does not verify every opaque plugin byte, non-model property or note
 content, and it does not make a whole project commit atomic across later track

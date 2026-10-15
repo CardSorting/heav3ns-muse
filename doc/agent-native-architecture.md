@@ -12434,3 +12434,46 @@ priorities are checkpoint publication after track deletion, recording and backen
 lifetime failures, and the other failures retained from the second broad run.
 The local application and focused workflow are runnable; broad stabilization
 remains open.
+
+### Native checkpoint MIDI repair (2026-10-15)
+
+The feature freeze continues from `35e351d81` on the same macOS arm64/Qt 5 Debug
+configuration. A deterministic recording-refusal/track-removal failure was traced
+to instrument serialization enabling a disabled MIDI input when restoring a
+stale automatic-assignment flag. Ordinary export now suspends only a currently
+active automatic assignment. Recovery checkpoint capture preserves active input
+instead of applying the portable export exclusion; otherwise a later refused
+operation silently disabled input during rollback. Native XML and capability
+signatures are unchanged; the save snapshot guard remains enforced.
+
+`ctest --test-dir build/native --output-on-failure --no-tests=error -R
+'^InstrumentPresetSaveTest$'` passed **45 Qt test executions**, including 14
+raw/named input scenarios across ordinary export and checkpoint capture. They
+check live mode, subscription intent and saved XML. Two preexisting fixture
+defects were corrected: clip deletion now includes the complete type, and the
+controller-use mutation case installs a controller before disabling its input.
+The broad process fixture also names its lead after loading the instrument,
+because native loading intentionally adopts the plugin display name.
+
+The executable checkpoint reproducer passed recording refusal, rollback, receipt
+replay and subsequent fixture-track removal. The broader process run then passed
+its MIDI configuration/controller/history/XML section and reached track-order
+validation. These observations do not establish physical MIDI delivery or full
+DAW acceptance. Original failures and intermediate test runs remain retained.
+
+The complete `cmake --build build/native --parallel 6` rebuild and local
+installation passed. The next full native CTest run executed 193 test
+executables: **116 passed, 77 failed**, in 220.17 seconds. The preset/checkpoint
+test and focused synth/save/render/analyze/restart process both passed. Nine
+previously failing executables passed in this run; ControllerLifecycle failed
+after having passed previously, so this is a net improvement of eight, not a
+claim that every changed result is explained. Its owner-retirement crash also
+reproduced in an isolated rerun and remains open.
+
+The broad studio process harness now stops at its selected-pattern assertion
+after track movement; its recording-refusal and MIDI sections pass. The local
+desktop bundle contains the rebuilt executable for its next launch. Existing
+desktop processes were left running; GUI interaction and physical audio/MIDI
+delivery remain unverified. No roadmap gate is advanced, and broad stabilization
+remains active. Priorities are the controller owner-retirement crash, pattern
+selection during creation/recovery, and retained backend/lifetime failures.

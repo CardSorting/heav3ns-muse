@@ -113,3 +113,18 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
 - Three isolated repeats, a concurrent reproduction and 20 further consecutive
   load/render/restart repeats passed. No gate status changes follow from these
   limited results. Broad runtime stabilization remains the active work.
+
+### 2026-10-15 — Checkpoint MIDI stabilization
+
+- Repaired checkpoint publication after recording refusal/track removal and
+  active MIDI input preservation through rollback, without adding operations.
+- The complete macOS arm64/Qt 5 Debug rebuild and local installation passed.
+  InstrumentPresetSaveTest passed 45 Qt test executions, including 14 input-state
+  export/checkpoint scenarios. Native synthesis/render/restart also passed.
+- The third full CTest run reported **116 passing and 77 failing executables**
+  out of 193. Nine previous failures passed; a controller owner-retirement crash
+  appeared and reproduced in isolation. It remains unresolved.
+- The broader studio process reaches selected-pattern validation after passing
+  recording refusal and MIDI recovery. The [engineering record](../agent-native-architecture.md#native-checkpoint-midi-repair-2026-10-15)
+  retains limits and next defects. Feature development remains frozen; no gate
+  status changes follow from this run.

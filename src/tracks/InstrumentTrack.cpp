@@ -1075,10 +1075,20 @@ void InstrumentTrack::saveTrackSpecificSettings(QDomDocument& doc, QDomElement& 
 	// unsubscribe the live automatic input merely to serialize other settings.
 	if (!presetMode && !song->shouldDiscardMidiConnections())
 	{
-		const bool hasAuto = m_hasAutoMidiDev; bool pending = true;
-		const auto restore = [&] { if (owner && pending) { pending = false; owner->autoAssignMidiDevice(hasAuto); } };
+		const bool raw = m_midiPort.client()->isRaw(); check();
+		const QString automaticPort = ConfigManager::inst()->value("midi", "midiautoassign");
+		// The assignment flag can survive settings restoration or an explicit
+		// input change. Suspend only an assignment that is actually active;
+		// otherwise serialization would enable a disabled input or erase a
+		// manually enabled raw input when restoring the flag's intended state.
+		// Recovery snapshots retain active input instead of applying the
+		// portable export exclusion, so a rollback restores the current mode.
+		const bool suspend = !song->isSavingCheckpoint() && m_hasAutoMidiDev && m_midiPort.isInputEnabled()
+			&& (raw || m_midiPort.requestedReadablePorts().contains(automaticPort));
+		bool pending = suspend;
+		const auto restore = [&] { if (owner && pending) { pending = false; owner->autoAssignMidiDevice(true); } };
 		const auto cleanup = qScopeGuard([&] { try { restore(); } catch (...) { if (song) { song->collectError("Native automatic MIDI assignment could not be restored after serialization"); } } });
-		autoAssignMidiDevice(false); check();
+		if (suspend) { autoAssignMidiDevice(false); check(); }
 		m_midiPort.saveState(doc, thisElement); check();
 		restore(); check();
 	}

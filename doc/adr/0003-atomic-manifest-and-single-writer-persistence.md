@@ -25,3 +25,21 @@ We implement durable session persistence using three core primitives in `StudioS
 - **Positive**: Complete crash resilience. Incomplete renders or crashed writes leave the last committed manifest intact.
 - **Positive**: Protection against duplicate calls during network blips.
 - **Trade-off**: Requires local disk I/O for receipt verification and checkpoint serialization on mutations.
+
+## Recovery MIDI state clarification — 2026-10-15
+
+**Supersedes:** the implicit reuse of portable project/track automatic-MIDI
+exclusion during recovery checkpoint serialization. The manifest, lock and
+receipt decisions above remain unchanged.
+
+Recovery checkpoints preserve current instrument-port configuration, including
+active automatic MIDI input. Ordinary exports can omit automatic assignment for
+portability; they suspend only a currently active assignment and restore it after
+serialization. A stale assignment flag must not enable a disabled input or erase
+manual input settings while saving. Checkpoint capture does not use that export
+suspension because restoring its output must retain the live input state.
+
+This corrects observed rollback state loss without changing the native XML
+format or studio capability signatures. Device delivery and broad crash recovery
+still require their own runtime evidence; the general crash-resilience rationale
+above is not evidence that every serializer or backend is failure-safe.
