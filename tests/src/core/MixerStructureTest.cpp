@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QSignalSpy>
-#include <QJsonArray>
 #include <QTemporaryDir>
 #include <QScopeGuard>
 #include <algorithm>
@@ -25,6 +24,7 @@
 #include "Mixer.h"
 #include "MixHelpers.h"
 #include "NotePlayHandle.h"
+#include "NativeXmlTestAccess.h"
 #include "PatternStore.h"
 #include "SampleTrack.h"
 #include "Song.h"
@@ -32,18 +32,10 @@
 #include "StudioRuntime.h"
 
 using namespace lmms;
+using lmms::test::xmlState;
 
 namespace
 {
-QJsonObject xmlState(const QDomNode& node)
-{
-	QJsonObject attributes;
-	const auto entries = node.attributes();
-	for (int i = 0; i < entries.count(); ++i) { const auto entry = entries.item(i); attributes.insert(entry.nodeName(), entry.nodeValue()); }
-	QJsonArray children;
-	for (auto child = node.firstChild(); !child.isNull(); child = child.nextSibling()) { children.append(xmlState(child)); }
-	return {{"type", int(node.nodeType())}, {"name", node.nodeName()}, {"value", node.nodeValue()}, {"attributes", attributes}, {"children", children}};
-}
 const Plugin::Descriptor fixtureDescriptor{"mixer-order-fixture", "Mixer order fixture", "Native channel identity fixture", "LMMS tests",
 	1, Plugin::Type::Effect, nullptr, "", nullptr};
 class IdentityEffect final : public Effect

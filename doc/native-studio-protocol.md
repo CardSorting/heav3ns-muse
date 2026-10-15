@@ -6236,6 +6236,10 @@ releases the caller's unique pointer when the effect enters the chain, before
 callbacks; refused append retains caller ownership. Owned detach removes the
 effect's native and QObject chain ownership before returning it. The legacy raw
 remove API retains the QObject parent until the caller or parent deletes it.
+Native factory association with the selected chain is valid before roster
+publication. Effect creation and settings restoration accept that prepared state,
+while refusing an effect already published or adopted by another owner. Failed
+preparation cleans up a surviving unattached candidate.
 Missing-plugin fallback XML is deep-copied when saved, preserving earlier DOM
 snapshots and opaque plugin state.
 
@@ -6246,15 +6250,18 @@ views, and retires a view only after native detachment succeeds. These guards
 cover these APIs; arbitrary cross-object deletion, GUI event pumping, destructor
 exceptions and nonreturning plugins remain outside this verification scope.
 
-EffectChainTest adds 12 cases / 42 executions for native DSP order, ownership,
+EffectChainTest covers native DSP order, ownership,
 empty/invalid/foreign/reentrant refusal, exception lock release, XML fallback,
 five chain locations, history, rollback, replay and reopening. Two additional
 GUI executions cover view identity/order and refused edits. The full-build
 process fixture additionally configures the bundled Amplifier and Stereo Matrix
 to produce different stereo output when reordered, then checks project reload,
-clear/removal and history/replay. All of these native executions are authored
-and unrun. The catalog now has 123 native operations; inference declarations
-remain bounded at 128 through the existing catalog dispatcher.
+clear/removal and history/replay. On macOS arm64/Qt 5 during 2026-10-15
+stabilization, EffectChainTest passed 45 Qt test executions, including a real
+Amplifier factory/add/settings-restore regression. The full-build process passed
+the Amplifier/Stereo Matrix workflow and decoded stereo audio comparisons,
+including undo and project reload. Optional GUI execution remains unverified.
+No capability or inference declaration was added by these repairs.
 
 ## Effect, bypass and mixer-send control discovery
 
@@ -7884,14 +7891,17 @@ raw roots, or freeze every parameter value/dimension. The optional GUI retains i
 existing weak queued deletion request; add-effect dialog, candidate and rack owner
 continuations now also use weak cleanup and checks. GUI execution remains unrun.
 
-EffectChainLifecycleTest authors 16 cases / 32 scenarios for independent deletion,
+EffectChainLifecycleTest covers independent deletion,
 append/detach/move owner or target death, cross-chain adoption, ordinary/nonstandard
 exceptions, nested clear and pending-peer deletion, serializer/load interference,
 track-chain retirement, inspection/discovery changes, cancellation, project
-notification invalidation and Runtime recovery/replay. All are uncompiled/unrun.
+notification invalidation and Runtime recovery/replay. It passed 36 Qt test
+executions on macOS arm64/Qt 5 during 2026-10-15 stabilization. Mutation during
+argument validation precedes the inspection snapshot and is reflected in the
+admitted roster; peer retirement or append after snapshot capture is refused.
 The fixture uses native test effects and missing-plugin records, not actual peak
-or third-party plugin execution. Existing EffectChainTest, controls/paging/history,
-GUI, controller, project, plugin and DSP suites also require execution.
+or third-party plugin execution. Broad GUI, controller, project, plugin and DSP
+compatibility still require their own evidence.
 
 The native chain layout and notification/ownership changes require a complete
 C++/Qt/MOC/ABI rebuild. Arbitrary destruction inside executing constructors,

@@ -3988,9 +3988,17 @@ QJsonObject dispatch(const QString& op, const QJsonObject& a)
 		auto key = pluginKey(a, Plugin::Type::Effect);
 		checkInspectionWork(); currentEffectChain(owner, effects, a);
 		const QPointer<Effect> native(Effect::instantiate(key.desc->name, effects.data(), &key));
-		const auto cleanup = qScopeGuard([&] { if (native && !native->effectChain()) { delete native.data(); } });
+		// The native factory associates a prepared effect with this chain before
+		// appendEffect publishes it in the roster. Preserve effects already
+		// adopted elsewhere, but clean up a refused, still-unattached candidate.
+		const auto unattached = [&] {
+			if (!native || (native->parent() && native->parent() != effects.data())
+				|| (native->effectChain() && native->effectChain() != effects.data())) { return false; }
+			return !effects || std::find(effects->effects().begin(), effects->effects().end(), native.data()) == effects->effects().end();
+		};
+		const auto cleanup = qScopeGuard([&] { if (unattached()) { delete native.data(); } });
 		checkInspectionWork(); currentEffectChain(owner, effects, a);
-		if (!native || !native->isOkay() || native->effectChain()) { fail("Native effect initialization or prepared ownership failed"); }
+		if (!native || !native->isOkay() || !unattached()) { fail("Native effect initialization or prepared ownership failed"); }
 		std::unique_ptr<Effect> candidate(native.data());
 		if (!effects->appendEffect(candidate)) { fail("Native effect could not be attached to the chain"); }
 		return {{"effect", currentEffectIndex(owner, effects, native, a)}};

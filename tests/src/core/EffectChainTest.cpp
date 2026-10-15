@@ -22,6 +22,7 @@
 #include "InstrumentTrack.h"
 #include "Mixer.h"
 #include "NotePlayHandle.h"
+#include "NativeXmlTestAccess.h"
 #include "PatternStore.h"
 #include "SampleTrack.h"
 #include "Song.h"
@@ -29,6 +30,7 @@
 #include "StudioRuntime.h"
 
 using namespace lmms;
+using lmms::test::xmlState;
 
 namespace
 {
@@ -185,6 +187,24 @@ private slots:
 			QVERIFY(effect); QVERIFY(!effect->effectChain()); QCOMPARE(effect->parent(), static_cast<QObject*>(&chain)); QVERIFY(chain.effects().empty());
 		}
 		QVERIFY(effect.isNull());
+	}
+
+	void nativeFactoryEffectCanBeAddedAndRestored()
+	{
+#ifndef LMMS_TEST_HAVE_AMPLIFIER
+		QSKIP("The Amplifier plugin is not part of this build.");
+#else
+		const auto response = StudioCapabilities::execute("effect.add", {{"channel", 0}, {"plugin", "amplifier"}});
+		QVERIFY2(response.value("ok").toBool(), qPrintable(response.value("error").toString()));
+		QCOMPARE(master().effects().size(), std::size_t{1});
+		const QPointer<Effect> original(master().effects().front());
+		QVERIFY(original->isOkay()); QCOMPARE(original->effectChain(), &master());
+		auto document = saved(master()); document.documentElement().firstChildElement("effect").setAttribute("wet", .25f);
+		master().loadSettings(document.documentElement()); QVERIFY(!original);
+		QCOMPARE(master().effects().size(), std::size_t{1}); const auto restored = master().effects().front();
+		QVERIFY(restored->isOkay()); QCOMPARE(restored->effectChain(), &master());
+		QCOMPARE(QString::fromUtf8(restored->descriptor()->name), QString("amplifier")); QCOMPARE(restored->wetLevel(), .25f);
+#endif
 	}
 
 	void transitionCallbacksCannotReenterTheChainOrRetireItsMixer_data()
@@ -345,16 +365,16 @@ private slots:
 	{
 		QFETCH(QString, operation); QTemporaryDir directory; QString error; StudioRuntime runtime(directory.filePath("session")); QVERIFY2(runtime.open(error), qPrintable(error));
 		QVERIFY(populateMissing(master())); QVERIFY(runtime.process(request("seed", "mixer.edit", {{"channel", 0}, {"name", "Effects before failure"}})).value("ok").toBool());
-		const auto before = saved(master()).toString(); bool first = true;
+		const auto before = xmlState(saved(master())); bool first = true;
 		void (EffectChain::*signal)() = &EffectChain::dataChanged; if (operation == "effect.clear") { signal = &EffectChain::aboutToClear; }
 		const auto connection = connect(&master(), signal, this, [&] { if (first) { first = false; throw std::runtime_error("Native effect observer failed"); } }, Qt::DirectConnection);
 		const auto cleanupConnection = qScopeGuard([&] { disconnect(connection); });
 		QJsonObject args{{"channel", 0}}; if (operation != "effect.clear") { args.insert("effect", 0); } if (operation == "effect.move") { args.insert("to", 2); }
 		const auto edit = request("failed-effect-edit", operation, args); const auto response = runtime.process(edit);
 		QVERIFY(!response.value("ok").toBool()); QVERIFY(response.value("error").toString().contains("Native effect observer failed")); QVERIFY(!first);
-		QCOMPARE(saved(master()).toString(), before); QVERIFY(runtime.process(edit).value("replayed").toBool()); QCOMPARE(saved(master()).toString(), before);
+		QCOMPARE(xmlState(saved(master())), before); QVERIFY(runtime.process(edit).value("replayed").toBool()); QCOMPARE(xmlState(saved(master())), before);
 		QVERIFY(runtime.process(request("retry", operation, args)).value("ok").toBool());
-		QVERIFY(runtime.process(request("undo-retry", "session.undo")).value("ok").toBool()); QCOMPARE(saved(master()).toString(), before); verifyLockReleased();
+		QVERIFY(runtime.process(request("undo-retry", "session.undo")).value("ok").toBool()); QCOMPARE(xmlState(saved(master())), before); verifyLockReleased();
 	}
 };
 

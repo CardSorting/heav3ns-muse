@@ -30,11 +30,13 @@ class LifecycleEffect final : public Effect
 	DummyEffectControls m_controls{this};
 public:
 	explicit LifecycleEffect(Model* parent) : Effect(&fixtureDescriptor, parent, nullptr) { }
-	std::function<void()> onRetire, onSave, onRefresh;
+	std::function<void()> onRetire, onSave, onRefresh, onName;
 	std::unique_ptr<FloatModel> parameter = std::make_unique<FloatModel>(1, 0, 2, .01f, this, "Lifecycle parameter");
 	~LifecycleEffect() override { const auto callback = onRetire; if (callback) { callback(); } }
 	EffectControls* controls() override { return &m_controls; }
 	void refreshParameterModels() override { const auto callback = onRefresh; if (callback) { callback(); } }
+	QString displayName() const override
+	{ const auto name = Effect::displayName(); const auto callback = onName; if (callback) { callback(); } return name; }
 	void saveSettings(QDomDocument& document, QDomElement& node) override
 	{ const auto callback = onSave; if (callback) { callback(); } Effect::saveSettings(document, node); }
 protected:
@@ -159,13 +161,26 @@ private slots:
 		QJsonObject args{{"track", 0}}; if (operation != "effect.clear") { args.insert("effect", 0); } if (operation == "effect.move") { args.insert("to", 2); }
 		QVERIFY(!StudioCapabilities::execute(operation, args).value("ok").toBool()); QVERIFY(invoked); QVERIFY(!chain); QVERIFY(Engine::getSong()->tracks().empty());
 	}
-	void structuredInspectionRefusesCooperativeRosterMutation_data()
+	void structuredInspectionUsesRosterAfterAdmissionWork_data()
 	{ QTest::addColumn<bool>("initiallyEmpty"); QTest::newRow("retire") << false; QTest::newRow("empty-to-populated") << true; }
-	void structuredInspectionRefusesCooperativeRosterMutation()
+	void structuredInspectionUsesRosterAfterAdmissionWork()
 	{
 		QFETCH(bool, initiallyEmpty); if (!initiallyEmpty) { missing(master()); } bool changed = false;
 		FileResourceIO::Scope work([&] { if (!changed) { changed = true; if (initiallyEmpty) { missing(master()); } else { delete master()->effects().back(); } } return false; }, false);
-		const auto response = StudioCapabilities::execute("effect.inspect", {{"channel", 0}, {"details", false}}); QVERIFY(changed); QVERIFY(!response.value("ok").toBool());
+		// The first work poll occurs during argument validation, before the
+		// inspection captures its roster. Return that admitted current state.
+		const auto response = StudioCapabilities::execute("effect.inspect", {{"channel", 0}, {"details", false}}); QVERIFY(changed); QVERIFY(response.value("ok").toBool());
+		const auto result = response.value("result").toObject(); QCOMPARE(result.value("total").toInt(), initiallyEmpty ? 3 : 2);
+		QCOMPARE(result.value("effects").toArray().size(), initiallyEmpty ? 3 : 2);
+	}
+	void structuredInspectionRefusesRosterMutationAfterCapture_data()
+	{ QTest::addColumn<bool>("appendEffect"); QTest::newRow("retire-peer") << false; QTest::newRow("append") << true; }
+	void structuredInspectionRefusesRosterMutationAfterCapture()
+	{
+		QFETCH(bool, appendEffect); auto first = append(master()); if (!appendEffect) { QVERIFY(append(master())); } bool changed = false;
+		first->onName = [&] { if (changed) { return; } changed = true; if (appendEffect) { append(master()); } else { delete master()->effects().back(); } };
+		const auto response = StudioCapabilities::execute("effect.inspect", {{"channel", 0}, {"details", false}});
+		first->onName = {}; QVERIFY(changed); QVERIFY(!response.value("ok").toBool());
 	}
 	void parameterDiscoveryRefusesAChildDeletedAfterRefresh()
 	{

@@ -12539,3 +12539,45 @@ The broad process next fails while adding the built-in amplifier effect with
 plugin workflow and the retained backend/lifetime failures remain open. The
 latest complete-suite observation still precedes these focused repairs; no
 roadmap gate advances.
+
+### Native effect factory and restoration repair (2026-10-15)
+
+Continuing the freeze from `224ff6268`, effect.add rejected every normal native
+factory result because Effect::instantiate associates a prepared effect with its
+destination chain before roster publication. EffectChain settings restoration
+made the same incorrect assumption and therefore refused undo/project loading of
+real effects. Both paths now accept a candidate associated with the selected
+chain but absent from its roster, refuse foreign/already-published ownership,
+and clean up surviving unattached candidates after refusal. Native plugin factory
+parent context, XML format and capability signatures are unchanged.
+
+A focused regression uses the actual bundled Amplifier through effect.add,
+serializes its native settings and restores a new plugin instance with a changed
+wet level. Its target depends on the native plugin when configured. Mixer and
+effect persistence fixtures share content-preserving XML comparison independent
+of attribute order. Effect inspection cases now distinguish validation-time
+changes before roster capture from append/peer retirement after capture; the
+latter still refuses the read without weakening the mutation guard.
+
+Focused CTest execution passed **5/5 executables** in 6.10 seconds on macOS
+arm64/Qt 5 Debug: EffectChainTest (45 Qt executions), EffectChainLifecycleTest
+(36), StudioEffectControlsTest (32), MixerStructureTest (61), and the actual
+synth/save/render/analyze/restart process. The default Amplifier regression ran
+and passed rather than skipping its plugin dependency. Original failures and
+intermediate build/test evidence remain retained.
+
+The subsequent complete `cmake --build build/native --parallel 6` rebuild,
+including configured bundled plugins and test executables, passed with exit code
+0 after the test dependency/configuration changes. The most recent complete
+CTest-suite observation remains the earlier 116-pass/77-failure run; the focused
+results above do not certify every retained regression.
+
+The broad executable process passed actual Amplifier/Stereo Matrix creation,
+duplicate controls, reordered stereo processing, bypass, undo/redo, clear,
+removal and native project reload. It next fails a tempo assertion after its
+deterministic-provider cancellation scenario. A separate native reproducer keeps
+tempo 122 through rendering in a fresh project, but save/load followed by the
+same edit/render restores the old tempo instead. This isolates a persistence
+defect; the cancellation assertion has not been weakened. Hardware, optional GUI,
+real-provider musical acceptance and retained broad failures remain open. No
+roadmap gate advances.

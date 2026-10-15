@@ -134,20 +134,28 @@ void EffectChain::loadSettings( const QDomElement & _this )
 			EffectKey key( effectData.elementsByTagName( "key" ).item( 0 ).toElement() );
 
 			QPointer<Effect> e(Effect::instantiate(name.toUtf8(), owner.data(), &key)); bool published = false;
-			const auto cleanup = qScopeGuard([&] { if (!published && e && !e->effectChain()) { delete e.data(); } });
+			const auto unattached = [&] {
+				if (!e || (e->parent() && e->parent() != owner.data())
+					|| (e->effectChain() && e->effectChain() != owner.data())) { return false; }
+				return !owner || std::find(owner->m_effects.begin(), owner->m_effects.end(), e.data()) == owner->m_effects.end();
+			};
+			const auto cleanup = qScopeGuard([&] { if (!published && unattached()) { delete e.data(); } });
 			ready();
+			if (e && !unattached()) { throw std::runtime_error("Native restored effect ownership changed before restoration"); }
 
 			if( e != nullptr && e->isOkay() && e->nodeName() == node.nodeName() )
 			{
+				ready(); if (!unattached()) { throw std::runtime_error("Native restored effect ownership changed before restoration"); }
 				e->restoreState( effectData );
 				ready(); if (!e) { throw std::runtime_error("Native effect retired during settings restoration"); }
 			}
 			else
 			{
+				ready(); if (e && !unattached()) { throw std::runtime_error("Native restored effect ownership changed before fallback"); }
 				delete e.data(); ready(); e = new DummyEffect(owner.data(), effectData); ready();
 			}
 
-			if (!e || e->effectChain()) { throw std::runtime_error("Native restored effect ownership changed before publication"); }
+			if (!unattached()) { throw std::runtime_error("Native restored effect ownership changed before publication"); }
 			owner->m_effects.push_back(e.data()); e->m_parent = owner.data(); published = true; restored.push_back(e);
 			owner->watchEffect(e.data()); ready();
 			++fx_loaded;

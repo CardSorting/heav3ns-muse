@@ -155,3 +155,16 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   effect. The [engineering record](../agent-native-architecture.md#mixer-audio-fixture-stabilization-2026-10-15)
   retains the original observations and remaining limits. Feature development
   stays frozen; no gate status changes.
+
+### 2026-10-15 — Native effect creation and restoration
+
+- Corrected native factory association checks that refused built-in effect
+  creation and real-effect restoration during undo/project loading.
+- Five focused executables passed, including actual Amplifier add/restore,
+  native effect controls/lifetimes, mixer state and synthesis/render/restart.
+- The complete configured application/plugin/test rebuild passed again.
+- The broad process now passes Amplifier/Stereo Matrix stereo processing,
+  bypass, order, history, clear/removal and project reload. Its next assertion
+  exposed tempo reverting after native project save/load and later rendering.
+  This remains open in the [engineering record](../agent-native-architecture.md#native-effect-factory-and-restoration-repair-2026-10-15).
+- Feature development remains frozen; no gate status changes.
