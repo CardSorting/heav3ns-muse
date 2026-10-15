@@ -94,7 +94,7 @@ private slots:
 	void readyWorkersFinishRepeatedStaticAndDynamicBatches_data()
 	{
 		QTest::addColumn<int>("workerCount");
-		QTest::newRow("one-worker") << 1; QTest::newRow("three-workers") << 3;
+		QTest::newRow("one-worker") << 1; QTest::newRow("three-workers") << 3; QTest::newRow("nine-workers") << 9;
 	}
 	void readyWorkersFinishRepeatedStaticAndDynamicBatches()
 	{
@@ -123,7 +123,30 @@ private slots:
 	void dynamicDependenciesRunExactlyOnce_data()
 	{
 		QTest::addColumn<int>("workerCount");
-		QTest::newRow("coordinator") << 0; QTest::newRow("one-worker") << 1; QTest::newRow("three-workers") << 3;
+		QTest::newRow("coordinator") << 0; QTest::newRow("one-worker") << 1; QTest::newRow("three-workers") << 3; QTest::newRow("nine-workers") << 9;
+	}
+	void backgroundDispatchRetiresScansWhileStatusIsObserved()
+	{
+		Pool pool(9); QTRY_COMPARE(Worker::schedulerStatus().ready, 9);
+		Job job; std::atomic_bool finished{false}; std::atomic<int> batches{0};
+		std::jthread dispatcher([&] {
+			for (int iteration = 0; iteration < 4096; ++iteration)
+			{
+				Worker::resetJobQueue(iteration % 4 < 2 ? Mode::Static : Mode::Dynamic);
+				job.reset(); if (iteration % 2 == 0) { Worker::addJob(&job); }
+				Worker::startAndWaitForJobs(); ++batches;
+			}
+			finished = true;
+		});
+		bool consistent = true;
+		while (!finished.load())
+		{
+			const auto status = Worker::schedulerStatus();
+			consistent &= status.registered == 9 && status.ready == 9 && status.queued + status.scanning <= 9;
+			std::this_thread::yield();
+		}
+		dispatcher.join(); QVERIFY(consistent); QCOMPARE(batches.load(), 4096); QCOMPARE(job.calls.load(), 2048);
+		const auto status = Worker::schedulerStatus(); QVERIFY(!status.batchActive); QCOMPARE(status.queued, 0); QCOMPARE(status.scanning, 0);
 	}
 	void dynamicDependenciesRunExactlyOnce()
 	{

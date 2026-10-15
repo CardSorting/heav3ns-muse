@@ -12852,3 +12852,38 @@ A nine-worker extension of the existing static/dynamic batch tests passed ten
 repetitions before scheduler changes (6.83 seconds). That narrower result did not
 reproduce or explain the observed native runtime wait. The last complete suite
 remains 155/193 passing; no broader completion or roadmap gate is claimed.
+
+
+### Worker predicate waits and repeated native runtime verification (2026-10-15)
+
+The pending-worker wait recorded after `ecc006559` was not reproduced by ten
+nine-worker batch-suite repetitions or by five additional contention-suite
+repetitions before the scheduler change (6.83 and 6.65 seconds). The latter adds
+4096 background dispatches per execution, alternating empty/nonempty static and
+dynamic batches while another thread observes scheduler state. These passing
+narrower checks do not erase the captured 300.04-second native runtime timeout.
+
+Worker registration, readiness, quit, queued scans and batch retirement now use
+one standard mutex and condition variables with explicit dispatch/completion
+predicates. The coordinator still waits for every admitted scan before reset;
+there is no timed bypass or reduced barrier. Jobs, dynamic publication, quit
+admission and native model ownership retain their existing contracts. This
+replaces the Qt mutex/condition handoff implicated by the captured idle worker
+with pending work; the underlying Qt/platform mechanism was not established.
+
+After rebuilding AudioEngineWorkerTest, MixerProcessingTest and
+StudioRuntimeTest on macOS arm64 / Qt 5 Debug, the expanded worker suite passed
+**ten consecutive executions in 10.56 seconds**. The complete StudioRuntimeTest
+then passed **five consecutive executions in 77.70 seconds** (16.96, 15.15,
+15.20, 15.14 and 15.24 seconds), including the corrected raw OpulenZ case and
+native audio/resource/recovery tests. MixerProcessingTest also passed all 25
+reported checks. This is repeated observed progress, not a proof of universal
+worker liveness or a bound on a native processor that never returns.
+
+The owning DSP triage, incident and performance guides were reconciled with
+actual stdio studio startup and existing native test commands. Obsolete socket/
+HEADLESS/benchmark recipes, broad process-name termination, and unsupported
+performance certifications were removed rather than retained beneath banners.
+The last complete 193-executable result remains 155 passing and 38 failing;
+other retained failures and cross-platform/hardware/sanitizer limits remain open.
+No feature, capability or roadmap gate was added.

@@ -4644,12 +4644,11 @@ Studio export does not publish the temporary artifact on those failures, so an
 existing destination survives. Legacy direct export and external plugin private
 locks/destructors still need separate lifecycle verification.
 
-Nine new native cases/22 executions are authored for standard/nonstandard nested
-exceptions, concurrent queue claims, overflow, real native periods, bus/master
-effect faults with sanitization on/off, stopped/owner/capture/export retry guards,
-target preservation, transient receipt replay and capture rollback. They remain
-unrun. Source checks pass for 195 changed C++ files and 99 operations; no native
-build, Qt test, process trace, render or resource measurement has run. Hangs,
+Native cases cover standard/nonstandard nested exceptions, concurrent queue
+claims, overflow, real periods, bus/master effect faults, stopped/owner/capture/
+export retry guards, target preservation, receipt replay and capture rollback.
+Consult the [engineering record](agent-native-architecture.md) for dated native
+execution and retained failures; source checks alone do not verify these paths. Hangs,
 deadlocks, signals/SEH, crashes and corrupt memory cannot be contained by these
 C++ catch boundaries. Complete plugin repair, setup/cleanup failure recovery,
 hard termination and resource bounds remain required for the full DAW.
@@ -4666,7 +4665,8 @@ and is not counted. When `batchActive` is false, queued and scanning are zero.
 The snapshot does not measure processor health, elapsed work or latency, and can
 change between requests without a project revision.
 
-Workers now wait on a shared mutex and dispatch predicate. A batch finishes only
+Workers wait on one `std::mutex` with predicate-based condition-variable waits
+for dispatch and scan retirement. A batch finishes only
 after job completion and return of every admitted worker's queue scan. Reset,
 overlapping dispatch and worker construction reject an active batch. Quit cancels
 an unstarted admission or waits for an active scan to return; it does not reset
@@ -4676,10 +4676,12 @@ with zero background workers. Dynamic child publication is supported from jobs
 already outstanding in the batch, as used by native mixer dependencies. An
 independent producer cannot publish after a batch has completed.
 
-Nine native scheduler cases/15 executions are authored for startup, repeated
-static/dynamic batches, dynamic job trees, returned exceptions and retry, active
-reset/reentry refusal, quit/admission races, active destruction and pool reuse.
-They use real Qt workers and remain uncompiled/unrun. A processor that never
+Ten native scheduler cases/18 scenarios cover startup, repeated static/dynamic
+batches with up to nine workers, dynamic job trees, concurrent status observation,
+returned exceptions and retry, active reset/reentry refusal, quit/admission races,
+active destruction and pool reuse. They execute real Qt workers. Dated stress
+and runtime repetitions, including the earlier captured pending-worker wait,
+are retained in the [engineering record](agent-native-architecture.md). A processor that never
 returns can still block dispatch and shutdown indefinitely. Deadlock recovery,
 safe hard termination, platform behavior, sanitizer results and measured CPU/
 latency/memory bounds remain unfinished or unverified.

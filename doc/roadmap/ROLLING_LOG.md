@@ -253,3 +253,19 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   nine-worker batch-test repetitions; see the
   [engineering record](../agent-native-architecture.md#raw-opulenz-midi-bounds-and-observed-worker-wait-2026-10-15).
 - No feature or gate advanced. The last complete suite remains 155/193 passing.
+
+
+### 2026-10-15 — Worker handoff stabilization
+
+- Replaced the scheduler's Qt mutex/condition handoff with a standard mutex and
+  predicate waits, preserving retirement of every admitted scan before reset.
+- Expanded native stress coverage to nine workers and 4096 background dispatches
+  with concurrent status observation. After rebuilding, the worker suite passed
+  ten repetitions and the complete runtime suite passed five repetitions;
+  MixerProcessingTest passed as well.
+- The earlier runtime timeout and passing pre-change stress runs remain dated
+  evidence. Native triage/performance guides now use actual stdio commands and
+  avoid unsupported SLO claims; see the
+  [engineering record](../agent-native-architecture.md#worker-predicate-waits-and-repeated-native-runtime-verification-2026-10-15).
+- No feature/gate advanced. A fresh complete suite is still required; its last
+  complete baseline is 155 passing and 38 failing out of 193.

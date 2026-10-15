@@ -24,10 +24,9 @@
 
 #include "AudioEngineWorkerThread.h"
 
-#include <QMutex>
-#include <QMutexLocker>
 #include <QScopedValueRollback>
-#include <QWaitCondition>
+#include <condition_variable>
+#include <mutex>
 #include <stdexcept>
 
 #include "AudioEngine.h"
@@ -45,9 +44,9 @@ namespace
 {
 struct Scheduler
 {
-	QMutex mutex;
-	QWaitCondition workReady;
-	QWaitCondition scansFinished;
+	std::mutex mutex;
+	std::condition_variable workReady;
+	std::condition_variable scansFinished;
 	std::size_t pendingWorkers = 0;
 	bool batchActive = false;
 };
@@ -132,7 +131,7 @@ void AudioEngineWorkerThread::JobQueue::wait()
 AudioEngineWorkerThread::AudioEngineWorkerThread(AudioEngine* audioEngine)
 	: QThread(audioEngine)
 {
-	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	auto& state = scheduler(); std::unique_lock guard(state.mutex);
 	if (state.batchActive) { throw std::logic_error("Cannot construct an audio worker during dispatch"); }
 	if (workerThreads.isEmpty()) { globalJobQueue.reset(JobQueue::OperationMode::Static); }
 	workerThreads << this;
@@ -146,35 +145,35 @@ AudioEngineWorkerThread::~AudioEngineWorkerThread()
 	// process supervision rather than deleting a live worker after a timeout.
 	Q_ASSERT(QThread::currentThread() != this);
 	wait();
-	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	auto& state = scheduler(); std::unique_lock guard(state.mutex);
 	workerThreads.removeAll(this);
 }
 
 void AudioEngineWorkerThread::resetJobQueue(JobQueue::OperationMode mode)
 {
-	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	auto& state = scheduler(); std::unique_lock guard(state.mutex);
 	if (state.batchActive || state.pendingWorkers) { throw std::logic_error("Cannot reset an active native audio job queue"); }
 	globalJobQueue.reset(mode);
 }
 
 void AudioEngineWorkerThread::quit()
 {
-	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	auto& state = scheduler(); std::unique_lock guard(state.mutex);
 	m_quit = true;
 	if (m_workPending)
 	{
 		m_workPending = false;
 		Q_ASSERT(state.pendingWorkers > 0);
-		--state.pendingWorkers; state.scansFinished.wakeAll();
+		--state.pendingWorkers; state.scansFinished.notify_all();
 	}
-	state.workReady.wakeAll();
+	state.workReady.notify_all();
 }
 
 void AudioEngineWorkerThread::startAndWaitForJobs()
 {
 	auto& state = scheduler();
 	{
-		QMutexLocker guard(&state.mutex);
+		std::unique_lock guard(state.mutex);
 		if (state.batchActive) { throw std::logic_error("Native audio dispatch cannot overlap or reenter itself"); }
 		state.batchActive = true;
 		for (const auto worker : workerThreads)
@@ -185,14 +184,14 @@ void AudioEngineWorkerThread::startAndWaitForJobs()
 				worker->m_workPending = true; ++state.pendingWorkers;
 			}
 		}
-		state.workReady.wakeAll();
+		state.workReady.notify_all();
 	}
 	// The coordinating thread also consumes jobs. Not-yet-ready workers need
 	// not participate: the coordinator can complete the queue on its own.
 	globalJobQueue.run();
 	globalJobQueue.wait();
-	QMutexLocker guard(&state.mutex);
-	while (state.pendingWorkers) { state.scansFinished.wait(&state.mutex); }
+	std::unique_lock guard(state.mutex);
+	state.scansFinished.wait(guard, [&state] { return state.pendingWorkers == 0; });
 	// Job completion alone did not prove worker scans had returned. This barrier
 	// now makes the following reset safe for mode, counters and queue slots.
 	state.batchActive = false;
@@ -200,7 +199,7 @@ void AudioEngineWorkerThread::startAndWaitForJobs()
 
 AudioEngineWorkerThread::SchedulerStatus AudioEngineWorkerThread::schedulerStatus()
 {
-	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	auto& state = scheduler(); std::unique_lock guard(state.mutex);
 	SchedulerStatus result;
 	result.registered = static_cast<int>(workerThreads.size());
 	result.batchActive = state.batchActive;
@@ -216,11 +215,11 @@ AudioEngineWorkerThread::SchedulerStatus AudioEngineWorkerThread::schedulerStatu
 void AudioEngineWorkerThread::run()
 {
 	disableDenormals();
-	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	auto& state = scheduler(); std::unique_lock guard(state.mutex);
 	m_ready = true;
 	for (;;)
 	{
-		while (!m_quit && !m_workPending) { state.workReady.wait(&state.mutex); }
+		state.workReady.wait(guard, [this] { return m_quit || m_workPending; });
 		if (m_quit) { break; }
 		m_workPending = false; m_workActive = true;
 		guard.unlock();
@@ -231,12 +230,12 @@ void AudioEngineWorkerThread::run()
 			QScopedValueRollback<bool> rendering(AudioEngine::s_renderingThread, true);
 			globalJobQueue.run();
 		}
-		guard.relock();
+		guard.lock();
 		m_workActive = false;
 		Q_ASSERT(state.pendingWorkers > 0);
-		--state.pendingWorkers; state.scansFinished.wakeAll();
+		--state.pendingWorkers; state.scansFinished.notify_all();
 	}
-	m_ready = false; state.scansFinished.wakeAll();
+	m_ready = false; state.scansFinished.notify_all();
 }
 
 } // namespace lmms

@@ -2,49 +2,47 @@
 
 <!-- docs-scope: current-guide -->
 
-Emergency triage protocol for audio clipping, DSP segfaults, hanging headless studio sockets, and corrupted project manifests in HEAV3NS-MUSE.
-
----
+Triage unsafe output, native crashes, unresponsive studio processes and failed
+exports while preserving the last acknowledged project/session state. The
+studio interface is JSON lines over stdin/stdout; it has no studio socket.
 
 ## 1. Severity Classification Matrix
 
-| Severity | Definition | Target Resolution | Immediate Action |
-| :--- | :--- | :--- | :--- |
-| **SEV-1** | Audio driver freeze, continuous high-gain feedback (> +6 dBFS), or headless host crash during live session | < 15 minutes | Immediate audio kill; terminate process; isolate hardware sink |
-| **SEV-2** | Studio socket unresponsive, dropped MIDI notes, or failed render export | < 2 hours | Inspect thread backtrace; restart studio socket; verify memory RSS |
-| **SEV-3** | Non-critical DSP artifact, cosmetic parameter bounds warning, or doc drift | < 24 hours | File tracking issue; assign gate in `doc/roadmap/OPEN_ITEMS.md` |
+| Severity | Definition | Immediate action |
+| :--- | :--- | :--- |
+| SEV-1 | Unsafe output, driver freeze or native host crash during a live session | Stop the identified output path and preserve available state/stacks |
+| SEV-2 | Unresponsive studio process, missing MIDI delivery or failed export | Capture protocol/backend state and thread stacks before supervised restart |
+| SEV-3 | Recoverable artifact, refused operation or documentation mismatch | Preserve a reproduction and track the verified issue |
 
----
+These are triage priorities, not guaranteed resolution times.
 
 ## 2. Emergency Audio Kill & Containment
 
-If the engine enters an uncontrolled feedback loop or consumes excessive CPU:
+Identify the exact affected process and output before stopping it. For a
+responsive session, use the native transport/backend operations and inspect
+their acknowledged results. A hung processor can prevent those requests from
+returning; its supervisor must then stop that specific process.
 
-```sh
-# 1. Force terminate any running headless studio instance
-pkill -9 -f "lmms.*--studio"
-
-# 2. Clean up orphaned socket descriptors
-rm -f /tmp/muse.sock /tmp/muse-debug.sock
-
-# 3. Check for lingering child processes
-ps aux | grep -i lmms
-```
-
----
+Do not use a broad process-name kill or remove invented socket files. Preserve
+unrelated desktop sessions and user work. Confirm process exit before reopening
+the same single-writer session directory.
 
 ## 3. Post-Incident Forensic Recovery
 
-1. **Capture Diagnostic Artifacts**:
-   - Save the offending project file (`.mmpz` or `.json` manifest).
-   - If a crash occurred, preserve the core dump or LLDB backtrace.
-2. **Reproduce Headless in Debug Mode**:
+1. Preserve the project, acknowledged session state, exact requests/responses,
+   stderr, thread stacks, build revision and platform. Keep private paths and
+   credentials out of public records.
+2. Reproduce with a disposable Debug session using the actual native startup:
    ```sh
-   lldb -- ./build/lmms --studio --socket /tmp/triage.sock
+   lldb --batch -k 'thread backtrace all' -o run -- ./build/native/lmms studio ./build/triage-session --config ./build/triage-config.xml
    ```
-3. **Log the Event**:
-   - Append a dated incident record to [doc/roadmap/ROLLING_LOG.md](../roadmap/ROLLING_LOG.md).
-   - If an existing roadmap gate was compromised, reopen it using:
-     ```sh
-     npm run roadmap:roll -- --gate <GATE_ID> --status in_progress --note "Reopened following SEV-1 incident"
-     ```
+3. Follow the [DSP recovery runbook](../runbooks/dsp-crash-recovery.md) to
+   distinguish backend failure, DSP failure, worker waits and native ownership.
+   A momentary worker snapshot alone does not establish a deadlock.
+4. Verify repair with owning native tests and the process harness. Record both
+   successful retries and the original failures as dated evidence in the
+   [engineering record](../agent-native-architecture.md) and
+   [rolling log](../roadmap/ROLLING_LOG.md).
+5. Change an existing roadmap gate only when its physical evidence changes,
+   following the [roadmap's authoritative register](../roadmap/register.json).
+   Documentation synchronization does not certify runtime or gate completion.
