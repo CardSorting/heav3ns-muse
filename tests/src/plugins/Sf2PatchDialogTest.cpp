@@ -38,7 +38,7 @@ namespace lmms
 class Sf2PatchDialogTestAccess
 {
 public:
-	static std::pair<int, int> nativeSelection(Sf2Instrument* native) { QMutexLocker lock(&native->m_synthMutex); int font = -1, bank = -1, program = -1; if (!native->m_synth || fluid_synth_get_program(native->m_synth, native->m_channel, &font, &bank, &program) != FLUID_OK || font < 0 || program < 0 || program > 127) { return {-1, -1}; } return {bank, program}; }
+	static std::pair<int, int> nativeSelection(Sf2Instrument* native) { QMutexLocker lock(&native->m_synthMutex); int font = -1, bank = -1, program = -1; if (!native->m_synth || !fluid_synth_get_channel_preset(native->m_synth, native->m_channel) || fluid_synth_get_program(native->m_synth, native->m_channel, &font, &bank, &program) != FLUID_OK || font < 0 || program < 0 || program > 127) { return {-1, -1}; } return {bank, program}; }
 
 };
 }
@@ -135,7 +135,7 @@ private slots:
 	{ QTest::addColumn<bool>("dialogDeath"); QTest::newRow("nested-setup") << false; QTest::newRow("dialog-retirement") << true; }
 	void widgetNotificationsCannotResumeAnOldSetup()
 	{
-		QFETCH(bool, dialogDeath); auto first = seed(); auto second = seed(); QString error; QVERIFY(second->selectProgram(1024, 7, error)); const QPointer<PatchesDialog> dialog(new PatchesDialog); auto active = dialog.data(); bool called = false; connect(banks(active), &QTreeWidget::currentItemChanged, this, [&] { if (!called) { called = true; if (dialogDeath) { delete dialog.data(); } else { QVERIFY(active->setup(second, "New setup")); } } }); QVERIFY(!active->setup(first, "Old setup")); QVERIFY(called); if (dialogDeath) { QVERIFY(!dialog); } else { QVERIFY(dialog); QCOMPARE(banks(active)->currentItem()->text(0).toInt(), 1024); QSignalSpy changedFirst(first, &Sf2Instrument::patchChanged), changedSecond(second, &Sf2Instrument::patchChanged); QVERIFY(choose(active, 0, 0)); QVERIFY(accept(active)); QCOMPARE(changedFirst.count(), 0); QCOMPARE(changedSecond.count(), 1); delete dialog.data(); }
+		QFETCH(bool, dialogDeath); auto first = seed(); auto second = seed(); QString error; QVERIFY(second->selectProgram(1024, 7, error)); const QPointer<PatchesDialog> dialog(new PatchesDialog); auto active = dialog.data(); bool called = false; connect(banks(active), &QTreeWidget::currentItemChanged, this, [&] { if (!called) { called = true; if (dialogDeath) { QVERIFY(QMetaObject::invokeMethod(active, "reject", Qt::DirectConnection)); active->deleteLater(); } else { QVERIFY(active->setup(second, "New setup")); } } }); QVERIFY(!active->setup(first, "Old setup")); QVERIFY(called); if (dialogDeath) { QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); QVERIFY(!dialog); QCOMPARE(first->getBank(), 0); QCOMPARE(first->getPatch(), 0); QCOMPARE(second->getBank(), 1024); QCOMPARE(second->getPatch(), 7); } else { QVERIFY(dialog); QCOMPARE(banks(active)->currentItem()->text(0).toInt(), 1024); QSignalSpy changedFirst(first, &Sf2Instrument::patchChanged), changedSecond(second, &Sf2Instrument::patchChanged); QVERIFY(choose(active, 0, 0)); QVERIFY(accept(active)); QCOMPARE(changedFirst.count(), 0); QCOMPARE(changedSecond.count(), 1); delete dialog.data(); }
 	}
 	void reusedSetupDisconnectsOldNativeInvalidation()
 	{
@@ -183,7 +183,18 @@ private slots:
 	}
 	void retiredBankCleanupCannotResumeOnADeletedDialog()
 	{
-		auto first = seed(); auto second = seed(); const QPointer<PatchesDialog> dialog(new PatchesDialog); auto active = dialog.data(); QVERIFY(active->setup(first, "Retained old bank")); bool retired = false; { const auto resource = first->fileResources()[0]; const auto snapshot = std::static_pointer_cast<const FileResourceSnapshot>(resource.identity); connect(snapshot.get(), &QObject::destroyed, this, [&] { retired = true; delete dialog.data(); }); } QString error; QVERIFY(first->setFileResource("soundfont", {}, error)); QVERIFY(!retired); active->setup(second, "Replacement context"); QVERIFY(retired); QVERIFY(!dialog); QCOMPARE(second->getBank(), 0); QCOMPARE(second->getPatch(), 0);
+		auto first = seed(); auto second = seed(); const QPointer<PatchesDialog> dialog(new PatchesDialog); auto active = dialog.data();
+		QVERIFY(active->setup(first, "Retained old bank")); bool retired = false; QMetaObject::Connection retirement;
+		{
+			const auto resource = first->fileResources()[0]; const auto snapshot = std::static_pointer_cast<const FileResourceSnapshot>(resource.identity);
+			retirement = connect(snapshot.get(), &QObject::destroyed, this, [&] { retired = true; delete dialog.data(); });
+		}
+		const auto disconnect = qScopeGuard([retirement] { QObject::disconnect(retirement); });
+		QString error; QVERIFY(first->setFileResource("soundfont", {}, error)); QVERIFY(!retired);
+		// Retire the old native synth as well as its lazily unloaded bank.
+		first->reloadSynth(); QVERIFY(!retired);
+		active->setup(second, "Replacement context"); QVERIFY(retired); QVERIFY(!dialog);
+		QCOMPARE(second->getBank(), 0); QCOMPARE(second->getPatch(), 0);
 	}
 	void previewTokensRefuseAnOlderDialogRestore()
 	{

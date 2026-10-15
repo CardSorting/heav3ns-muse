@@ -93,9 +93,9 @@ LfoController::LfoController( Model * _parent ) :
 	});
 
 	connect( Engine::getSong(), SIGNAL(playbackStateChanged()),
-			this, SLOT(updatePhase()));
+			this, SLOT(updatePhase()), Qt::DirectConnection);
 	connect(Engine::getSong(), &Song::playbackPositionJumped,
-			this, &LfoController::updatePhase);
+			this, &LfoController::updatePhase, Qt::DirectConnection);
 
 	updateDuration();
 }
@@ -182,6 +182,8 @@ void LfoController::updateValueBuffer()
 
 void LfoController::updatePhase()
 {
+	// Native export starts on its render thread; phase must be ready before DSP.
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
 	// Long seeks/marker exports need only the fractional oscillator phase.
 	// Keep the absolute frame position in double until after wrapping.
 	m_currentPhase = static_cast<float>(absFraction(static_cast<double>(Engine::getSong()->getFrames())

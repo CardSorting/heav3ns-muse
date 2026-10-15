@@ -187,10 +187,10 @@ void GigInstrument::saveSettings(QDomDocument& document, QDomElement& element)
 	ResourceGuard work(this); const QString filename = m_filename; const auto snapshot = m_instance ? m_instance->snapshot() : nullptr;
 	element.setAttribute("src", filename);
 	if (m_unresolvedBank) { element.setAttribute("unresolved", 1); } else { element.removeAttribute("unresolved"); }
-	if (snapshot) { DataFile::registerResourceSnapshot(document, element, "src", snapshot); work.check(); }
-	m_patchNum.saveSettings(document, element, "patch"); work.check();
-	m_bankNum.saveSettings(document, element, "bank"); work.check();
-	m_gain.saveSettings(document, element, "gain"); work.check();
+	if (snapshot) { DataFile::registerResourceSnapshot(document, element, "src", snapshot); work.poll(); }
+	m_patchNum.saveSettings(document, element, "patch"); work.poll();
+	m_bankNum.saveSettings(document, element, "bank"); work.poll();
+	m_gain.saveSettings(document, element, "gain"); work.poll();
 }
 
 void GigInstrument::loadSettings(const QDomElement& element)
@@ -210,7 +210,7 @@ void GigInstrument::loadSettings(const QDomElement& element)
 	const bool loaded = loadBank(pending || absent ? absolute : path, false, error, work, pending || absent ? BankLoad::Unresolved : BankLoad::Settings); work.check();
 	if (!loaded) { collectErrorForUI(error); work.check(); }
 	else if (m_unresolvedBank) { const QString missing = m_filename; Engine::getSong()->collectUnresolvedResource(missing); work.check(); }
-	emit fileChanged(); work.check(); work.thawControls();
+	emit fileChanged(); work.poll(); work.thawControls();
 	{
 		GigModelSignals blocked(&m_bankNum, &m_patchNum);
 		m_bankNum.loadSettings(settings, "bank"); work.check(); m_patchNum.loadSettings(settings, "patch"); work.check();

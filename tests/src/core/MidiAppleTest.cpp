@@ -257,18 +257,33 @@ private slots:
 		const auto cleanupPeer = qScopeGuard([&] { MIDIClientDispose(peer); }); MIDIEndpointRef source = 0;
 		QVERIFY(MIDISourceCreate(peer, CFSTR("LMMS Studio Virtual, \u03b1"), &source) == noErr);
 		const auto cleanupSource = qScopeGuard([&] { MIDIEndpointDispose(source); });
-		const auto sourceName = QString::fromUtf8("LMMS Studio Virtual, \xce\xb1"); QTRY_VERIFY(backend->readablePorts().contains(sourceName));
+		const auto sourceName = QString::fromUtf8("LMMS Studio Virtual, \xce\xb1"); QTRY_VERIFY2(backend->readablePorts().contains(sourceName), qPrintable(backend->readablePorts().join(" | ")));
 		AppleMidiProcessor processor; auto port = std::make_unique<MidiPort>("virtual", backend.get(), &processor); port->subscribeReadablePort(sourceName);
 		MIDIPacketList packets{}; QVERIFY(MidiAppleTestAccess::encode(MidiEvent(MidiNoteOn, 2, 60, 100), packets));
 		QVERIFY(MIDIReceived(source, &packets) == noErr); QTRY_COMPARE(processor.events.size(), std::size_t(1));
 		QCOMPARE(processor.events.front().key(), 60); QCOMPARE(backend->sourcePortName(processor.events.front()), sourceName);
-		QCOMPARE(processor.threads.front(), QThread::currentThread()); backend.reset(); QVERIFY(port->client()->isRaw()); port.reset();
-		backend = std::make_unique<MidiApple>(); QVERIFY(backend->isAvailable()); QTRY_VERIFY(backend->readablePorts().contains(sourceName));
+		QCOMPARE(processor.threads.front(), QThread::currentThread()); backend.reset(); QVERIFY(port->client()->isRaw());
+		QTRY_COMPARE(processor.events.size(), std::size_t(1 + MidiChannelCount));
+		for (int channel = 0; channel < MidiChannelCount; ++channel)
+		{
+			const auto& event = processor.events[channel + 1]; QCOMPARE(event.type(), MidiControlChange);
+			QCOMPARE(event.controllerNumber(), uint8_t(MidiControllerAllSoundOff)); QCOMPARE(event.controllerValue(), uint8_t(0));
+			QCOMPARE(event.channel(), channel); QCOMPARE(processor.threads[channel + 1], QThread::currentThread());
+		}
+		port.reset();
+		backend = std::make_unique<MidiApple>(); QVERIFY(backend->isAvailable()); QTRY_VERIFY2(backend->readablePorts().contains(sourceName), qPrintable(backend->readablePorts().join(" | ")));
 		QVERIFY(backend->inputBackendStatus().active);
 		port = std::make_unique<MidiPort>("reconstructed", backend.get(), &processor); port->subscribeReadablePort(sourceName);
-		QVERIFY(MIDIReceived(source, &packets) == noErr); QTRY_COMPARE(processor.events.size(), std::size_t(2));
+		QVERIFY(MIDIReceived(source, &packets) == noErr); QTRY_COMPARE(processor.events.size(), std::size_t(2 + MidiChannelCount));
+		QCOMPARE(processor.events.back().type(), MidiNoteOn); QCOMPARE(processor.events.back().key(), 60);
+		QCOMPARE(backend->sourcePortName(processor.events.back()), sourceName); QCOMPARE(processor.threads.back(), QThread::currentThread());
 	}
 };
 
-QTEST_GUILESS_MAIN(MidiAppleTest)
+int main(int argc, char** argv)
+{
+	// Match the production macOS QCoreApplication startup contract.
+	qputenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION", "1");
+	QCoreApplication application(argc, argv); MidiAppleTest test; return QTest::qExec(&test, argc, argv);
+}
 #include "MidiAppleTest.moc"

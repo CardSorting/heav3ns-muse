@@ -159,12 +159,13 @@ private slots:
 
 	void nativeNoteLengthAccumulatesTempoAndHonorsInitialFrameOffset()
 	{
+		Engine::getSong()->setTempo(120);
 		const auto engine = Engine::audioEngine(); const auto frames = engine->framesPerPeriod(); const f_cnt_t offset = 32;
 		NotePlayHandle handle(m_track, offset, 1000000, Note(0, 0, 60), nullptr, 0, NotePlayHandle::Origin::MidiInput);
 		QCOMPARE(handle.recordedMidiLength(16).getTicks(), 0);
 		QCOMPARE(handle.recordedMidiLength(96).getTicks(), int(64 / Engine::framesPerTick()));
 		std::vector<SampleFrame> buffer(frames); const double firstClock = Engine::framesPerTick();
-		handle.play(buffer.data()); Engine::getSong()->setTempo(240); const double secondClock = Engine::framesPerTick();
+		handle.play(buffer.data()); Engine::getSong()->setTempo(600); const double secondClock = Engine::framesPerTick();
 		handle.play(buffer.data()); const double expected = (frames - offset) / firstClock + frames / secondClock;
 		QCOMPARE(handle.recordedMidiLength().getTicks(), int(expected));
 		QCOMPARE(handle.recordedMidiLength(64).getTicks(), int(expected + 64 / secondClock));

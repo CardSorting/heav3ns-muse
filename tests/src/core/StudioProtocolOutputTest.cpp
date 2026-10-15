@@ -1,6 +1,8 @@
 /* Native protocol stream tests. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
+#include <QElapsedTimer>
 #include <QJsonDocument>
+#include <QThread>
 #include <QJsonObject>
 #include <QProcess>
 #include <cstdio>
@@ -69,6 +71,21 @@ class StudioProtocolOutputTest : public QObject
 {
 	Q_OBJECT
 private slots:
+#ifndef Q_OS_WIN
+	void inputEofAndInvalidDescriptors_data()
+	{
+		QTest::addColumn<QString>("kind"); QTest::newRow("pipe-eof") << QString("pipe");
+		QTest::newRow("null-device-eof") << QString("null"); QTest::newRow("invalid-descriptor") << QString("invalid");
+	}
+	void inputEofAndInvalidDescriptors()
+	{
+		QFETCH(QString, kind); QProcess child;
+		if (kind == "null") { child.setStandardInputFile(QProcess::nullDevice()); }
+		child.start(QCoreApplication::applicationFilePath(), {kind == "invalid" ? "--invalid-input-child" : "--eof-input-child"});
+		child.closeWriteChannel(); QVERIFY(child.waitForFinished(5000));
+		QCOMPARE(child.exitStatus(), QProcess::NormalExit); QCOMPARE(child.exitCode(), 0);
+	}
+#endif
 	void nativeAndChildDiagnosticsCannotEnterReservedProtocolOutput_data()
 	{
 		QTest::addColumn<bool>("restore");
@@ -101,6 +118,17 @@ int main(int argc, char** argv)
 	}
 	if (argc == 2 && std::strcmp(argv[1], "--protocol-child") == 0) { return protocolChild(true); }
 	if (argc == 2 && std::strcmp(argv[1], "--protocol-child-retain") == 0) { return protocolChild(false); }
+#ifndef Q_OS_WIN
+	if (argc == 2 && (std::strcmp(argv[1], "--eof-input-child") == 0 || std::strcmp(argv[1], "--invalid-input-child") == 0))
+	{
+		const bool invalid = std::strcmp(argv[1], "--invalid-input-child") == 0;
+		if (invalid) { ::close(STDIN_FILENO); }
+		StudioStdio input; QElapsedTimer elapsed; elapsed.start();
+		while (!input.ended() && elapsed.elapsed() < 1000)
+		{ if (!input.readAvailable().isEmpty()) { return 7; } if (!input.ended()) { QThread::msleep(1); } }
+		return input.ended() && input.error().isEmpty() != invalid && input.readAvailable().isEmpty() ? 0 : 8;
+	}
+#endif
 	StudioProtocolOutputTest tests; return QTest::qExec(&tests, argc, argv);
 }
 

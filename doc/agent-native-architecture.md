@@ -12887,3 +12887,103 @@ performance certifications were removed rather than retained beneath banners.
 The last complete 193-executable result remains 155 passing and 38 failing;
 other retained failures and cross-platform/hardware/sanitizer limits remain open.
 No feature, capability or roadmap gate was added.
+
+### Resource serialization, native dialog fixtures and full-suite progress (2026-10-15)
+
+Feature development remains frozen. Native envelope/LFO, GIG and SoundFont
+serialization now polls the existing cooperative resource scope after each saved
+model field. GIG/SoundFont restoration also polls after the returned file-change
+notification, while controls remain guarded. Each poll validates weak ownership
+before and after cancellation callbacks, with cooperative Qt event delivery still
+suspended. No resource format or public operation was added.
+
+The native patch-dialog fixtures now reject and defer deletion when a Qt tree
+selection signal is still executing inside the widget's own selection call.
+The earlier direct parent deletion crashed inside Qt's persistent-index update;
+that failed observation is retained. Returned native commit/getter retirement
+checks remain direct. SoundFont retired-bank cleanup first retires the old synth,
+matching its retained-snapshot lifetime. Scoped disconnection prevents a failing
+fixture from leaving a callback to dead stack state. Native channel inspection
+checks whether a FluidSynth preset is actually assigned, rather than treating
+retained bank/program metadata as proof of assignment.
+
+Five scripted waveform/bank repair fixtures now advance to an explicit terminal
+job state under a 64-advance bound, retaining complete-status and native repair
+assertions. The disappearing-sample fixture additionally needs its deliberately
+failed call excluded from successful completion evidence; the failed attempt
+remains in the native record. Stable-selection checks distinguish tool outcomes
+from inference records. Recording curve comparisons preserve every DOM field
+and child order while ignoring XML attribute ordering.
+
+A full native Debug rebuild succeeded on macOS arm64 / Qt 5.15.19. The complete
+193-executable CTest run passed **180 and failed 13 in 260.60 seconds**, including
+successful native process and render-process harnesses. StudioRuntimeTest passed
+207 reported checks; GIG/SoundFont dialog suites passed 47/69, envelope waveform
+80, and GIG/SoundFont lifecycle 38/53 (counts include Qt setup/cleanup). This
+supersedes the 155/193 complete-suite observation without erasing it. Remaining
+failures are StudioAssets, StudioRenderOwnership, StudioWarningInspection,
+MixerViewLifecycle, StudioMidiRecording, StudioAutomationRecording, StudioMidiLearn,
+InstrumentMidiCC, LfoCatchUp, MidiClientTransfer, RemotePlugin, JackLifetime and
+MidiApple. The live-project LFO marker PCM comparison remains intermittent and
+its tolerance remains unchanged. Shutdown passed in CTest but four cases failed
+in a separate direct invocation with null-device stdin; that distinction remains
+under investigation. Prepared subsequent fixes require their own verification.
+No roadmap gate, cross-platform result, sanitizer result or physical audio/MIDI
+claim is implied.
+
+### Remaining native I/O and phase fixes (2026-10-15)
+
+A focused fifteen-executable run after the 180/193 complete observation passed
+twelve and failed three. The passing repairs include bounded agent completion
+with successful retry evidence, explicit recording clocks and MIDI smoothing,
+semantic XML comparisons, correct tool-record filtering, fault injection after
+render admission, continuous diagnostic-mutation coverage, standalone mixer
+widget construction and remote-host recovery. The CC-rack fixture subsequently
+verifies the three real native pitch-sensitivity setup messages exactly, then
+continues to require no extra rack delivery. MIDI controller construction now
+initializes its own zero input buffer rather than retaining the base midpoint.
+
+Instrument-track teardown catches failed native output release after retiring
+local handles, retaining a diagnostic instead of terminating in its destructor.
+The next transfer fixture then exposed local all-sound-off cleanup reentering
+the failed output backend during explicit abandonment. Transfer admission now
+suppresses that output release while preserving every old note/pedal ledger;
+only the successful transfer commit clears them. Normal transfer cleanup stays
+active. MidiClientTransferTest subsequently passed all 136 reported checks;
+InstrumentMidiCCTest passed 61. Neither establishes physical device cleanup.
+
+macOS poll returned POLLNVAL for an open readable null device, although read
+returned EOF. The transport now validates regular/null descriptors before a
+bounded fallback read and still rejects invalid descriptors. Native child tests
+for pipe EOF, null EOF and a closed descriptor passed, as did all seven protocol
+stream checks. StudioShutdownTest passed all twelve checks under CTest and in
+the previously failing direct null-stdin invocation. Failed direct runs remain
+retained observations.
+
+The CoreMIDI virtual-source fixture initially failed discovery under Qt's Unix
+core dispatcher. A native framework probe and Qt/Apple source review identified
+the creator's Core Foundation run-loop requirement. Switching only the native
+client callback API did not resolve it and was reverted. The macOS executable
+and fixture now select the Core Foundation dispatcher before constructing
+QCoreApplication. All 21 CoreMIDI checks passed, including actual virtual-source
+input and reconstruction with sixteen expected channel cleanup messages.
+Physical MIDI output remains unverified. RemotePluginTest also passed under
+that dispatcher: 33 checks and two inapplicable shared-memory transport skips.
+Already-invalid hosts now skip orderly-quit grace waiting, retaining the existing
+request deadline while allowing malformed-host replacement at its one-second
+minimum setting.
+
+Strict LFO marker renders still exposed a one-period phase discrepancy. Native
+export emits playback/seek changes on its worker; automatic Qt connections had
+queued phase reset to the application thread. Those phase updates now run
+directly under the recursive native model guard before subsequent DSP. Two
+worker-thread ordering rows complement the unchanged decoded PCM comparison.
+All 15 LfoCatchUpTest checks passed, then ten full-suite repetitions passed in
+10.05 seconds. Earlier failed live and reloaded comparisons remain evidence;
+passing repetitions are not universal timing proof.
+
+The native capability schema remains byte-identical to frozen baseline
+bc741e610. These changes add no operations, resource formats or instruments.
+A fresh complete rebuild/run remains required; 180/193 is the latest complete
+result at this observation. Other platforms, hardware, sanitizers, latency and
+real-provider musical acceptance remain outside these observations.

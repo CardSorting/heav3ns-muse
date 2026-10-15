@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -173,6 +174,16 @@ QByteArray StudioStdio::read()
 		return {};
 	}
 	if (available == 0) { return {}; }
+	// Some POSIX kernels report POLLNVAL for the readable null device.
+	// Validate the descriptor and restrict fallback reads to regular files or
+	// that known EOF device; arbitrary character devices can block.
+	if (input.revents & POLLNVAL)
+	{
+		struct stat source{}, nullDevice{};
+		if (::fstat(STDIN_FILENO, &source) == 0 && (S_ISREG(source.st_mode)
+			|| (S_ISCHR(source.st_mode) && ::stat("/dev/null", &nullDevice) == 0 && source.st_rdev == nullDevice.st_rdev)))
+		{ input.revents = POLLIN; }
+	}
 	if (input.revents & (POLLERR | POLLNVAL)) { m_error = "Studio stdin is invalid"; m_ended = true; return {}; }
 	if (!(input.revents & (POLLIN | POLLHUP))) { return {}; }
 	const auto count = ::read(STDIN_FILENO, bytes.data(), bytes.size());

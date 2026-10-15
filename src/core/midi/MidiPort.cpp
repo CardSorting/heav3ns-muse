@@ -323,6 +323,10 @@ void MidiPort::setOutputSource(OutputSource source)
 void MidiPort::releaseOutput()
 {
 	const auto lock = lockOutput();
+	// Local input-voice cleanup may reenter output release during explicit
+	// abandonment. Sending to the terminal backend would defeat that admission;
+	// only the transfer commit may clear the uncertain note/pedal ledgers.
+	if (m_abandoningOutput) { return; }
 	Transition releasing(this, &MidiPort::m_releasingOutput, true);
 	// This is necessary even when the local ledger is empty: a future note-on/off
 	// pair, controller, or program change may already be in the backend's queue.

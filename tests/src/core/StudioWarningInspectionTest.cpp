@@ -224,7 +224,7 @@ private slots:
 		int checks = 0; bool changed = false;
 		{
 			FileResourceIO::Scope work([&] {
-				if (++checks == 4) { changed = true; song->collectError("New warning during inspection"); } return false;
+				++checks; changed = true; song->collectError("New warning during inspection"); return false;
 			});
 			const auto response = inspect(); QVERIFY(changed); QVERIFY(!response.value("ok").toBool()); QVERIFY(!response.contains("result"));
 			QVERIFY(response.value("error").toString().contains("diagnostics changed"));

@@ -803,7 +803,7 @@ one; choose another afterward through `instrument.program.select`. Banks with no
 usable MIDI programs fail explicitly. The optional GUI and native XML restoration
 delegate to the same bank loaders. SF2 uses checked FluidSynth loading/selection
 and UTF-8 paths with LMMS's existing minimum FluidSynth 2.2 requirement; native
-Unicode-path execution and valid GIG playback remain unverified. See
+GIG playback and owned-resource recovery have executed in the runtime suite on macOS arm64. Unicode-path and hardware limits remain scoped to their specific evidence. See
 [FluidSynth SoundFont management](https://www.fluidsynth.org/api/group__soundfont__management.html)
 and [native program selection](https://www.fluidsynth.org/api/group__midi__messages.html).
 SF2 voice references are associated with a synth generation. Native sample-rate
@@ -815,8 +815,8 @@ follows native polyphony rather than a four-voice limit, applying initial and
 subsequent detuning and panning to every captured layer. The optional patch dialog
 uses copied program metadata and checked, locked selection instead of retaining
 a raw synth pointer; preview does not change project controls, Accept commits,
-and Cancel restores their current selection. These are source changes with native
-tests authored but unrun. Synth recreation now prepares independent settings,
+and Cancel restores their current selection. The native dialog and resource suites
+passed on macOS arm64 / Qt 5 Debug on 2026-10-15. Synth recreation now prepares independent settings,
 a replacement native synth and voice scratch storage before retiring the working
 pool. Preflight failure retains that pool and bank, and its resampling ratio follows
 the current engine output rate. Typed native settings are copied without sharing
@@ -1163,7 +1163,9 @@ never enabled implicitly, and non-boolean values are rejected.
 This path still validates every replacement port, preserves models/subscription
 intent, performs local input-voice cleanup and applies the normal input-reset and
 audio-restoration rules. Old output note/pedal records remain intact through
-failed preparation or cancellation. Only a successful commit clears them; they
+failed preparation or cancellation. Local input-voice cleanup does not reenter
+output release on the terminal backend during this admission. Only a successful
+commit clears those records; they
 are not sent to the replacement. `outputAbandonment` reports `abandoned`,
 decimal-string `trackedNotes` and `pedalHolds`, old `pendingEvents` and
 `cleanupPendingChannels`, current/last native error codes, and
@@ -2965,22 +2967,26 @@ playback/seek phase updates likewise wrap absolute-frame phase before storing
 it. Previously a large phase could swallow the per-sample increment and produce
 a constant buffer. The skipped-period difference also retains its native width
 instead of narrowing to int. Existing waves, multipliers, base/amount controls,
-parameter mapping, cache behavior and project XML remain native.
+parameter mapping, cache behavior and project XML remain native. Playback-start and
+position-jump phase updates run synchronously on the native caller under the
+engine model guard, including the export worker; queued phase updates could
+otherwise arrive after the first rendered period.
 
-LfoCatchUpTest authors five cases / 11 scenarios covering delayed reads at three
-native speed multipliers, a wider-than-int period difference where native long
-permits it, late sine/saw seeks, same-period caching and next-period advancement,
-linear/log parameter sample data, and native sample/Mixer marker rendering at
-cycle-aligned early/late positions with and without project save/load. The render
-fixture requires decoded, varying PCM to match within its tolerance; it is not
-the commission's musical deliverable. All remain uncompiled and unrun. Native
-signed-long clock lifetime/reset limits and ordinary float rounding remain;
-double precision is finite, sample-and-hold noise stays stochastic, and native
-audio/GUI/plugin/legacy compatibility and CPU/RSS behavior remain unverified.
+`LfoCatchUpTest` covers six case groups / thirteen scenarios, including delayed
+reads, late seeks, same-period caching, native parameter samples, worker-thread
+playback/seek ordering and strict decoded early/late marker PCM comparisons.
+On 2026-10-15, all 15 reported checks (including setup/cleanup) passed on macOS
+arm64 / Qt 5 Debug, followed by ten consecutive full-suite executions in 10.05
+seconds with the original PCM tolerance. Earlier intermittent one-period PCM
+mismatches remain dated failed evidence in the engineering record. Native signed
+clock lifetime, ordinary float rounding and stochastic noise limits remain;
+physical hardware, other platforms and CPU/RSS performance remain unverified.
 
 Native Controller construction now initializes its normalized cached value to
 the native midpoint and its sample-accuracy flag to false. The LFO, MIDI and peak
-implementations retain their explicit sample-accurate selection. This prevents
+implementations retain their explicit sample-accurate selection. The MIDI
+constructor initializes its derived buffer to zero before the first read; live
+input values are not restored as previously received hardware data. This prevents
 first nonzero-offset/default reads and native parameter buffer classification
 from depending on uninitialized storage. Per-period notification traversal uses
 weak controller snapshots, skips retired controllers and processes newly
@@ -3873,7 +3879,10 @@ and [RIFF source](https://download.linuxsampler.org/doc/libgig/api/RIFF_8cpp_sou
 
 Input is limited to 1 MiB per request and session metadata to 16 MiB. Native stdin
 polling keeps Qt events running while idle and reads bounded frames from pipes,
-files or consoles. Queued execution keeps polling available during nested render
+files or consoles. A validated POSIX null device is clean EOF even on kernels
+whose poll reports it unsupported; invalid descriptors remain errors. Native
+pipe/null/invalid-descriptor child-process regression checks passed on macOS.
+Queued execution keeps polling available during nested render
 and network event loops. During an operation only inspection, cancellation and
 shutdown requests can execute. New intent requires the active job to finish or
 be cancelled. A manifest-size failure stops further work; active context sizing,
@@ -4416,7 +4425,9 @@ callback shares a deadline across its send and reply. Set
 checks monotonic deadlines every 25 ms and requests child termination on expiry;
 actual scheduling/termination latency must be measured. GUI event processing and
 unrelated replies do not renew the active deadline. Idle hosts have no active
-request deadline.
+request deadline. A child whose transport is already invalid is terminated
+without an orderly-quit grace wait, so that wait cannot exhaust the minimum
+one-second request budget before replacement initialization.
 
 The native renderer acquires a process-wide export context before device setup.
 Its monotonic execution budget and explicit cancellation are visible to the
@@ -4445,7 +4456,7 @@ ownership until the engine installs them, including cancellation and setup-error
 paths. Finalization checks cancellation, and studio publication checks the elapsed
 budget before copying/committing the temporary file. The optional export dialog
 retains its manager while a nested startup call unwinds before destroying it.
-Native GUI behavior and all file/device ownership paths still need execution.
+Optional export-dialog interaction and file/device paths beyond the listed fixtures still need execution.
 
 FIFO lock/message waits periodically observe invalidation. Complete FIFO messages
 are published together and release the data lock while waiting for capacity, so
@@ -4476,8 +4487,10 @@ without main-thread events, requests predating export setup, cancelled startup,
 pre-worker cancellation, unattached codec closure, manager ownership during setup,
 reservation after worker completion, preservation of an existing destination and
 fresh-host recovery followed by a native WAV render. The fixtures are test instrumentation and
-do not prove VST/Zyn DSP or third-party compatibility. All these native tests are
-unrun. CPU/heap benchmarks, the complete platform/host matrix, automatic plugin
+do not prove VST/Zyn DSP or third-party compatibility. On 2026-10-15 the suite
+passed 33 reported checks with two shared-memory-only skips on macOS's socket
+transport, including recovery after malformed messages. The same result passed
+with the Core Foundation dispatcher used by the core-only executable. CPU/heap benchmarks, the complete platform/host matrix, automatic plugin
 recovery and supervision of in-process DSP remain required. In-process DSP, codec
 finalization, disk I/O and device restoration still require cooperative unwinding.
 A blocked diagnostic sink can also delay watcher execution. These source changes
@@ -4817,7 +4830,8 @@ adds model/serialization/replay and default-dummy refusal checks. All are unrun.
 They use diagnostic native boundary fixtures and do not prove physical MIDI
 operation. Raw/WinMM/ALSA/CoreMIDI input uses the lifetime-aware queue described below.
 ALSA has eighteen additional cases/66 executions described below; all are unrun.
-CoreMIDI has twelve additional cases/19 executions described below; all are unrun.
+CoreMIDI has nineteen native scenarios described below; all passed on macOS
+arm64 / Qt 5 Debug during 2026-10-15 stabilization.
 Shutdown/hotplug acknowledgment, output delivery and device verification remain unfinished.
 
 Nine new MIDI port cases/37 executions cover scalar decoding, source persistence,
@@ -5131,7 +5145,10 @@ ignores the provided musical timestamp. Timing calibration remains required.
 
 Individual input/output ports are disconnected/disposed on backend retirement.
 One process-owned native MIDI client and its registry remain until application
-termination, allowing backend reconstruction without explicitly disposing the
+termination. On macOS the core-only executable selects Qt's Core Foundation
+dispatcher before constructing QCoreApplication, so native setup notifications
+reach the headless host without GUI initialization. The native CoreMIDI fixture
+uses that same startup contract. This permits backend reconstruction without explicitly disposing the
 last client. Apple documents a risk that later client creation fails after the
 last client is disposed. Callback/table mutexes, Qt posting and parser/event
 allocation remain on CoreMIDI's high-priority receive thread; no hard real-time
@@ -5147,8 +5164,12 @@ callback races with port/source and client deletion; coalesced notifications and
 I/O errors; isolated source loss; per-device I/O failures; and a native virtual
 source roundtrip/backend reconstruction case. Boundary fixtures avoid native
 device creation. The virtual-source case requires a CoreMIDI service, skips if
-it is unavailable, and does not need physical hardware. Every execution remains
-unrun; packet-builder tests do not establish actual MIDISend or physical output.
+it is unavailable, and does not need physical hardware. All 21 reported checks
+(including setup/cleanup) passed on the observed platform, including Unicode
+virtual-source discovery, input delivery and backend reconstruction. Retirement
+checks include all sixteen channel all-sound-off messages before reconstructed
+input resumes. Packet-builder and virtual-input tests do not establish actual
+MIDISend or physical output.
 
 `midi.input.reset` takes `track` and optional `container`, or `parameter` for a
 direct MIDI controller connection. It addresses the same native port as
@@ -8317,19 +8338,18 @@ Sf2RenderAuditionTest authors ten QCoreApplication cases / nineteen scenarios ag
 
 Source validation reports 539 delimiter-checked C++ files / 165 native operations. This preparation guarantee is scoped to ProjectRenderer's device-notification path used by native export and Studio render/stems. Bare internal Song::startExport or manual renderNextPeriod without device setup has no new preflight barrier, and arbitrary project/program/controller/automation mutations during export remain outside an immutable project transaction. Audition still changes live playback and existing voices/tails; cancelling before device setup can intentionally leave the owned audition active. The retained-synth continuation above moves clock conversion ahead of fallible preparation in source; acoustic/hardware-rate correctness remains unverified. The fixture's private snapshot corruption/repair is a failpoint, not a demonstrated user recovery workflow. Full C++/Qt/MOC/UIC/link/ABI/module imports, native worker/signal/lifetime and sanitizer execution, GUI/legacy/default-plugin/DSP/MIDI regression, decoded PCM, CPU/RSS/latency/deadline/hardware and real-provider Interpret → Plan → Compose → Render → Listen → Evaluate → Revise → Preserve evidence remain outstanding. Whole DAW acceptance is unproven.
 
-### Native SoundFont dialog and audition ownership continuation (2026-10-15, source only)
+### Native SoundFont dialog and audition ownership continuation (2026-10-15)
 
 The SoundFont patch dialog retains live FluidSynth audition, its filterable program table, numeric sorting and Up/Down/Enter/Escape controls. It now owns its catalog and weak native/root/model/widget context, including heap source/proxy/selection models and the filter field. Setup reads checked effective program values for the initial selection while storing manual bank/program values for context validation. Program/bank tokens, project/routing generations, filename/rate and a setup epoch are checked across returned getters, widget actions and native commit. Old bindings are disconnected and queued notifications check their setup epoch. Caption/catalog values and retired accepted-bank identity remain owned across callbacks. The modal caller uses a weak heap dialog and checks selected view/track/project ownership, replacing the stack child across modal parent retirement.
 
 Sf2Instrument keeps its existing preview API and adds opaque typed preview tokens. Each successful audition issues a token after native selection without changing stored bank/program controls. Only the current token may restore the current effective controls. Restoration checks token identity again after effective getters and before native selection, so a newer audition wins. Committed program/model changes, bank publication/clear/pending state and successful synth rebuild supersede old tokens. A failed preview request preserves the previous restorable token. Expected restoration during fileLoading uses native observation admission and does not admit nested resource changes. Cancel, invalidation, reused setup and destruction attempt restoration of that dialog's current token; filtering all rows also restores the hidden audition. Empty/pending banks cannot open an editable program dialog, and unavailable stored choices require explicit acceptance of a visible valid fallback.
 
-Unavailable effective programs unassign the native channel rather than leaving the audition selected. FluidSynth documents that unassignment retains SoundFont/bank IDs while marking the preset unassigned; fixtures therefore inspect native program validity instead of assuming those IDs clear. See the [FluidSynth MIDI channel API](https://www.fluidsynth.org/api/group__midi__messages.html). This source-level API check is not evidence of local native execution or immediate removal of existing voices/tails.
+Unavailable effective programs unassign the native channel rather than leaving the audition selected. FluidSynth documents that unassignment retains SoundFont/bank IDs while marking the preset unassigned; fixtures therefore inspect native program validity instead of assuming those IDs clear. See the [FluidSynth MIDI channel API](https://www.fluidsynth.org/api/group__midi__messages.html). The native assignment check is exercised by the dialog suite; unassignment does not promise immediate removal of existing voices/tails.
 
-Sf2PatchDialogTest authors thirty-one cases / sixty-seven scenarios using QApplication, production SF2 C++/MOC/PatchesDialog UIC, real FluidSynth and the calibration SF2. They cover initial selection, three Cancel routes with actual native channel inspection, commits, empty/pending refusal, six actual modal context invalidations, external controls, returned getter and native/widget owner retirement, nested/reused setup/queued notifications, root/rate signals, exceptions, caption, returned bank metadata, missing widgets, unavailable/current choices, old resource cleanup, token supersession and six native invalidations, restore during resource admission, filter/keyboard audition, destruction, multiple dialogs, invalid/null tokens, unchanged serialization, five filter/source/proxy/selection/rebound-model cases two source-row ownership callbacks and two Cancel rows during device/stem admission. One required module route persists the selected program in portable project resources and reopens after original source removal. The existing QCoreApplication resource lifecycle case also authors token restore/replay refusal. CTest requests Qt offscreen; required module discovery fails rather than skips. These native unit fixtures remain uncompiled and unrun, and synthetic rate notifications do not prove hardware changes.
+`Sf2PatchDialogTest` passed all 69 reported checks (including setup/cleanup) in the 2026-10-15 macOS arm64 / Qt 5 Debug full run. It exercises real FluidSynth, production dialog code, native audition/commit/cancellation, token supersession, returned ownership, nested/reused setup, filtering/keyboard actions and portable module-backed project persistence. Widget-selection retirement rejects and uses Qt deferred deletion while the widget's own call is executing; returned native-call retirement remains direct. Retired-bank cleanup also retires the old synth before expecting its final accepted snapshot to release. Native inspection checks active preset assignment rather than retained bank/program metadata.
 
-Source validation reports 538 delimiter-checked C++ files / 165 native operations. Complete C++/Qt/MOC/UIC/export/link/ABI/offscreen/module-import verification, native modal/proxy/signal ordering and sanitizer execution remain required. Arbitrary executing constructors/callees/destructors, foreign Qt mutation, global teardown, native callback/parser/voice/tuning/effect and opaque/controller/automation state are not universally guarded. Finite context checks do not roll back getter effects or partial native commits; cleanup catches failures but cannot promise successful restoration after arbitrary native/controller failure. A dialog deleted after successful native publication may leave the authorized program committed. Audition still changes live playback and existing voices/tails. ProjectRenderer admission and preparation source changes are described in the continuation above; arbitrary native mutations and bare manual DSP without device setup remain outside that boundary. No hard deadline, latency, CPU/RSS, actual PCM, hardware or real-provider musical/listening evidence is established. Full default-plugin GUI/legacy/project/preset/clone/bank/controller/automation/DSP/MIDI/export regression and whole DAW acceptance remain outstanding.
-
-### Native GIG patch-dialog ownership continuation (2026-10-15, source only)
+The full native build and the stated fixtures have executed on that platform; the last complete suite passed 180/193, with remaining failures listed in the [engineering record](agent-native-architecture.md#resource-serialization-native-dialog-fixtures-and-full-suite-progress-2026-10-15). These finite ownership checks do not protect arbitrary invalid execution inside native/Qt constructors, callees or destructors, or unsupported concurrent ownership changes. Direct faults can leave effects until Runtime checkpoint rollback. Native calls remain synchronous without a hard deadline. Cross-platform, sanitizer, physical hardware and real-provider musical acceptance remain unverified.
+### Native GIG patch-dialog ownership continuation (2026-10-15)
 
 The GIG patch dialog now owns an editable program-list snapshot and commits through GigInstrument::selectProgram. Its former audition helper performed no native action; candidate selection therefore remains local until Accept, and Cancel leaves bank/patch models and the selected native instrument unchanged. Setup starts from the stored native selection, falls back visibly when that program is unavailable, and requires explicit acceptance to change it. Accepting the unchanged selection does not republish native program changes. Numeric sorting and one row per bank/program are retained; stable native catalog sorting preserves enumeration order for equal program keys.
 
@@ -8337,10 +8357,9 @@ The dialog replaces raw GigInstance/libgig iterator, model and label pointers wi
 
 The view's modal caller now uses a heap dialog through a weak pointer and scoped cleanup. It checks weak view/selected track/project context around setup and modal return, and copies the reported track name only after the owner survives the getter. This removes the stack-child dialog lifetime across parent retirement. It does not establish universal safety for arbitrary Qt/native executing constructors, callees or destructors.
 
-GigPatchDialogTest authors twenty cases / forty-five native Qt widget scenarios using QApplication, production GIG C++/MOC/PatchesDialog UIC and libgig-written split banks with an optional second program. Coverage includes initial selections, Cancel/window close, native commit and unchanged acceptance, empty/pending refusal, six actual modal-loop context invalidations, external edits, returned getter/commit/widget retirement, nested/reused setup and queued old notifications, root/routing/rate notification changes, standard/nonstandard getter exceptions, copied caption, returned resource metadata mismatch, required widget removal, unavailable stored programs and retired-bank cleanup that deletes the dialog during reused setup. One required actual-module route commits a program, saves portable native project resources, removes original root/companion files and reopens the selection. The test target uses QT_QPA_PLATFORM=offscreen; missing plugin discovery fails rather than skips. These are native widget unit fixtures, not external GUI automation. All remain uncompiled and unrun; the rate case emits a native notification and does not verify physical sample-rate changes.
+`GigPatchDialogTest` passed all 47 reported checks (including setup/cleanup) in the 2026-10-15 macOS arm64 / Qt 5 Debug full run. It uses real libgig banks and production Qt dialog code for selection, Accept/Cancel, returned ownership, modal invalidation, reused setup and module-backed portable project persistence. Qt selection callbacks reject and defer widget deletion while Qt still borrows its receiver. Native commit/getter retirement remains direct. Rate-notification cases exercise native signals rather than physical device changes.
 
-Source checks report 537 delimiter-checked C++ files / 165 native operations. Full Qt/C++/MOC/UIC/export/link/ABI, offscreen platform availability, native module imports and actual modal signal ordering remain unverified. Direct getter effects and partial commits are not rolled back by the dialog; a dialog deleted after successful native publication can leave the authorized program committed. Stored controls and bank identity are finite checks, without deep automation/controller/opaque/native-DSP snapshots. The SoundFont dialog source continuation is recorded above; native verification remains open. Full default-plugin GUI/legacy/project/preset/clone/controller/automation/DSP/MIDI regression, actual PCM, hardware, CPU/RSS/latency and real-provider autonomous musical evaluation remain outstanding. Whole DAW acceptance remains unproven.
-
+The full native build and the stated fixtures have executed on that platform; the last complete suite passed 180/193, with remaining failures listed in the [engineering record](agent-native-architecture.md#resource-serialization-native-dialog-fixtures-and-full-suite-progress-2026-10-15). These finite ownership checks do not protect arbitrary invalid execution inside native/Qt constructors, callees or destructors, or unsupported concurrent ownership changes. Direct faults can leave effects until Runtime checkpoint rollback. Native calls remain synchronous without a hard deadline. Cross-platform, sanitizer, physical hardware and real-provider musical acceptance remain unverified.
 ### Native missing GIG group repair continuation (2026-10-15, source only)
 
 GigInstrument now retains missing bank references as editable pending instruments. Native settings with an absent root, or an unbound root whose declared companion group is incomplete, preserve the resolved absolute root filename and stored bank/patch/gain controls. Pending state has no accepted snapshot or program inventory: native instance/note retirement removes the previous bank, playback returns zero instrument buffers and clears pending queued notes. Other instruments and downstream effects retain native behavior. Explicit `gigplayer/src` plus `unresolved="1"` stays pending when files appear later; malformed references and pending markers conflicting with accepted bindings are refused. Native rate reset retains pending state; explicit resource clear and empty settings remove the retained reference.
@@ -8355,16 +8374,15 @@ DataFile now admits the exact marked `gigplayer/src` reference as unbound absolu
 
 Source validation reports 534 delimiter-checked C++ files / 165 native operations. Native build tools remain unavailable and seventeen submodules are uninitialized. This does not prove C++/Qt/MOC/UIC/export/link/ABI or test-host module imports, GUI/legacy/project/preset/clone/controller/automation/DSP/MIDI regression, actual PCM, hardware, latency, CPU/RSS or real-provider autonomous musical evaluation. The GIG patch-dialog source continuation is recorded above; constructor/destructor/native callback, streaming/voice/dimension/rate and effective/opaque-state limits remain; direct faults can retain partial effects until Runtime rollback, and the engine model-change guard spans synchronous file work. Full DAW acceptance remains outstanding.
 
-### Native GIG resource lifecycle continuation (2026-10-15, source only)
+### Native GIG resource lifecycle continuation (2026-10-15)
 
 GigInstrument file/settings/program work now uses an application-thread, nonreentrant resource guard. It pins weak plugin/track/selected instrument/container/AudioEngine/Song/Mixer ownership, root generations, project filename/output rate, current GigInstance and accepted dependency-group snapshot/path, and three stored bank/patch/gain controls. Settings copy the native DOM reference and filename, validate each returned model stage and accepted ResourceReferenceScope, and restore bank/patch signal blocking only on surviving QObjects. File, patch and label notifications have post-return checks. Resource metadata now pins the accepted group; `programSnapshot()` returns an owned native inventory, and labels/patch-name lookup use owned program copies and checked effective model reads.
 
 Group capture runs before the libgig parser error handler. Cancellation and callback exceptions can propagate through native file work rather than being converted into a libgig rejection. Context is checked after capture and before translating native parser exceptions. A final cooperative check occurs before publication. Capture and this check hold neither instance synth nor notes mutex. Libgig still constructs and validates the native bank, resolves sample associations and streams from the owned group; instance adoption and old note/instance retirement remain under native locks, followed by model/label/signal publication after unlocking. The engine model-change guard spans the operation, including file work, so this does not establish uninterrupted audio or bounded latency. The GUI file dialog checks weak view/model/button/selected-track/project identities across modal return and restores a surviving button.
 
-`GigResourceLifecycleTest` authors fifteen cases / thirty-six scenarios using production GIG C++/MOC/PatchesDialog UIC and actual libgig-written single and split banks. Coverage includes accepted group/control roundtrips; file-work mutex probes from another thread; owner/track retirement; all three load/save fields; weak blocked-signal cleanup; label/file/patch retirement; reentry; early and during-capture cancellation/standard/nonstandard exceptions; copied inputs and changed controls/root; corrupt/missing root/companion rejection versus clear; native programs; two owned-group source-removal/NotePlayHandle buffer/restore/copy paths; and Qt event exclusion. One required actual-module Runtime scenario covers publication failure, checkpoint rollback, receipt replay, retry, rejected edit and reopen after both original root and companion removal. Missing native module discovery fails this scenario rather than skipping it. All native fixtures are uncompiled and unrun; the suite registers when gigplayer is enabled, and full default-plugin builds remain required.
+`GigResourceLifecycleTest` passed all 38 reported checks (including setup/cleanup) in the 2026-10-15 macOS arm64 / Qt 5 Debug full run. Production GIG code and real libgig-written single/split banks exercise control/group roundtrips, returned model and resource ownership, cancellation, native mutex availability during file work, source removal, actual note buffers and required module-backed Runtime rollback/replay/reopen. Saved model fields now poll the existing cooperative scope with weak ownership checked before and after each callback. Restoration also polls after fileChanged while controls remain guarded; cooperative Qt event delivery stays suspended.
 
-This earlier lifecycle step did not add unresolved banks; the missing GIG group continuation above records subsequent pending root/companion retention, checkpoint admission and repair. The GIG patch-dialog source continuation is now recorded above; its native execution remains unverified. Constructors/destructors, arbitrary libgig callbacks, parser/streaming/decompression/voice/dimension/rate internals, derived selected-instrument state and opaque/effective/controller state are not universally guarded. Direct faults can leave partial effects until Runtime checkpoint rollback. Native calls remain synchronous and nonpreemptible; no hard deadline, latency, CPU/RSS, actual PCM, hardware or real-provider musical evaluation has been verified. Source validation reports 533 delimiter-checked C++ files / 165 native operations. Full C++/Qt/MOC/UIC/export/link/ABI and test-host module imports, GUI/legacy/project/preset/clone/plugin/DSP/MIDI regression and whole DAW acceptance remain outstanding.
-
+The full native build and the stated fixtures have executed on that platform; the last complete suite passed 180/193, with remaining failures listed in the [engineering record](agent-native-architecture.md#resource-serialization-native-dialog-fixtures-and-full-suite-progress-2026-10-15). These finite ownership checks do not protect arbitrary invalid execution inside native/Qt constructors, callees or destructors, or unsupported concurrent ownership changes. Direct faults can leave effects until Runtime checkpoint rollback. Native calls remain synchronous without a hard deadline. Cross-platform, sanitizer, physical hardware and real-provider musical acceptance remain unverified.
 ### Native missing SoundFont repair continuation (2026-10-15, source only)
 
 A missing SoundFont referenced by native settings now remains an editable instrument dependency. Sf2Instrument retains its resolved absolute filename, thirteen native controls including bank/program, and an `unresolved` flag. It unloads the old bank through the native FluidSynth path, invalidates queued voice generations, exposes no available programs or accepted-bank snapshot, and returns zero instrument output while pending. Downstream effects and other instruments keep their native behavior. Legacy absent files become recoverable warnings; existing unreadable or corrupt files remain fatal load errors. Explicitly marked pending settings remain pending even after a different file appears at that path. Malformed references and an unresolved marker conflicting with an accepted resource binding are refused.
@@ -8377,16 +8395,15 @@ Native save emits `sf2player/src` plus `unresolved="1"` for pending state withou
 
 Source validation reports 532 delimiter-checked C++ files and 165 native operations. This does not verify Qt/MOC/UIC/export/link/ABI or test-host module imports, GUI/legacy/preset/project/clone/controller/automation/DSP/MIDI behavior, actual PCM, latency, CPU/RSS, hardware or real-provider autonomous music/listening. Raw constructor/destructor/native callback, effect/tuning/voice and opaque state boundaries retain the preceding lifecycle limits; native file work and FluidSynth loading remain synchronous/nonpreemptible. Full DAW acceptance remains unproven.
 
-### Native SoundFont resource lifecycle continuation (2026-10-15, source only)
+### Native SoundFont resource lifecycle continuation (2026-10-15)
 
 SoundFont file replacement, settings serialization, native program selection and synth rebuilding now share an application-thread resource guard. It pins weak plugin/track/selected instrument/container/engine/Song/Mixer identities, project and routing generations, project filename and output rate, accepted bank snapshot, native synth/settings/font identities and thirteen manual controls. Resource/settings transitions refuse reentry and suspend cooperative Qt event delivery. Expected nested patch observation remains available. Returned model, label, file and patch notifications are checked before continuing; bank/patch signal suppression restores only surviving QObjects.
 
 Bank capture and retained-bank verification run before taking either instance load/synth mutex. FluidSynth still loads, enumerates, selects and adopts native banks under its instance mutexes. Bank/patch model publication and labels occur after releasing those mutexes. Rebuilding verifies retained bytes first, keeps independent candidate synth/settings and native voice generations, unlocks before reporting errors, and checks returned effect/tuning updates. Resource inventory now pins the accepted bank snapshot. The file dialog checks weak view/model/button/selected-track/project identities across modal return and restores a surviving button through scoped cleanup.
 
-`Sf2ResourceLifecycleTest` authors fifteen cases / fifty-one scenarios using production Sf2 source, its MOC and PatchesDialog UI, FluidSynth and the real calibration SoundFont. Coverage includes two file-work mutex probes from another thread, four file-work retirement paths, twenty-six load/save field retirement rows, weak blocked-signal cleanup, label/file/patch retirement, nested work refusal, cancellation/exception admission reuse, copied inputs and changed context, native program behavior, retained source removal and Qt event exclusion. One required actual-module Runtime scenario covers publication failure, checkpoint rollback, durable replay, retry and reopen after source removal; absent plugin discovery fails that scenario rather than skipping it. The suite is registered when the native sf2player target exists; full default plugin builds remain required.
+`Sf2ResourceLifecycleTest` passed all 53 reported checks (including setup/cleanup) in the 2026-10-15 macOS arm64 / Qt 5 Debug full run. It uses real FluidSynth and the calibration bank for file-work mutex probes, returned ownership, thirteen load/save control boundaries, native programs, cancellation and module-backed checkpoint rollback/replay/reopen after source removal. Each saved model field now polls the existing cooperative scope with weak ownership checked before and after callbacks. Restoration also polls after fileChanged before thawing controls; cooperative Qt event delivery remains suspended.
 
-These fixtures are uncompiled and unrun. This earlier lifecycle step did not implement pending banks; the missing SoundFont continuation above records the subsequent source implementation of retention, checkpoint admission and repair. Existing raw constructor/destructor, FluidSynth/custom callback, render/voice, effective model, tuning and effect-slot internals are not universally protected. Direct failure can retain partial native/model/signal effects until Runtime checkpoint rollback. Native loading/iteration remains serialized and nonpreemptible; no hard deadline, latency, CPU/RSS or acoustic evidence is established. Full C++/Qt/MOC/UIC/export/link/ABI and GUI/legacy/preset/project/clone/plugin/DSP/MIDI regression remains required, including test-host module binding and Windows executable imports. Source validation reports 531 delimiter-checked C++ files and 165 native operations; no native build, PCM, hardware or real-provider production execution is proven. Whole DAW acceptance remains outstanding.
-
+The full native build and the stated fixtures have executed on that platform; the last complete suite passed 180/193, with remaining failures listed in the [engineering record](agent-native-architecture.md#resource-serialization-native-dialog-fixtures-and-full-suite-progress-2026-10-15). These finite ownership checks do not protect arbitrary invalid execution inside native/Qt constructors, callees or destructors, or unsupported concurrent ownership changes. Direct faults can leave effects until Runtime checkpoint rollback. Native calls remain synchronous without a hard deadline. Cross-platform, sanitizer, physical hardware and real-provider musical acceptance remain unverified.
 ### Native resource-name observation continuation (2026-10-15, source only)
 
 Dependency inventory no longer calls virtual Track/Controller name getters while walking raw native rosters or while validating a partially captured roster. It first captures weak roots, track/clip/chain/effect/controller/shaping actors and native resource state. Initial stored names use qualified Track::name and Controller::name access, so callbacks cannot run inside that capture. Virtual reported names are then read through a separate returned-stage boundary: validate all captured native actors, call the getter while binding its QString reference, validate again, and only then copy the returned text. No cooperative work is dispatched between the returned reference and that validation/copy.
@@ -8399,7 +8416,7 @@ StudioResourceNameTest authors ten cases/forty-three scenarios without module sk
 
 Source diagnostics pass across 530 changed/new C++ files and 165 operations. Ten supplemental tools plus universal routing retain 128 declarations. This is returned-stage lifetime and observed-value validation, not a transactional or immutable project snapshot. Getter code that already executes invalid operations, a dangling reference unrelated to a surviving owner, concurrent external mutation, global teardown and ownership stealing remain outside guarantees. Late name getters can mutate opaque declarations inspected by earlier plugin getters, and later getters can change earlier dynamically reported names without another read; no universal quiescence is claimed for adversarial stateful getters. Direct callback effects persist after a refused read and receive no automatic rollback. Full roster capture still precedes virtual work, validation/name lookup can be quadratic, and model/DSP ownership, copies/huge names, callbacks, native getters/Qt/JSON/filesystem/hash work have no hard deadline or measured CPU/RSS/latency evidence. Full C++/Qt/MOC/link, GUI/legacy/plugin/project/controller/sample/resource/DSP/MIDI compatibility, actual PCM/hardware, real-provider autonomous production and whole DAW acceptance remain unverified.
 
-### Native sound-shaping envelope/LFO wave continuation (2026-10-15, source only)
+### Native sound-shaping envelope/LFO wave continuation (2026-10-15)
 
 The volume, cutoff and resonance EnvelopeAndLfoParameters groups on native InstrumentSoundShaping now own checked user-wave loading and retained missing-reference state. Their native elvol/elcut/elres settings preserve userwavefile plus userwaveunresolved=1, independently from empty sample buffers. Legacy absent sources become recoverable missing-reference diagnostics. Explicit pending state skips file probing/decoding after a file appears at that name; corrupt existing content remains fatal and malformed paths or accepted-binding conflicts are refused. Empty ordinary settings now clear an older waveform instead of retaining stale content. The native legacy reversed sus sustain conversion remains intact.
 
@@ -8417,10 +8434,9 @@ The native DataFile asset table now includes all three persisted envelope tags. 
 
 A native resource guard rejects reentry/foreign-thread execution and observes weak parameter/full QObject ancestry/optional instrument-track/container/engine/Song/Mixer actors, replacement generations, project filename and retained backing/pending state. It owns path/buffer values, copies new adoption values before releasing old pins, checks fourteen manual values during save/decode and validates after returned model calls. Loading retains ordinary native control notifications and legacy conversions. The outer sound-shaping saver now checks its returned lifetime between filters and envelope groups. GUI sample/clip drops call the checked core loader with weak view/model validation, and user-wave notification reads the current weak ModelView model; direct GUI buffer assignment is removed.
 
-EnvelopeWaveResourceTest authors twenty-one cases/seventy-eight scenarios without module-conditional skips: nine target/legacy/marked/later-file roundtrips; six direct/structured repairs retaining inactive selection; selection/failure/clear behavior; three native asset-tag checkpoint/bundle/manifest paths; accepted snapshot/same-retained/sample-backed conflicts; malformed settings/protocol inputs; twenty-eight returned model load/save retirement rows; parent serialization retirement; nested/cancel/standard/nonstandard cleanup; copied input/control/root changes; cached native fillLevel contribution invalidation/repair; owned restore, empty clear and legacy sustain; parent tag binding after source removal and serializer-hook substitution refusal; sparse Song/PatternStore inventory and getter-introduced references; corrupt-source fatality and Qt event exclusion; Runtime repair/undo/redo/failure rollback/replay/reopen after source removal; and two scripted Chat/Responses dependency/search/catalog-routed repair sequences. The observer instrument in one fixture only provokes a native resource-getter callback; it supplies no sound generator or production substitute. All native cases are uncompiled/unrun. Native modulation arrays are not rendered PCM, listening or real-provider production evidence.
+`EnvelopeWaveResourceTest` passed all 80 reported checks (including setup/cleanup) in the 2026-10-15 macOS arm64 / Qt 5 Debug full run. Coverage includes all three native shaping groups, legacy/pending/accepted resources, strict load/save retirement, parent serialization, cancellation, resource inventory, checkpoint/bundle contracts, Runtime rollback/replay/reopen and scripted Chat/Responses repair. Saved model fields now poll the existing cooperative scope, checking weak ownership before and after callbacks while cooperative Qt event delivery remains suspended. Modulation arrays do not establish physical audio or listening results.
 
-Source diagnostics pass across 529 changed/new C++ files and 165 operations. Ten supplemental agent tools plus universal catalog routing retain 128 declarations. Layout/accessor/helper/resource-table and GUI changes require full application/plugin C++/Qt/MOC/link/ABI and GUI/legacy/project/preset/clone/controller/automation/DSP/MIDI/bundle/checkpoint regression. Older versions ignore pending markers; cross-version behavior and other instrument/bank/binary/opaque dependency recovery remain unverified. Direct exceptions, callbacks and hooks can retain partial state until Runtime rollback; XML, tempo-sync/automation/controller/opaque state is not deeply frozen. Returned-context checks do not protect arbitrary invalid execution inside constructors/model slots/callees/serializers/destructors/global teardown or unsupported concurrent/ownership-stealing Qt mutation. Native parameter mutex/registry/DSP assumptions remain; stage allocation/recalculation, file work, paths/copies/serialization/JSON and repeated scans join DSP or allocate without hard deadline or measured CPU/RSS/latency evidence. Native build/tests, actual PCM/hardware, real-provider complete musical workflows and full DAW acceptance remain unproven.
-
+The full native build and the stated fixtures have executed on that platform; the last complete suite passed 180/193, with remaining failures listed in the [engineering record](agent-native-architecture.md#resource-serialization-native-dialog-fixtures-and-full-suite-progress-2026-10-15). These finite ownership checks do not protect arbitrary invalid execution inside native/Qt constructors, callees or destructors, or unsupported concurrent ownership changes. Direct faults can leave effects until Runtime checkpoint rollback. Native calls remain synchronous without a hard deadline. Cross-platform, sanitizer, physical hardware and real-provider musical acceptance remain unverified.
 ### Native TripleOscillator pending waves continuation (2026-10-15, source only)
 
 TripleOscillator now retains a missing source independently for each of its three native oscillator objects. The settings keep userwavefile0/1/2 and matching userwaveunresolved0/1/2 markers, while the affected native sample buffer is empty and its antialias table is null. Ordinary absent project sources become typed recoverable diagnostics. Explicit pending state skips file probing/decoding even if different bytes later appear at the retained name. Other oscillator resources, manual controls, wave selection, modulation modes and antialias settings stay editable. Existing corrupt wave files remain fatal; malformed pending filenames and conflicts with accepted resource bindings are refused.

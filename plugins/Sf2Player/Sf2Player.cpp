@@ -349,20 +349,20 @@ void Sf2Instrument::saveSettings(QDomDocument& document, QDomElement& element)
 	ResourceGuard work(this); const QString filename = m_filename; const auto snapshot = m_bankSnapshot;
 	element.setAttribute("src", filename);
 	if (m_unresolvedBank) { element.setAttribute("unresolved", 1); } else { element.removeAttribute("unresolved"); }
-	if (snapshot) { DataFile::registerResourceSnapshot(document, element, "src", snapshot); work.check(); }
-	m_patchNum.saveSettings(document, element, "patch"); work.check();
-	m_bankNum.saveSettings(document, element, "bank"); work.check();
-	m_gain.saveSettings(document, element, "gain"); work.check();
-	m_reverbOn.saveSettings(document, element, "reverbOn"); work.check();
-	m_reverbRoomSize.saveSettings(document, element, "reverbRoomSize"); work.check();
-	m_reverbDamping.saveSettings(document, element, "reverbDamping"); work.check();
-	m_reverbWidth.saveSettings(document, element, "reverbWidth"); work.check();
-	m_reverbLevel.saveSettings(document, element, "reverbLevel"); work.check();
-	m_chorusOn.saveSettings(document, element, "chorusOn"); work.check();
-	m_chorusNum.saveSettings(document, element, "chorusNum"); work.check();
-	m_chorusLevel.saveSettings(document, element, "chorusLevel"); work.check();
-	m_chorusSpeed.saveSettings(document, element, "chorusSpeed"); work.check();
-	m_chorusDepth.saveSettings(document, element, "chorusDepth"); work.check();
+	if (snapshot) { DataFile::registerResourceSnapshot(document, element, "src", snapshot); work.poll(); }
+	m_patchNum.saveSettings(document, element, "patch"); work.poll();
+	m_bankNum.saveSettings(document, element, "bank"); work.poll();
+	m_gain.saveSettings(document, element, "gain"); work.poll();
+	m_reverbOn.saveSettings(document, element, "reverbOn"); work.poll();
+	m_reverbRoomSize.saveSettings(document, element, "reverbRoomSize"); work.poll();
+	m_reverbDamping.saveSettings(document, element, "reverbDamping"); work.poll();
+	m_reverbWidth.saveSettings(document, element, "reverbWidth"); work.poll();
+	m_reverbLevel.saveSettings(document, element, "reverbLevel"); work.poll();
+	m_chorusOn.saveSettings(document, element, "chorusOn"); work.poll();
+	m_chorusNum.saveSettings(document, element, "chorusNum"); work.poll();
+	m_chorusLevel.saveSettings(document, element, "chorusLevel"); work.poll();
+	m_chorusSpeed.saveSettings(document, element, "chorusSpeed"); work.poll();
+	m_chorusDepth.saveSettings(document, element, "chorusDepth"); work.poll();
 }
 
 void Sf2Instrument::loadSettings(const QDomElement& element)
@@ -382,7 +382,7 @@ void Sf2Instrument::loadSettings(const QDomElement& element)
 	const bool loaded = loadSoundFont(pending || absent ? absolute : path, false, error, work, pending || absent ? BankLoad::Unresolved : BankLoad::Settings); work.check();
 	if (!loaded) { collectErrorForUI(error); work.check(); }
 	else if (pending || absent) { Engine::getSong()->collectUnresolvedResource(absolute); work.check(); }
-	emit fileChanged(); work.check(); work.thawControls();
+	emit fileChanged(); work.poll(); work.thawControls();
 	{
 		Sf2ModelSignals blocked(&m_bankNum, &m_patchNum);
 		m_bankNum.loadSettings(settings, "bank"); work.check(); m_patchNum.loadSettings(settings, "patch"); work.check();

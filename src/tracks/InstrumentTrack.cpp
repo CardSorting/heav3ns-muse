@@ -28,6 +28,7 @@
 #include <optional>
 #include <stdexcept>
 #include <QPointer>
+#include <QDebug>
 #include <QScopeGuard>
 
 #include "AudioEngine.h"
@@ -247,8 +248,10 @@ InstrumentTrack::~InstrumentTrack()
 		s_autoAssignedTrack = nullptr;
 	}
 
-	// kill all running notes and the iph
-	silenceAllNotes( true );
+	// Retire local handles even when a failed MIDI backend cannot confirm output cleanup.
+	try { silenceAllNotes(true); }
+	catch (const std::exception& error) { qWarning() << "InstrumentTrack teardown could not release MIDI output:" << error.what(); }
+	catch (...) { qWarning() << "InstrumentTrack teardown could not release MIDI output"; }
 
 	// now we're save deleting the instrument
 	const auto previous = m_instrument; m_instrument = nullptr; delete previous.data();

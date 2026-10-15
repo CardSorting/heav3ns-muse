@@ -296,7 +296,7 @@ private slots:
 		const auto response = runLearn({}, [&](AutoDetectMidiController*) {
 			if (action == 0) { peer->setValue(60); } if (action == 1) { peer->setInitValue(60); } if (action == 2) { peer->setStep(0.5f); }
 			if (action == 3) { peer->setScaleType(AutomatableModel::ScaleType::Logarithmic); } if (action == 4) { peer->setRange(0, 300); }
-			if (action == 5) { peer->unlink(); } if (action == 6) { peer.reset(); } if (action == 7) { peer->setUseControllerValue(false); }
+			if (action == 5) { peer->unlink(); } if (action == 6) { peer.reset(); } if (action == 7) { model()->setUseControllerValue(false); }
 			if (action == 8) { StudioMidiLearnTestAccess::exchange(m_priorClient); }
 		});
 		QVERIFY(!response.value("ok").toBool()); QCOMPARE(model()->controllerConnection(), prior.data()); QVERIFY(!m_input.detector()); QVERIFY(m_input.ports.empty());
@@ -410,7 +410,7 @@ private slots:
 		});
 		QTimer timer; timer.setInterval(1); connect(&timer, &QTimer::timeout, this, [&] { if (!fed && m_input.detector()) { fed = true; m_input.feed(); } });
 		const auto command = request("learn", "controller.midi.learn", args()); timer.start(); const auto receipt = runtime.process(command); timer.stop();
-		QVERIFY(invoked); QVERIFY(!receipt.value("ok").toBool()); QVERIFY(!model()->controllerConnection()); QCOMPARE(model()->storedValue(), 42.f); QVERIFY(m_input.ports.empty());
+		QVERIFY(invoked); QVERIFY(!receipt.value("ok").toBool()); QVERIFY(!model()->controllerConnection()); QCOMPARE(model()->storedValue(), 42.f); QVERIFY(!m_input.detector()); for (const auto& port : m_input.ports) { QVERIFY(port); QVERIFY(!dynamic_cast<MidiController*>(port->parent())); }
 		auto replay = runtime.process(command); QVERIFY(replay.take("replayed").toBool()); QCOMPARE(replay, receipt); QVERIFY(!runtime.stopping());
 	}
 

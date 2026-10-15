@@ -269,3 +269,29 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   [engineering record](../agent-native-architecture.md#worker-predicate-waits-and-repeated-native-runtime-verification-2026-10-15).
 - No feature/gate advanced. A fresh complete suite is still required; its last
   complete baseline is 155 passing and 38 failing out of 193.
+
+### 2026-10-15 — Full native suite reaches 180 passing
+
+- Feature scope remains frozen. Added cooperative serialization boundaries for
+  existing native resource guards and corrected Qt dialog/snapshot fixture lifetimes.
+- Full native Debug rebuild passed; all 193 CTest executables ran: **180 passed,
+  13 failed in 260.60 seconds**. Native process/render-process harnesses and the
+  complete runtime, resource lifecycle and patch-dialog suites passed.
+- Remaining failures, the intermittent strict LFO PCM comparison and a separate
+  direct-invocation shutdown failure remain explicit in the
+  [engineering record](../agent-native-architecture.md#resource-serialization-native-dialog-fixtures-and-full-suite-progress-2026-10-15).
+- No milestone or gate advanced; subsequent fixes require fresh verification.
+
+### 2026-10-15 — Remaining native I/O and phase boundaries
+
+- Fixed MIDI initialization/teardown and explicit-abandonment local cleanup,
+  malformed-host replacement, validated null-stdin EOF and macOS headless native
+  event integration. Preserved the frozen capability schema and output uncertainty.
+- Native MIDI transfer, CC, protocol and shutdown fixtures passed. CoreMIDI's
+  virtual-source/reconstruction suite passed with the production dispatcher;
+  socket host failures/recovery passed under that dispatcher too.
+- LFO playback/seek phase reset is synchronous before worker DSP. Two ordering
+  rows and ten strict full-suite repetitions passed with unchanged PCM tolerance.
+- The [engineering record](../agent-native-architecture.md#remaining-native-io-and-phase-fixes-2026-10-15)
+  retains earlier failures and targeted limits. The latest complete result remains
+  180/193 pending a fresh complete rebuild/run; no roadmap gate advances.

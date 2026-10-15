@@ -88,6 +88,18 @@ class InstrumentMidiCCTest : public QObject
 	{ return document.documentElement().firstChildElement("track").firstChildElement("instrumenttrack"); }
 	void restore(InstrumentTrack* track, const QDomDocument& document)
 	{ track->restoreState(document.documentElement().firstChildElement("track")); }
+	void clearNativePitchSetup(RecordingTrack* track)
+	{
+		// Full track restoration republishes pitch sensitivity independently of the CC rack.
+		const auto& events = track->receiver->events; QCOMPARE(events.size(), std::size_t(3));
+		const int controllers[] = {MidiControllerRegisteredParameterNumberLSB, MidiControllerRegisteredParameterNumberMSB, MidiControllerDataEntry};
+		for (int index = 0; index < 3; ++index)
+		{
+			QCOMPARE(events[index].controller, controllers[index]); QCOMPARE(events[index].value, index == 2 ? track->midiPitchRange() : 0);
+			QCOMPARE(events[index].channel, track->midiPort()->realOutputChannel()); QCOMPARE(events[index].time, 0); QCOMPARE(events[index].offset, f_cnt_t(0));
+		}
+		track->receiver->events.clear();
+	}
 private slots:
 	void initTestCase()
 	{
@@ -178,7 +190,7 @@ private slots:
 		auto track = fixture(); track->midiCCModel(1)->setValue(27); QVERIFY(track->activateMidiCC(64));
 		track->midiCCEnabledModel()->setValue(true); auto document = state(track);
 		QCOMPARE(controls(document).attribute("activecc"), QString("1,64")); track->receiver->events.clear();
-		restore(track, document); QVERIFY(track->receiver->events.empty());
+		restore(track, document); clearNativePitchSetup(track); QVERIFY(track->receiver->events.empty());
 		QVERIFY(track->midiCCEnabledModel()->value()); track->play(0, 32, 0);
 		QCOMPARE(track->receiver->events.size(), std::size_t(2)); QCOMPARE(track->receiver->events[0].value, 27);
 		QCOMPARE(track->receiver->events[1].controller, 64); QCOMPARE(track->receiver->events[1].value, 0);
@@ -213,7 +225,7 @@ private slots:
 	{
 		QFETCH(QString, list); auto track = fixture(); track->midiCCModel(1)->setValue(27); track->midiCCEnabledModel()->setValue(true);
 		auto document = state(track); controls(document).setAttribute("activecc", list); track->receiver->events.clear();
-		restore(track, document); QVERIFY(!track->midiCCEnabledModel()->value()); QVERIFY(Engine::getSong()->hasErrors());
+		restore(track, document); clearNativePitchSetup(track); QVERIFY(!track->midiCCEnabledModel()->value()); QVERIFY(Engine::getSong()->hasErrors());
 		QVERIFY(track->receiver->events.empty()); track->play(0, 32, 0); QVERIFY(track->receiver->events.empty());
 	}
 
@@ -223,7 +235,7 @@ private slots:
 		auto document = state(track); auto node = controls(document); node.removeAttribute("activecc");
 		auto controllers = node.firstChildElement("midicontrollers"); auto zero = document.createElement("cc64");
 		zero.setAttribute("value", 0); zero.setAttribute("id", track->midiCCModel(64)->id()); controllers.appendChild(zero);
-		track->receiver->events.clear(); restore(track, document); QVERIFY(track->receiver->events.empty());
+		track->receiver->events.clear(); restore(track, document); clearNativePitchSetup(track); QVERIFY(track->receiver->events.empty());
 		track->play(0, 32, 0); QCOMPARE(track->receiver->events.size(), std::size_t(2));
 		QCOMPARE(track->receiver->events[0].controller, 1); QCOMPARE(track->receiver->events[1].controller, 64);
 	}

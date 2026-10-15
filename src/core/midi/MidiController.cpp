@@ -42,6 +42,8 @@ MidiController::MidiController( Model * _parent ) :
 	m_previousValue( 0.0f )
 {
 	setSampleExact( true );
+	// The base constructor fills its own neutral buffer before derived dispatch.
+	updateValueBuffer();
 	connect( &m_midiPort, SIGNAL(modeChanged()),
 			this, SLOT(updateName()));
 }

@@ -347,11 +347,11 @@ MidiClient::PortTransferResult MidiClient::transferPortsTo(MidiClient& replaceme
 		for (auto& item : entries)
 		{
 			if (item.outputLock.owns_lock()) { item.outputLock.unlock(); }
-			if (item.port) { const auto lock = item.port->lockOutput(); item.port->m_clientTransfer = false; }
+			if (item.port) { const auto lock = item.port->lockOutput(); item.port->m_clientTransfer = false; item.port->m_abandoningOutput = false; }
 		}
 		(committed ? replacement : *this).resumeTransferInput();
 	});
-	for (const auto& item : entries) { const auto lock = item.port->lockOutput(); item.port->m_clientTransfer = true; }
+	for (const auto& item : entries) { const auto lock = item.port->lockOutput(); item.port->m_clientTransfer = true; item.port->m_abandoningOutput = abandonFailedOutput; }
 	for (const auto& item : entries)
 	{
 		check(); if (!abandonFailedOutput) { item.port->releaseOutput(); } check();

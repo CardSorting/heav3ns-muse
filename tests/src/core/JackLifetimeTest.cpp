@@ -812,7 +812,7 @@ private slots:
 		auto midi = MidiJackTestAccess::create(audio, t.api); audio->startProcessing(); Processor processor; MidiPort port("stopped output", midi.get(), &processor);
 		midi->processOutEvent(MidiEvent(MidiNoteOn, 0, 60, 100), {}, &port); t.latest().tick();
 		midi->processOutEvent(MidiEvent(MidiNoteOn, 0, 61, 100), TimePos(1), &port); t.outputCapacity = 1;
-		if (reserved) { QVERIFY(engine->storeAudioDevice()); } else { audio->stopProcessing(); }
+		if (reserved) { QVERIFY(engine->storeAudioDevice()); } audio->stopProcessing();
 		std::vector<unsigned char> cleanup;
 		for (int cycle = 0; cycle < 6; ++cycle) { t.latest().tick(); for (const auto& e : t.latest().midiPort(true)->events) { cleanup.push_back(e.bytes[1]); QVERIFY((e.bytes[0] & 0xf0) == 0xb0); } }
 		QVERIFY(cleanup == std::vector<unsigned char>({64,66,123,120})); QCOMPARE(midi->outputBackendStatus().pendingEvents, 0u); QVERIFY(!midi->outputBackendStatus().active);

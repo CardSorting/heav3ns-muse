@@ -396,6 +396,12 @@ int main( int argc, char * * argv )
 	QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
 #endif
 
+#ifdef LMMS_BUILD_APPLE
+	// CoreMIDI notifications use the creator's CFRunLoop. Keep the headless
+	// QCoreApplication host integrated with that native loop as well.
+	if (coreOnly) { qputenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION", "1"); }
+#endif
+
 	QCoreApplication * app = coreOnly ?
 			new QCoreApplication( argc, argv ) :
 					new gui::MainApplication(argc, argv);

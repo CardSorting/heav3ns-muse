@@ -214,6 +214,7 @@ private:
 	MidiClient* m_midiClient;
 	MidiEventProcessor* m_midiEventProcessor;
 	bool m_clientTransfer = false; // serialized with output; owner stages routing
+	bool m_abandoningOutput = false; // keep old ledgers intact through local transfer cleanup
 	bool m_retiring = false;
 	bool m_serializingSettings = false, m_changingMode = false, m_updatingMode = false;
 	bool m_changingName = false, m_changingSource = false, m_releasingOutput = false;

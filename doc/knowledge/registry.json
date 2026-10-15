@@ -20,7 +20,11 @@
         "src/core/lv2/Lv2Manager.cpp",
         "src/core/lv2/Lv2Options.cpp",
         "include/Lv2Options.h",
-        "tests/CMakeLists.txt"
+        "tests/CMakeLists.txt",
+        "src/core/RemotePlugin.cpp",
+        "tests/src/core/StudioShutdownTest.cpp",
+        "tests/src/core/StudioProtocolOutputTest.cpp",
+        "tests/src/core/RemotePluginTest.cpp"
       ],
       "guides": [
         "doc/DOCUMENTATION_POLICY.md",
@@ -57,7 +61,11 @@
         "src/core/NativeNoteShift.*",
         "src/core/NativeNoteTransfer.*",
         "src/core/NativeTrackSaveSnapshot.*",
-        "src/core/NativeValueNotification.*"
+        "src/core/NativeValueNotification.*",
+        "src/gui/widgets/SimpleTextFloat.cpp",
+        "tests/src/gui/MixerViewLifecycleTest.cpp",
+        "tests/src/core/StudioSelectionTest.cpp",
+        "tests/src/core/StudioWarningInspectionTest.cpp"
       ],
       "guides": [
         "doc/native-studio-protocol.md",
@@ -109,7 +117,20 @@
         "include/StudioAudio.h",
         "plugins/OpulenZ/OpulenZ.cpp",
         "src/core/AudioEngineWorkerThread.cpp",
-        "include/AudioEngineWorkerThread.h"
+        "include/AudioEngineWorkerThread.h",
+        "src/core/EnvelopeAndLfoParameters.cpp",
+        "src/core/LfoController.cpp",
+        "plugins/GigPlayer/GigPlayer.cpp",
+        "plugins/Sf2Player/Sf2Player.cpp",
+        "tests/src/core/EnvelopeWaveResourceTest.cpp",
+        "tests/src/core/LfoWaveResourceTest.cpp",
+        "tests/src/core/LfoCatchUpTest.cpp",
+        "tests/src/core/StudioRenderOwnershipTest.cpp",
+        "tests/src/plugins/GigPatchDialogTest.cpp",
+        "tests/src/plugins/GigPendingBankTest.cpp",
+        "tests/src/plugins/Sf2PatchDialogTest.cpp",
+        "tests/src/plugins/Sf2PendingBankTest.cpp",
+        "tests/src/plugins/TripleOscillatorResourceTest.cpp"
       ],
       "guides": [
         "doc/adr/0004-two-stage-audio-understanding.md",
@@ -138,7 +159,8 @@
         "src/core/DataFile.cpp",
         "src/core/Clip.cpp",
         "src/core/InlineAutomation.cpp",
-        "src/core/AutomationClip.cpp"
+        "src/core/AutomationClip.cpp",
+        "tests/src/core/StudioAssetsTest.cpp"
       ],
       "guides": [
         "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md",
@@ -159,7 +181,20 @@
         "src/core/StudioMidiLearn.*",
         "include/StudioMidiLearn.h",
         "src/core/StudioAutomationRecording.*",
-        "include/StudioAutomationRecording.h"
+        "include/StudioAutomationRecording.h",
+        "src/tracks/InstrumentTrack.cpp",
+        "src/core/midi/MidiController.cpp",
+        "src/core/midi/MidiApple.cpp",
+        "src/core/midi/MidiClient.cpp",
+        "src/core/midi/MidiPort.cpp",
+        "include/MidiPort.h",
+        "tests/src/core/StudioMidiRecordingTest.cpp",
+        "tests/src/core/StudioAutomationRecordingTest.cpp",
+        "tests/src/core/StudioMidiLearnTest.cpp",
+        "tests/src/core/InstrumentMidiCCTest.cpp",
+        "tests/src/core/JackLifetimeTest.cpp",
+        "tests/src/core/MidiAppleTest.cpp",
+        "tests/src/core/MidiClientTransferTest.cpp"
       ],
       "guides": [
         "doc/native-studio-protocol.md",

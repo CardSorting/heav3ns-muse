@@ -310,12 +310,15 @@ void ProcessWatcher::run()
 	{
 		m_plugin->recordFailure();
 	}
+	// A broken connection cannot carry an orderly quit. Retire that child
+	// immediately so its grace period cannot consume the replacement handshake.
+	const bool gracefulQuit = m_quit && !m_plugin->isInvalid();
 	// Do not inspect/drain the FIFO after a child exits: its data lock may
 	// have been abandoned. Invalidation wakes both transports without it.
 	m_plugin->invalidate();
 	if (process.state() != QProcess::NotRunning)
 	{
-		if (!m_quit || !process.waitForFinished(1000))
+		if (!gracefulQuit || !process.waitForFinished(1000))
 		{
 			process.kill();
 			process.waitForFinished(1000);

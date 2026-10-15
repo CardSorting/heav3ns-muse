@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include "AudioDevice.h"
@@ -74,7 +75,14 @@ class StudioAutomationRecordingTest : public QObject
 	QByteArray curve(AutomationClip* clip) const
 	{
 		QDomDocument doc; auto root = doc.createElement("automation"); doc.appendChild(root); clip->saveSettings(doc, root);
-		return doc.toByteArray();
+		// XML attribute order is unspecified; compare every DOM field and child in order.
+		const std::function<QJsonObject(const QDomNode&)> state = [&](const QDomNode& node) {
+			QJsonObject attributes; const auto map = node.attributes();
+			for (int index = 0; index < map.count(); ++index) { const auto item = map.item(index); attributes.insert(item.nodeName(), item.nodeValue()); }
+			QJsonArray children; for (auto child = node.firstChild(); !child.isNull(); child = child.nextSibling()) { children.append(state(child)); }
+			return QJsonObject{{"type", node.nodeType()}, {"name", node.nodeName()}, {"value", node.nodeValue()}, {"attributes", attributes}, {"children", children}};
+		};
+		return QJsonDocument(state(doc)).toJson(QJsonDocument::Compact);
 	}
 	QJsonObject options() const { return {{"track", 1}, {"clip", 0}, {"durationMs", 100}, {"timeoutMs", 1000}, {"maximumPoints", 100}}; }
 	QJsonObject request(const QString& id, const QString& op, const QJsonObject& args = {}) const { return {{"id", id}, {"op", op}, {"args", args}}; }
@@ -195,7 +203,7 @@ private slots:
 		auto controller = dynamic_cast<MidiController*>(m_model->controllerConnection()->getController()); QVERIFY(controller);
 		MidiPortTestAccess::useClient(controller->midiPort(), &m_input);
 		QVERIFY(StudioCapabilities::execute("midi.configure", {{"parameter", parameter}, {"inputChannel", 0}, {"readable", true}}).value("ok").toBool());
-		m_input.feed(127); controller->currentValue(0); period(); QCOMPARE(controller->currentValue(0), 1.f);
+		m_input.feed(127); controller->currentValue(0); period(); controller->currentValue(0); period(); QCOMPARE(controller->currentValue(0), 1.f);
 		m_model->setUseControllerValue(false);
 		const auto before = curve(m_clip); int periods = 0; QTimer clock; clock.setInterval(1);
 		QObject::connect(&clock, &QTimer::timeout, this, [&] {

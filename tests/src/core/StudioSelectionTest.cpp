@@ -265,7 +265,7 @@ private slots:
 		QCOMPARE(Engine::getSong()->tracks().size(), std::size_t(1)); const auto track = Engine::getSong()->tracks().at(0);
 		QCOMPARE(track->name(), QString("Retained")); QCOMPARE(track->getClip(2)->name(), QString("New clip"));
 		QCOMPARE(static_cast<MidiClip*>(track->getClip(0))->notes().at(0)->key(), 61);
-		for (const auto value : job(directory).value("records").toArray()) { QVERIFY(value.toObject().value("response").toObject().value("ok").toBool()); }
+		int toolRecords = 0; for (const auto value : job(directory).value("records").toArray()) { const auto record = value.toObject(); if (record.value("kind") == QJsonValue("tool")) { ++toolRecords; QVERIFY2(record.value("response").toObject().value("ok").toBool(), QJsonDocument(record).toJson().constData()); } } QCOMPARE(toolRecords, 7);
 	}
 
 	void skippedStructuralCallsRemainCommittedAcrossRestart_data() { protocols(); }

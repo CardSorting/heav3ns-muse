@@ -155,7 +155,7 @@ private slots:
 				++calls; return decision("chat");
 			}, stream, [&] { return interrupted.load(); });
 			QObject timerLifetime; QTimer::singleShot(0, &timerLifetime, [&] { interrupted.store(true); });
-			QCOMPARE(studio.run(), EXIT_SUCCESS); QVERIFY(studio.stopping()); QCOMPARE(calls, 0);
+			const auto exitCode = studio.run(); QVERIFY2(exitCode == EXIT_SUCCESS, qPrintable(output(stream).last().toObject().value("error").toString())); QVERIFY(studio.stopping()); QCOMPARE(calls, 0);
 			QVERIFY(!studio.process(request("too-late", "song.set", {{"tempo", 200}})).value("ok").toBool());
 		}
 		const auto events = output(stream); QCOMPARE(events.first().toObject().value("event").toString(), QString("ready"));
@@ -180,7 +180,7 @@ private slots:
 			StudioRuntime studio(directory.path(), [&](const QJsonObject&, const QJsonObject&, const StudioInference::Cancelled& cancelled) {
 				++calls; interrupted.store(true); cancellationObserved = cancelled(); return decision(protocol);
 			}, stream, [&] { return interrupted.load(); });
-			QCOMPARE(studio.run(), EXIT_SUCCESS); QCOMPARE(calls, 1); QVERIFY(cancellationObserved);
+			const auto exitCode = studio.run(); QVERIFY2(exitCode == EXIT_SUCCESS, qPrintable(output(stream).last().toObject().value("error").toString())); QCOMPARE(calls, 1); QVERIFY(cancellationObserved);
 		}
 		QVERIFY(shutdownEvent(output(stream)).value("ok").toBool());
 		QCOMPARE(job(directory).value("status").toString(), QString("paused")); QVERIFY(job(directory).value("pending").toArray().isEmpty());
@@ -207,7 +207,7 @@ private slots:
 				if (nested) { QTest::qWait(30); nestedShutdown = studio.stopping(); }
 			}, Qt::DirectConnection);
 			const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
-			QCOMPARE(studio.run(), EXIT_SUCCESS); QVERIFY(edited); QCOMPARE(calls, 1); QCOMPARE(Engine::getSong()->getTempo(), 91);
+			const auto exitCode = studio.run(); QVERIFY2(exitCode == EXIT_SUCCESS, qPrintable(output(stream).last().toObject().value("error").toString())); QVERIFY(edited); QCOMPARE(calls, 1); QCOMPARE(Engine::getSong()->getTempo(), 91);
 			QCOMPARE(nestedShutdown, nested);
 		}
 		QVERIFY(shutdownEvent(output(stream)).value("ok").toBool());

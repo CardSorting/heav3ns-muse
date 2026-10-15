@@ -1,6 +1,7 @@
 /* Native LFO phase catch-up, seeks and marker-export PCM.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
+#include <thread>
 #include <QDomDocument>
 #include <QScopeGuard>
 #include <QTemporaryDir>
@@ -116,6 +117,23 @@ private slots:
 		const auto range = std::minmax_element(buffer.begin(), buffer.end()); QVERIFY(*range.second > *range.first);
 	}
 
+	void workerPlaybackChangesResyncBeforeTheNextNativeRead_data()
+	{ QTest::addColumn<bool>("jump"); QTest::newRow("playback-start") << false; QTest::newRow("playing-seek") << true; }
+	void workerPlaybackChangesResyncBeforeTheNextNativeRead()
+	{
+		QFETCH(bool, jump); auto song = Engine::getSong(); LfoController controller(song);
+		configure(controller, 0, static_cast<int>(Oscillator::WaveShape::Sine)); float observed = -1.f;
+		song->setPlayPos(jump ? 0 : 960013, Song::PlayMode::Song);
+		std::thread render([&] {
+			const auto changes = Engine::audioEngine()->requestChangesGuard(); song->playSong();
+			if (jump) { song->setPlayPos(960013, Song::PlayMode::Song); }
+			observed = values(controller).front();
+		}); render.join();
+		const auto phase = absFraction(static_cast<double>(song->getFrames()) / duration(0));
+		const auto expected = .5f + .5f * Oscillator::sinSample(static_cast<float>(phase + 37.f / 360.f));
+		QVERIFY(std::abs(observed - expected) < .0002f);
+	}
+
 	void repeatedReadsReuseNativePeriodAndNextPeriodAdvances()
 	{
 		LfoController controller(Engine::getSong()); configure(controller); LfoCatchUpTestAccess::period(100001);
@@ -169,7 +187,7 @@ private slots:
 		{
 			minimum = std::min(minimum, baseline->data()[index][0]); maximum = std::max(maximum, baseline->data()[index][0]);
 			for (int channel = 0; channel < 2; ++channel)
-			{ QVERIFY(std::isfinite(rendered->data()[index][channel])); QVERIFY(std::abs(rendered->data()[index][channel] - baseline->data()[index][channel]) < .00001f); }
+			{ QVERIFY(std::isfinite(rendered->data()[index][channel])); QVERIFY2(std::abs(rendered->data()[index][channel] - baseline->data()[index][channel]) < .00001f, qPrintable(QString("Frame %1 channel %2: late=%3 early=%4").arg(index).arg(channel).arg(rendered->data()[index][channel], 0, 'g', 9).arg(baseline->data()[index][channel], 0, 'g', 9))); }
 		}
 		QVERIFY(maximum > .001f); QVERIFY(maximum - minimum > .001f); QVERIFY(!song->hasErrors());
 	}

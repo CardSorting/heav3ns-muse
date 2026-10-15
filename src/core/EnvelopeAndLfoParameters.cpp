@@ -410,23 +410,23 @@ bool EnvelopeAndLfoParameters::setLfoUserWaveImpl(const QString& path, QString& 
 void EnvelopeAndLfoParameters::saveSettings(QDomDocument& document, QDomElement& element)
 {
 	ResourceGuard work(this); const auto wave = m_userWave; const QString missing = m_unresolvedWave;
-	m_predelayModel.saveSettings(document, element, "pdel"); work.check();
-	m_attackModel.saveSettings(document, element, "att"); work.check();
-	m_holdModel.saveSettings(document, element, "hold"); work.check();
-	m_decayModel.saveSettings(document, element, "dec"); work.check();
-	m_sustainModel.saveSettings(document, element, "sustain"); work.check();
-	m_releaseModel.saveSettings(document, element, "rel"); work.check();
-	m_amountModel.saveSettings(document, element, "amt"); work.check();
-	m_lfoWaveModel.saveSettings(document, element, "lshp"); work.check();
-	m_lfoPredelayModel.saveSettings(document, element, "lpdel"); work.check();
-	m_lfoAttackModel.saveSettings(document, element, "latt"); work.check();
-	m_lfoSpeedModel.saveSettings(document, element, "lspd"); work.check();
-	m_lfoAmountModel.saveSettings(document, element, "lamt"); work.check();
-	m_x100Model.saveSettings(document, element, "x100"); work.check();
-	m_controlEnvAmountModel.saveSettings(document, element, "ctlenvamt"); work.check();
+	m_predelayModel.saveSettings(document, element, "pdel"); work.poll();
+	m_attackModel.saveSettings(document, element, "att"); work.poll();
+	m_holdModel.saveSettings(document, element, "hold"); work.poll();
+	m_decayModel.saveSettings(document, element, "dec"); work.poll();
+	m_sustainModel.saveSettings(document, element, "sustain"); work.poll();
+	m_releaseModel.saveSettings(document, element, "rel"); work.poll();
+	m_amountModel.saveSettings(document, element, "amt"); work.poll();
+	m_lfoWaveModel.saveSettings(document, element, "lshp"); work.poll();
+	m_lfoPredelayModel.saveSettings(document, element, "lpdel"); work.poll();
+	m_lfoAttackModel.saveSettings(document, element, "latt"); work.poll();
+	m_lfoSpeedModel.saveSettings(document, element, "lspd"); work.poll();
+	m_lfoAmountModel.saveSettings(document, element, "lamt"); work.poll();
+	m_x100Model.saveSettings(document, element, "x100"); work.poll();
+	m_controlEnvAmountModel.saveSettings(document, element, "ctlenvamt"); work.poll();
 	element.setAttribute("userwavefile", missing.isEmpty() ? wave->audioFile() : missing);
 	if (!missing.isEmpty()) { element.setAttribute("userwaveunresolved", 1); }
-	else { element.removeAttribute("userwaveunresolved"); wave->registerResourceSource(document, element, "userwavefile", wave); work.check(); }
+	else { element.removeAttribute("userwaveunresolved"); wave->registerResourceSource(document, element, "userwavefile", wave); work.poll(); }
 }
 
 void EnvelopeAndLfoParameters::loadSettings(const QDomElement& element)

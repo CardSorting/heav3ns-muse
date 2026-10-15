@@ -219,7 +219,7 @@ private slots:
 		QFETCH(bool, reservation); QTemporaryDir output; const auto path = output.filePath("prior.wav"); QVERIFY(write(path, "prior export")); bool fired = false;
 		auto engine = Engine::audioEngine(); std::uint64_t newer = 0; bool accepted = false;
 		const auto recover = qScopeGuard([&] { FileResourceIO::Suspension work; engine->restoreAudioDevice(); });
-		QJsonObject response; { FileResourceIO::Scope work([&] { if (!fired) { fired = true; if (reservation) { accepted = engine->storeAudioDevice(); newer = engine->audioDeviceReservationGeneration(); } else { NativeSongTestAccess::setProjectFileName(Engine::getSong(), "changed-during-studio-admission.mmp"); } } return false; }); response = StudioCapabilities::execute("audio.render", arguments(path, true)); }
+		QJsonObject response; { FileResourceIO::Scope work([&] { if (!fired && (reservation || TrackRenderScope::hasActiveSelection())) { fired = true; if (reservation) { accepted = engine->storeAudioDevice(); newer = engine->audioDeviceReservationGeneration(); } else { NativeSongTestAccess::setProjectFileName(Engine::getSong(), "changed-during-studio-admission.mmp"); } } return false; }); response = StudioCapabilities::execute("audio.render", arguments(path, true)); }
 		QVERIFY(fired); QVERIFY(!response.value("ok").toBool()); QCOMPARE(read(path), QByteArray("prior export")); QVERIFY(noStaging(output));
 		if (reservation) { QVERIFY(accepted); QVERIFY(engine->hasStoredAudioDevice()); QCOMPARE(engine->audioDeviceReservationGeneration(), newer); QVERIFY(engine->restoreAudioDevice()); }
 		originalPreferences(); released();
