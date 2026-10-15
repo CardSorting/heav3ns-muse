@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-15T23:19:58Z",
+  "compiled_at": "2026-10-15T23:30:43Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",

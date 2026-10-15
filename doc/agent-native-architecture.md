@@ -13052,3 +13052,40 @@ the changed boundaries with their strict existing assertions; another complete
 combined run remains required. Desktop/render/live-output observations above
 remain dated evidence rather than continuous verification of subsequently built
 binaries. The feature freeze and unchanged native capability schema remain in force.
+
+### Frozen build acceptance (2026-10-15)
+
+On macOS arm64 / Qt 5.15.19 Debug / Apple Clang 21, code revision dce3396ef
+completed a full native rebuild and the complete combined suite:
+
+```sh
+cmake --build build/native --parallel 8
+ctest --test-dir build/native --output-on-failure --parallel 4
+```
+
+**193/193 CTest tests passed, zero failed, in 257.78 seconds.** This includes all
+191 native unit executables and both process harnesses. The studio process
+harness passed in 113.19 seconds and the render process harness in 3.08 seconds.
+StudioRuntimeTest passed 207 reported checks, LfoCatchUpTest 15 and MidiAppleTest
+21. RemotePluginTest passed 33 checks with its two inapplicable shared-memory
+transport checks skipped on the macOS socket transport. Those scoped skips do
+not establish shared-memory transport coverage. Earlier failed full runs and
+intermittent observations above remain historical evidence.
+
+The same frozen code was installed into a separate local application bundle and
+profile. That bundle's CLI rendered 173312 stereo frames at 44100 Hz / 16-bit PCM,
+with independently decoded peak 0.3989868 and RMS 0.1117510, and exited zero.
+Its live PortAudio check used 44100 Hz / 256-frame engine periods, zero input
+channels, advanced 215 ticks and retained zero DSP failures. Its desktop process
+reached the application event loop using the same verified binary. Existing
+application sessions were preserved. Acoustic audibility and interactive GUI
+operation were not independently verified; this remains a local developer
+bundle with local dependencies, not a portable distribution certification.
+
+Feature development remains frozen. The native capability schema is
+byte-identical to baseline bc741e610; no operation, instrument or resource format
+was added. Documentation, source-review and roadmap guards passed without
+advancing any roadmap gate. This acceptance establishes the requested local
+compile/run and complete-suite result, not continuous verification, other
+platforms, sanitizers, physical MIDI input/output, hard latency bounds or
+real-provider musical acceptance.

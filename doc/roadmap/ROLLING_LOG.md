@@ -320,3 +320,16 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   81.41 seconds. The [engineering record](../agent-native-architecture.md#cooperative-deadlines-and-contiguous-soundfont-measurement-2026-10-15)
   retains the failed full run and limits. A new complete run remains required;
   no feature or roadmap gate advanced.
+
+### 2026-10-15 — Frozen native build accepted locally
+
+- Full native rebuild passed at code revision dce3396ef. The complete combined
+  suite passed **193/193, zero failures, in 257.78 seconds**, including both native
+  process harnesses. Earlier failures remain dated evidence.
+- The latest separate local bundle passed independently decoded CLI rendering,
+  live PortAudio/clock/DSP verification and desktop event-loop startup. Existing
+  sessions were preserved; physical audibility and portable distribution remain
+  outside this observation.
+- Feature development remains frozen and the capability schema is byte-identical
+  to bc741e610. See the [acceptance record](../agent-native-architecture.md#frozen-build-acceptance-2026-10-15)
+  for platform, commands, transport skips and limits. No roadmap gate advanced.
