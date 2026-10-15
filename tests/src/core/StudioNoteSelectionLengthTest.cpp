@@ -191,4 +191,3 @@ private slots:
 };
 QTEST_GUILESS_MAIN(StudioNoteSelectionLengthTest)
 #include "StudioNoteSelectionLengthTest.moc"
-

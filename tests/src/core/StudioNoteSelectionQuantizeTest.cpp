@@ -184,4 +184,3 @@ private slots:
 };
 QTEST_GUILESS_MAIN(StudioNoteSelectionQuantizeTest)
 #include "StudioNoteSelectionQuantizeTest.moc"
-

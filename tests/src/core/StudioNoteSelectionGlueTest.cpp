@@ -177,4 +177,3 @@ private slots:
 };
 QTEST_GUILESS_MAIN(StudioNoteSelectionGlueTest)
 #include "StudioNoteSelectionGlueTest.moc"
-

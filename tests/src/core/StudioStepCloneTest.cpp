@@ -164,4 +164,3 @@ private slots:
 };
 QTEST_GUILESS_MAIN(StudioStepCloneTest)
 #include "StudioStepCloneTest.moc"
-

@@ -192,4 +192,3 @@ private slots:
 };
 QTEST_GUILESS_MAIN(StudioNoteSelectionShiftTest)
 #include "StudioNoteSelectionShiftTest.moc"
-

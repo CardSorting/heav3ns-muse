@@ -187,4 +187,3 @@ private slots:
 };
 QTEST_GUILESS_MAIN(StudioNoteSelectionSplitTest)
 #include "StudioNoteSelectionSplitTest.moc"
-
