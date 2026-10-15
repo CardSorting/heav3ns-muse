@@ -26,6 +26,7 @@
 #define LMMS_SONG_H
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -468,7 +469,7 @@ private:
 	IntModel m_tempoModel;
 	MeterModel m_timeSigModel;
 	int m_oldTicksPerBar;
-	std::uint64_t m_timeSignatureGeneration = 0;
+	std::atomic<std::uint64_t> m_timeSignatureGeneration{0};
 	IntModel m_masterVolumeModel;
 	IntModel m_masterPitchModel;
 

@@ -10,6 +10,7 @@ set(LMMS_TESTS
 	src/core/NativeParameterConversionTest.cpp
 	src/core/StudioParameterReadbackTest.cpp
 	src/core/StudioCapabilityCancellationTest.cpp
+	src/core/TimeSignatureSafetyTest.cpp
 	src/core/JournalIdAllocatorTest.cpp
 	src/core/MathTest.cpp
 	src/core/ProjectVersionTest.cpp
@@ -335,6 +336,7 @@ set_tests_properties(NativeValueNotificationTest PROPERTIES TIMEOUT 300 LABELS "
 set_tests_properties(NativeParameterConversionTest PROPERTIES TIMEOUT 600 LABELS "headless;parameters;conversion;controllers;render;recovery")
 set_tests_properties(StudioParameterReadbackTest PROPERTIES TIMEOUT 600 LABELS "headless;parameters;inspection;controllers;recovery;persistence;render")
 set_tests_properties(StudioCapabilityCancellationTest PROPERTIES TIMEOUT 300 LABELS "headless;capabilities;cancellation;parameters;recovery;persistence")
+set_tests_properties(TimeSignatureSafetyTest PROPERTIES TIMEOUT 600 LABELS "headless;meter;arithmetic;notifications;recovery;persistence;render")
 set_tests_properties(LinkedValueJournalTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;journal;recovery")
 set_tests_properties(ControlLinkJournalTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;topology;journal;recovery")
 set_tests_properties(NativeGraphTransitionTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;topology;persistence;recovery")
