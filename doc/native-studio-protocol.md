@@ -6117,10 +6117,14 @@ channel is removed and decrements later indices once per linked group. The
 Twelve native cases / 33 executions are authored for these behaviors, including
 reentrant/foreign-thread refusal, native stereo mixing, XML, history, replay and
 reopening. The process harness compares independently decoded renders before and
-after moving an assigned bus and checks project reload. Source diagnostics pass;
-these native tests and render comparisons remain uncompiled and unrun. GUI,
-arbitrary callback failure, full project/plugin compatibility and CPU/RSS evidence
-remain required.
+after moving an assigned bus and checks project reload. Native fader edits retain
+their one-processing-period smoothing; a render immediately after an edit can
+include that transition. The routing comparison first settles the edited fader,
+then compares the complete rendered buffers without dropping initial samples.
+On macOS arm64/Qt 5, MixerStructureTest passed all 61 Qt test executions during
+2026-10-15 stabilization, and the process comparison measured identical PCM across
+the channel move. GUI, arbitrary callback failure, full project/plugin
+compatibility and CPU/RSS evidence remain required.
 
 ## Native mixer removal and reset
 
@@ -6163,9 +6167,12 @@ Chat Completions transport without requiring provider-specific tool search.
 Three additional mixer cases / 12 executions and three catalog-dispatch cases /
 18 executions are authored. The process fixture additionally uses catalog dispatch
 for tempo/render calls and compares independently decoded audio after mixer reset
-and removal, with history, replay and project reload. Native compilation, native
-execution, actual provider compatibility, GUI regressions and CPU/RSS verification
-remain outstanding.
+and removal, with history, replay and project reload. Its settled fader/send
+comparisons passed on macOS arm64/Qt 5 during 2026-10-15 stabilization, including
+the complete decoded buffers. The reset rollback test compares XML content and
+child order independently of attribute order. These focused observations do not
+certify actual provider compatibility, GUI regressions, the entire process
+harness or CPU/RSS behavior.
 
 ## Mixer topology admission and presentation lifetime
 

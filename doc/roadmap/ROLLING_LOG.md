@@ -142,3 +142,16 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   movement. This and retained failures remain open in the
   [engineering record](../agent-native-architecture.md#controller-retirement-and-pattern-selection-stabilization-2026-10-15).
   Features remain frozen; no gate status changes.
+
+### 2026-10-15 — Mixer fixture and rendered routing verification
+
+- Isolated the initial mixer PCM mismatch to a native fader smoothing period;
+  a settled before/after channel move produced identical decoded audio.
+- Corrected static gain setup and XML attribute-order assumptions in mixer
+  fixtures. MixerStructureTest passed 61 Qt test executions. The broad process
+  now passes whole-buffer channel-move, send, reset and removal audio checks,
+  plus history/replay and project reload.
+- The next broad-process failure is initialization of the built-in amplifier
+  effect. The [engineering record](../agent-native-architecture.md#mixer-audio-fixture-stabilization-2026-10-15)
+  retains the original observations and remaining limits. Feature development
+  stays frozen; no gate status changes.

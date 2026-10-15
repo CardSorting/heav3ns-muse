@@ -1270,6 +1270,9 @@ def verify_native_mixer_move(studio, evidence):
         return pcm
 
     initial = studio.call("mixer-move-initial", "project.inspect")["result"]
+    # Consume the native fader smoothing caused by the level edit before
+    # comparing the unchanged routing on either side of a structural move.
+    render("mixer-move-settle")
     before = render("mixer-move-before")
     moved = studio.call("mixer-move-lead", "mixer.edit", {"channel": 1, "to": probe})["result"]
     assert moved["channel"] == probe
@@ -1330,9 +1333,10 @@ def verify_native_mixer_removal_and_reset(studio, evidence):
     sends = studio.inspect_parameters("mixer-lifecycle-send-controls", "parameter.list", {"from": target, "to": survivor})["result"]["parameters"]
     assert len(sends) == 1 and sends[0]["location"] == {"scope": "mixerRoute", "from": target, "to": survivor}
     studio.call("mixer-lifecycle-send-level", "parameter.set", {"parameter": sends[0]["id"], "value": .5})
+    render("mixer-lifecycle-send-settle", minimum_peak=0)
     attenuated = render("mixer-lifecycle-send-audio", minimum_peak=0)
     assert len(attenuated) == len(baseline)
-    send_difference = max(abs(wet - dry * .25) for wet, dry in zip(attenuated[8192:], baseline[8192:]))
+    send_difference = max(abs(wet - dry * .25) for wet, dry in zip(attenuated, baseline))
     assert send_difference <= 3, send_difference
     studio.call("mixer-lifecycle-reset", "mixer.reset", {"channel": target})
     reset = studio.call("mixer-lifecycle-reset-state", "project.inspect")["result"]
@@ -1341,6 +1345,7 @@ def verify_native_mixer_removal_and_reset(studio, evidence):
     assert reset["channels"][target]["effects"] == []
     target_routes = [route for route in reset["routes"] if route["from"] == target or route["to"] == target]
     assert len(target_routes) == 1 and target_routes[0]["to"] == 0 and target_routes[0]["amount"] == 1
+    render("mixer-lifecycle-reset-settle")
     reset_audio = render("mixer-lifecycle-reset-audio")
     assert len(reset_audio) == len(baseline)
     reset_difference = max(abs(a - b) for a, b in zip(baseline, reset_audio))

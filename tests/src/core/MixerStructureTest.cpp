@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QSignalSpy>
+#include <QJsonArray>
 #include <QTemporaryDir>
 #include <QScopeGuard>
 #include <algorithm>
@@ -34,6 +35,15 @@ using namespace lmms;
 
 namespace
 {
+QJsonObject xmlState(const QDomNode& node)
+{
+	QJsonObject attributes;
+	const auto entries = node.attributes();
+	for (int i = 0; i < entries.count(); ++i) { const auto entry = entries.item(i); attributes.insert(entry.nodeName(), entry.nodeValue()); }
+	QJsonArray children;
+	for (auto child = node.firstChild(); !child.isNull(); child = child.nextSibling()) { children.append(xmlState(child)); }
+	return {{"type", int(node.nodeType())}, {"name", node.nodeName()}, {"value", node.nodeValue()}, {"attributes", attributes}, {"children", children}};
+}
 const Plugin::Descriptor fixtureDescriptor{"mixer-order-fixture", "Mixer order fixture", "Native channel identity fixture", "LMMS tests",
 	1, Plugin::Type::Effect, nullptr, "", nullptr};
 class IdentityEffect final : public Effect
@@ -378,7 +388,8 @@ private slots:
 		QFETCH(bool, forward); channels(4); const auto a = mixer()->mixerChannel(1), b = mixer()->mixerChannel(2), d = mixer()->mixerChannel(4);
 		mixer()->deleteChannelSend(1, 0); mixer()->deleteChannelSend(2, 0);
 		QVERIFY(mixer()->createChannelSend(1, 3, .5f)); QVERIFY(mixer()->createChannelSend(2, 3, .25f));
-		mixer()->channelSendModel(3, 0)->setValue(.5f); mixer()->channelSendModel(4, 0)->setValue(.125f);
+		// These are static fixture gains, without a pending live fader ramp.
+		mixer()->channelSendModel(3, 0)->setInitValue(.5f); mixer()->channelSendModel(4, 0)->setInitValue(.125f);
 		const auto frames = Engine::audioEngine()->framesPerPeriod();
 		const auto fill = [frames](MixerChannel* channel, float left, float right) {
 			auto& buffer = channel->m_buffer;
@@ -506,18 +517,18 @@ private slots:
 		QTemporaryDir directory; StudioRuntime runtime(directory.path()); QString error; QVERIFY2(runtime.open(error), qPrintable(error));
 		QVERIFY(runtime.process(request("bus", "mixer.add", {{"name", "Preserved bus"}})).value("ok").toBool());
 		QVERIFY(runtime.process(request("level", "mixer.edit", {{"channel", 1}, {"volume", .25}, {"muted", true}})).value("ok").toBool());
-		const auto before = saved().toString(); bool first = true;
+		const auto before = xmlState(saved()); bool first = true;
 		const auto connection = connect(&mixer()->mixerChannel(1)->m_fxChain, &EffectChain::aboutToClear, this, [&] {
 			if (first) { first = false; throw std::runtime_error("Reset callback failed before native defaults"); }
 		}, Qt::DirectConnection);
 		const auto cleanupConnection = qScopeGuard([&] { disconnect(connection); });
 		const auto reset = request("reset-failure", "mixer.reset", {{"channel", 1}});
 		const auto response = runtime.process(reset); QVERIFY(!response.value("ok").toBool());
-		QVERIFY(response.value("error").toString().contains("Reset callback failed")); QVERIFY(!first); QCOMPARE(saved().toString(), before);
-		QVERIFY(runtime.process(reset).value("replayed").toBool()); QCOMPARE(saved().toString(), before);
+		QVERIFY(response.value("error").toString().contains("Reset callback failed")); QVERIFY(!first); QCOMPARE(xmlState(saved()), before);
+		QVERIFY(runtime.process(reset).value("replayed").toBool()); QCOMPARE(xmlState(saved()), before);
 		QVERIFY(runtime.process(request("reset-retry", "mixer.reset", {{"channel", 1}})).value("ok").toBool());
 		QCOMPARE(mixer()->mixerChannel(1)->m_volumeModel.value(), 1.f); QVERIFY(!mixer()->mixerChannel(1)->m_muteModel.value());
-		QVERIFY(runtime.process(request("undo-reset", "session.undo")).value("ok").toBool()); QCOMPARE(saved().toString(), before);
+		QVERIFY(runtime.process(request("undo-reset", "session.undo")).value("ok").toBool()); QCOMPARE(xmlState(saved()), before);
 	}
 
 	void studioMovesSurviveNativeXmlHistoryReplayAndReopening()

@@ -12509,3 +12509,33 @@ audio comparison after a channel move (maximum PCM difference 3750 versus allowe
 3). That audio discrepancy, backend/lifetime failures and broad acceptance remain
 open. GUI interaction, physical audio/MIDI and real-provider musical evaluation
 are not established by these fixtures. No roadmap gate advances.
+
+### Mixer audio fixture stabilization (2026-10-15)
+
+The freeze continues from `61f8003c1`. The reported channel-move audio mismatch
+was isolated with three native TripleOscillator renders in a fresh process. The
+first and second renders differed by at most 3750 PCM units, only through frame
+255, even without moving a channel. After that transition settled, moving the
+channel produced identical PCM. This matches the native fader's one-period
+interpolation from its previous value; no mixer DSP behavior was changed.
+
+The process fixture now settles edited controls before comparing complete
+renders across channel movement and reset. Its send-gain comparison also checks
+the entire buffer rather than skipping its first 8192 samples. The unit fixture
+uses initial values for static reference gains. Reset/undo/replay comparison
+retains XML node types, names, values, attributes and child order while ignoring
+attribute ordering, which changed after checkpoint serialization.
+
+`cmake --build build/native --target MixerStructureTest --parallel 6` passed.
+`ctest --test-dir build/native --output-on-failure --no-tests=error -R
+'^MixerStructureTest$'` passed **61 Qt test executions** on macOS arm64/Qt 5
+Debug. The broad process passed channel move, send attenuation, reset, removal,
+undo/redo, replay and XML reload: full-buffer maximum differences were 0, 0.75,
+0 and 0 PCM units respectively. These are decoded native stereo audio
+observations, not physical-output or perceptual verification.
+
+The broad process next fails while adding the built-in amplifier effect with
+"Native effect initialization or prepared ownership failed". That legitimate
+plugin workflow and the retained backend/lifetime failures remain open. The
+latest complete-suite observation still precedes these focused repairs; no
+roadmap gate advances.
