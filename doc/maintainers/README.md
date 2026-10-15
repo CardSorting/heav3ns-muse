@@ -15,6 +15,8 @@ Private maintainer operational guide for the HEAV3NS-MUSE agent-native digital a
 | [Maintainer CLI Cheatsheet](MAINTAINER_CLI_CHEATSHEET.md) | Command lookup for CMake, CTest, Python SDK, headless studio, KB sync, and roadmap rolls | `current-guide` |
 | [Maintainer Glossary](MAINTAINER_GLOSSARY_AND_LEXICON.md) | Definitive technical lexicon for DSP, headless host, perception pipeline, and state leases | `domain-reference` |
 | [Git Workflows & Hooks](GIT_WORKFLOWS_AND_HOOKS.md) | Commit conventions, branch lifecycle, pre-commit verification, and PR attestations | `current-guide` |
+| [CI/CD Rules & Required Checks](CI_CD_RULES_AND_REQUIRED_CHECKS.md) | Tiered status checks, change-aware impact matrices, GITHUB_TOKEN hardening, and branch rulesets | `current-guide` |
+| [Release Provenance & Archival](RELEASE_PROVENANCE_AND_ARCHIVAL.md) | SLSA v1 in-toto provenance statements, SHA-256 digests, multi-platform assets, and custodial approval | `current-guide` |
 | [Contracted Agent Anchor Protocol](CONTRACTED_AGENT_ANCHOR_PROTOCOL.md) | Immutable ground truth anchor for autonomous agents, high-velocity data pipelines, and evidence permanence | `current-guide` |
 | [Live Recording & Capture Pipeline](LIVE_RECORDING_AND_CAPTURE_PIPELINE.md) | Bounded MIDI note recording, automation parameter curves, lockless FIFO rings, and take rollback | `current-guide` |
 
@@ -43,6 +45,7 @@ Operational runbooks provide deterministic step-by-step procedures for live envi
   - [Knowledge Maintenance](../runbooks/knowledge-maintenance.md) - Reconciling stale documentation, source drift, and cryptographic domain reviews.
   - [Weekly Knowledge Audit](../runbooks/weekly-knowledge-audit.md) - Scheduled maintenance checklist for roadmap synchronization.
   - [DSP Crash Recovery](../runbooks/dsp-crash-recovery.md) - Isolating instrument plugin crashes and restoring headless stability.
+  - [CI/CD Failure & Recovery](../runbooks/ci-failure-and-recovery.md) - Reproducing and diagnosing CI gate failures locally across all 5 verification tiers.
 
 ---
 

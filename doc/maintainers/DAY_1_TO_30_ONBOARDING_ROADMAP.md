@@ -52,10 +52,12 @@ npm run roadmap:check
 
 ### Stage 3: Change
 - Add a new unit test in `tests/studio_process_test.py` validating a specific parameter mutation.
-- Use `npm run docs:impact` to check which documentation domains are impacted by your change.
+- Use `npm run ci:impact` or `npm run docs:impact` to check which CI gates and documentation domains are impacted by your change.
+- Run fast local verification: `./scripts/verify.sh quick` or `npm run verify:quick`.
 
 ### Stage 4: Recover
 - Read [DSP Crash Recovery](../runbooks/dsp-crash-recovery.md) and [Debugging Runbooks](DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md).
+- Read [CI/CD Failure & Recovery Runbook](../runbooks/ci-failure-and-recovery.md) to diagnose broken builds, security baseline violations, and stale knowledge.
 - Practice capturing backtraces with `lldb` or `gdb` on headless binaries.
 
 ### Stage 5: Decide
@@ -63,5 +65,7 @@ npm run roadmap:check
 - Learn when an ADR is required: architectural boundary changes, threading model adjustments, or protocol schema modifications.
 
 ### Stage 6: Maintain
+- Review [CI/CD Rules & Required Checks](CI_CD_RULES_AND_REQUIRED_CHECKS.md) to understand required status checks and change-aware gating.
+- Run `./scripts/verify.sh full` or `npm run verify:full` before submitting any PR.
 - Run `npm run docs:review -- --domain <id> --reviewer "Maintainer Name" --note "Explanation"` to refresh SHA-256 fingerprints after code changes.
 - Advance roadmap gates using `npm run roadmap:roll`.

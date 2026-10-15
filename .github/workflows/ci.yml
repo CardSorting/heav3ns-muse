@@ -1,0 +1,235 @@
+---
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  change-detection:
+    name: ci / change-detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build_required: ${{ steps.analyze.outputs.build_required }}
+      regression_required: ${{ steps.analyze.outputs.regression_required }}
+      rationale: ${{ steps.analyze.outputs.rationale }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Analyze Risk-Based Change Impact
+        id: analyze
+        run: |
+          BASE_REF="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF="HEAD~1"
+          fi
+          python3 scripts/change-impact.py --base "$BASE_REF" --format github >> "$GITHUB_OUTPUT"
+
+  hygiene:
+    name: ci / hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run Gate 0 Hygiene Suite
+        run: ./scripts/verify.sh hygiene
+
+  knowledge-integrity:
+    name: ci / knowledge-integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run Gate 1 Knowledge Integrity Suite
+        run: ./scripts/verify.sh knowledge
+
+  security-baseline:
+    name: ci / security-baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run Gate 4 Security Baseline & Boundary Fuzzing
+        run: ./scripts/verify.sh security
+
+  linux-build:
+    name: ci / linux-build
+    needs: change-detection
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Evaluate Build Requirement
+        id: build_eval
+        run: |
+          if [ "${{ needs.change-detection.outputs.build_required }}" = "true" ]; then
+            echo "execute=true" >> "$GITHUB_OUTPUT"
+            echo "Executing native C++ reference build: ${{ needs.change-detection.outputs.rationale }}"
+          else
+            echo "execute=false" >> "$GITHUB_OUTPUT"
+            echo "Native build skipped per change-awareness: ${{ needs.change-detection.outputs.rationale }}"
+          fi
+      - name: Install Build Dependencies
+        if: steps.build_eval.outputs.execute == 'true'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ ninja-build libasound2-dev libjack-jackd2-dev \
+            libfltk1.3-dev libsndfile1-dev libsamplerate0-dev \
+            libfftw3-dev libvorbis-dev libogg-dev libmp3lame-dev \
+            qtbase5-dev qttools5-dev-tools qttools5-dev
+      - name: Configure CMake
+        if: steps.build_eval.outputs.execute == 'true'
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_WERROR=ON \
+            -DWANT_ALSA=OFF \
+            -DWANT_PULSEAUDIO=OFF \
+            -DWANT_PORTAUDIO=OFF
+      - name: Compile Native Core
+        if: steps.build_eval.outputs.execute == 'true'
+        run: cmake --build build --target lmms
+
+  regression:
+    name: ci / regression
+    needs: [change-detection, linux-build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Evaluate Regression Requirement
+        id: reg_eval
+        run: |
+          if [ "${{ needs.change-detection.outputs.regression_required }}" = "true" ]; then
+            echo "execute=true" >> "$GITHUB_OUTPUT"
+            echo "Executing regression suite: ${{ needs.change-detection.outputs.rationale }}"
+          else
+            echo "execute=false" >> "$GITHUB_OUTPUT"
+            echo "Regression suite skipped per change-awareness: ${{ needs.change-detection.outputs.rationale }}"
+          fi
+      - name: Execute Regression Suite
+        run: ./scripts/verify.sh regression
+
+  summary:
+    name: ci / summary
+    needs:
+      - change-detection
+      - hygiene
+      - knowledge-integrity
+      - security-baseline
+      - linux-build
+      - regression
+    runs-on: ubuntu-latest
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Evaluate CI Gate Results
+        id: gate_eval
+        run: |
+          HYGIENE="${{ needs.hygiene.result }}"
+          KNOWLEDGE="${{ needs.knowledge-integrity.result }}"
+          SECURITY="${{ needs.security-baseline.result }}"
+          BUILD="${{ needs.linux-build.result }}"
+          REGRESSION="${{ needs.regression.result }}"
+
+          echo "========================================================================"
+          echo "            HEAV3NS-MUSE COMMISSION 011 CI AUDIT SUMMARY                "
+          echo "========================================================================"
+          echo "  Gate 0: ci/hygiene:              $HYGIENE"
+          echo "  Gate 1: ci/knowledge-integrity:  $KNOWLEDGE"
+          echo "  Gate 2: ci/linux-build:          $BUILD"
+          echo "  Gate 3: ci/regression:           $REGRESSION"
+          echo "  Gate 4: ci/security-baseline:    $SECURITY"
+          echo "========================================================================"
+
+          # Markdown Summary for GitHub PR UI
+          echo "## 🛡️ HEAV3NS-MUSE CI/CD Knowledge Integrity Scorecard" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status Check | Gate ID | Result | Authority / Invariant Contract |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| :--- | :---: | :---: | :--- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`ci / hygiene\` | Gate 0 | $HYGIENE | Submodule pinning, YAML formatting, change impact mapping |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`ci / knowledge-integrity\` | Gate 1 | $KNOWLEDGE | 7 Cryptographic domains fresh, zero-stale gate, agent anchor |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`ci / linux-build\` | Gate 2 | $BUILD | Headless C++ runtime compilation, GCC/Clang -DUSE_WERROR=ON |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`ci / regression\` | Gate 3 | $REGRESSION | CTest suite, studio process integration, persistence recovery |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`ci / security-baseline\` | Gate 4 | $SECURITY | Secret scanning, boundary fuzzing, least-privilege tokens |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Change Rationale:** \`${{ needs.change-detection.outputs.rationale }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail if any mandatory job failed or was cancelled
+          if [ "$HYGIENE" != "success" ] || [ "$KNOWLEDGE" != "success" ] || [ "$SECURITY" != "success" ]; then
+            echo "CRITICAL: Mandatory verification gates failed."
+            exit 1
+          fi
+
+          if [ "$BUILD" = "failure" ] || [ "$BUILD" = "cancelled" ]; then
+            echo "CRITICAL: Linux reference build failed or was cancelled."
+            exit 1
+          fi
+
+          if [ "$REGRESSION" = "failure" ] || [ "$REGRESSION" = "cancelled" ]; then
+            echo "CRITICAL: Regression suite failed or was cancelled."
+            exit 1
+          fi
+
+          echo "✅ All required CI/CD gates verified successfully."

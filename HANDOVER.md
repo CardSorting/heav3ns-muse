@@ -37,14 +37,19 @@ Incoming maintainers must strictly uphold the following invariants:
 
 1. **Native C++ Model Authority**: `Engine::getSong()`, `Mixer`, and `PatternStore` hold the canonical DAW state. No external shadow ASTs or cached project hierarchies are permitted.
 2. **Headless Determinism**: The DAW runs under `QCoreApplication` without requiring any graphical display server (no X11, Wayland, or Cocoa windows).
-3. **Offline Governance Validation**: Run `npm run docs:check` before every commit. Zero broken links, 100% scope markers, and valid cryptographic domain reviews are mandatory.
-4. **Auto-Rolling Progress**: All roadmap gate advancements must be executed via `npm run roadmap:roll -- --gate <ID> --status completed --note "<EVIDENCE>"`.
+3. **Offline Governance Validation**: Run `npm run docs:check` or `./scripts/verify.sh quick` before every commit. Zero broken links, 100% scope markers, and valid cryptographic domain reviews are mandatory.
+4. **CI/CD Independent Verification**: The CI system acts as an independent verifier of agent changes across Gates 0 through 5. PRs must pass required checks without silent skips; unexecuted tests must never be reported as passed.
+5. **Auto-Rolling Progress**: All roadmap gate advancements must be executed via `npm run roadmap:roll -- --gate <ID> --status completed --note "<EVIDENCE>"`.
+6. **Custodial Release Authority**: No binary or tag publication without explicit authorization from Founding Custodian EGG and verifiable SLSA v1 in-toto provenance statements.
 
 ---
 
 ## 4. Key References & Documentation
 
 - [Maintainer Catalog](doc/maintainers/README.md) - Complete inventory of maintainer runbooks and playbooks.
+- [CI/CD Rules & Required Checks](doc/maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md) - Status checks, change-aware gates, and branch ruleset configuration.
+- [CI/CD Failure & Recovery Runbook](doc/runbooks/ci-failure-and-recovery.md) - Diagnostic triage across build, security, and knowledge gates.
+- [Release Provenance & Archival](doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md) - SLSA in-toto provenance generation and custodial handoff.
 - [AI Agent Governance](doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md) - Parent/subagent protocol and handoff schemas.
 - [Active Open Items](doc/roadmap/OPEN_ITEMS.md) - Open blocker register.
 - [Rolling Progress Log](doc/roadmap/ROLLING_LOG.md) - Chronological audit log of completed gates and physical evidence.

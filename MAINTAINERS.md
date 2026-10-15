@@ -24,20 +24,33 @@ The C++ audio engine (`AudioEngine`, `Mixer`, `Song`, `TrackContainer`), the hea
 
 Always inspect scripts and run validation harnesses prior to committing or tagging releases:
 
-1. **Local Documentation & Governance Validation**:
+1. **Unified Local Verification Interface** (Recommended):
+   ```sh
+   ./scripts/verify.sh quick       # Gate 0 (Hygiene) + Gate 1 (Knowledge) + Gate 4 (Security)
+   ./scripts/verify.sh knowledge   # Gate 1 Knowledge Integrity & catalog consistency
+   ./scripts/verify.sh security    # Gate 4 Security baseline, tokens, traversal & JSON-RPC fuzzing
+   ./scripts/verify.sh full        # Full multi-gate verification suite (Gates 0, 1, 3, 4)
+   ```
+2. **Local Documentation & Governance Validation**:
    ```sh
    npm run docs:check
    ```
    Validates documentation scopes (`<!-- docs-scope: ... -->`), local relative links, ADR numbering, and knowledgebase reviews.
-2. **Headless Studio Regression Suite**:
+3. **Headless Studio Regression Suite**:
    ```sh
    python3 tests/studio_process_test.py --lmms build/lmms
    ```
-3. **Roadmap Integrity**:
+4. **CI/CD Governance & Change Impact**:
+   - Consult [CI/CD Rules & Required Checks](doc/maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md) for required status checks (`ci / hygiene`, `ci / knowledge-integrity`, `ci / security-baseline`, `ci / linux-build`, `ci / regression`, `ci / summary`).
+   - Run `npm run ci:impact` to compute exact gate execution requirements for any branch or diff.
+   - Refer to [CI/CD Failure & Recovery Runbook](doc/runbooks/ci-failure-and-recovery.md) when diagnosing remote CI check failures.
+5. **Roadmap Integrity**:
    ```sh
    npm run roadmap:check
    ```
-4. **Release Procedures**: Refer to [Release Engineering & Versioning](doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md) for multi-platform packaging (macOS DMG, Linux AppImage/Tarball, Windows Portable ZIP).
+6. **Release Procedures & SLSA Provenance**:
+   - Refer to [Release Engineering & Versioning](doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md) for multi-platform packaging (macOS DMG, Linux AppImage/Tarball, Windows Portable ZIP).
+   - Refer to [Release Provenance & Archival](doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md) for generating SLSA v1 in-toto provenance statements and managing custodial release authority.
 
 ---
 

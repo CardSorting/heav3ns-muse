@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "contract": "HEAV3NS-MUSE-CI-011",
+  "gate_id": "summary",
+  "source_commit": "87430056dbbeba32c47d35a5f62c43302a172be5",
+  "branch": "main",
+  "component": "ci-summary",
+  "verification_type": "continuous_integration",
+  "test_suite": "local-verification",
+  "execution_environment": {
+    "os": "Darwin",
+    "os_release": "25.5.0",
+    "arch": "arm64",
+    "python_version": "3.14.7"
+  },
+  "timestamps": {
+    "recorded_at": "2026-10-15T18:52:14Z"
+  },
+  "result_status": "PASS",
+  "failure_classification": "none",
+  "authorization_boundary": "automated",
+  "note": "Local pre-commit check",
+  "linked_artifact": "doc/evidence/ci-runs/20261015_185214-summary.json"
+}

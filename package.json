@@ -46,7 +46,19 @@
     "roadmap:check": "python3 scripts/roadmap-sync.py check",
     "roadmap:roll": "python3 scripts/roadmap-sync.py roll",
     "test:kb": "python3 tests/test_docs_kb.py",
-    "test:studio": "python3 tests/studio_process_test.py --lmms build/lmms --output build/studio-evidence"
+    "test:security": "python3 tests/test_security_boundary.py",
+    "test:impact": "python3 tests/test_change_impact.py",
+    "test:studio": "python3 tests/studio_process_test.py --lmms build/lmms --output build/studio-evidence",
+    "verify": "./scripts/verify.sh quick",
+    "verify:quick": "./scripts/verify.sh quick",
+    "verify:knowledge": "./scripts/verify.sh knowledge",
+    "verify:hygiene": "./scripts/verify.sh hygiene",
+    "verify:security": "./scripts/verify.sh security",
+    "verify:regression": "./scripts/verify.sh regression",
+    "verify:full": "./scripts/verify.sh full",
+    "ci:impact": "python3 scripts/change-impact.py",
+    "ci:evidence": "python3 scripts/record-ci-evidence.py",
+    "ci:provenance": "python3 scripts/generate-provenance.py"
   },
   "license": "GPL-2.0-or-later"
 }

@@ -17,9 +17,11 @@ Owner role: **Studio Runtime Maintainers**. Domain: `studio-runtime`.
 - [Release Engineering & Versioning](../../doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md)
 - [Debugging & Diagnostic Runbooks](../../doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md)
 - [Git Workflows, Hooks & PR Attestation](../../doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md)
+- [CI/CD Integrity Gates & Required Status Checks](../../doc/maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md)
 - [Playbook 01: Provisioning & Preflight](../../doc/playbooks/01-provisioning-and-preflight.md)
 - [Runbook: Knowledgebase Maintenance & Reconciliation](../../doc/runbooks/knowledge-maintenance.md)
 - [Runbook: Weekly Knowledge Audit](../../doc/runbooks/weekly-knowledge-audit.md)
+- [Runbook: CI/CD Failure Triage & Recovery](../../doc/runbooks/ci-failure-and-recovery.md)
 - [Milestone Engineering History & Horizon Ledger](../../doc/roadmap/MILESTONES.md)
 
 Relevant checks: `python3 tests/studio_process_test.py`.
@@ -43,6 +45,7 @@ Owner role: **Agent Systems Maintainers**. Domain: `agent-coordinator`.
 - [AI Agent Pair Programming & Governance](../../doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md)
 - [Contracted Agent Anchor Protocol & High-Velocity Data Pipeline](../../doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md)
 - [Evidence Catalog & Execution Artifact Registry](../../doc/evidence/README.md)
+- [HEAV3NS-MUSE CI/CD Knowledge Integrity Three-Pass Audit Report](../../doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md)
 
 Relevant checks: `python3 tests/studio_process_test.py`.
 
@@ -70,6 +73,7 @@ Relevant checks: `python3 tests/studio_process_test.py`.
 Owner role: **Session Storage Maintainers**. Domain: `session-durability`.
 
 - [ADR 0003: Atomic Manifests, File Locks, and Request Idempotency](../../doc/adr/0003-atomic-manifest-and-single-writer-persistence.md)
+- [Release Provenance, Artifact Integrity & Archival Standards](../../doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md)
 
 Relevant checks: `python3 tests/studio_process_test.py`.
 

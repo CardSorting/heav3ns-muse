@@ -1,13 +1,14 @@
 {
   "studio-runtime": {
-    "reviewer": "Studio Runtime Maintainers",
-    "note": "Mapped StudioStdio.h and StudioSignals.h headers into studio-runtime domain",
+    "reviewer": "Deputy Gemini (Commission 011)",
+    "note": "Commission 011 CI/CD Knowledge Integrity Gates, runbook, and ruleset specification",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/DOCUMENTATION_POLICY.md": "30728aa988e8eac734c04989a68775cf675f11b4c9624f2950a77c3b2bf31ce6",
       "doc/adr/0002-in-process-qcoreapplication-headless-studio.md": "52142280b5dbe2c00460ce00a4578e779e3ed9b946924cb3f6ede2dba104ecf0",
-      "doc/maintainers/DAY_1_TO_30_ONBOARDING_ROADMAP.md": "bd528db140c5eff1bf738b2234017c94be341f6c1480b671b1415580ecd4e79f",
+      "doc/maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md": "3482ca3b9207474ddf495525e6e53fa03c9aef4d46b4c43763f73d3b76ef8f85",
+      "doc/maintainers/DAY_1_TO_30_ONBOARDING_ROADMAP.md": "39f04fea29b3300c64b0b117e66b9dae4521c460305a29eac22e0b030bc0a92c",
       "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md": "7eede7c87895a5a2955580f5d47734afe6e609862f67eefbbd23507e8060127b",
       "doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md": "ff0311634e527902e9fee009a933ca46e6ce06fcd375a35a82360a90c81e3d9b",
       "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md": "1d449ebbc5dec35ea47b4918ff25d30c7cd7c312ff1a4c36391daf1e7778e181",
@@ -16,6 +17,7 @@
       "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
       "doc/playbooks/01-provisioning-and-preflight.md": "1c520822d716eb0a7b71d000b8a96660796ad7aa005809789bbe9083ca4c082e",
       "doc/roadmap/MILESTONES.md": "7a25d530a81addb597a80e23a2eeb22d79e7c933c9bfda5cc920cd35dedeb0db",
+      "doc/runbooks/ci-failure-and-recovery.md": "af99fc0e4df25157a49bca876009119ae2f5b39cd46a8d84cc20558f4e912cd9",
       "doc/runbooks/knowledge-maintenance.md": "b6df1999d933a3630065ea3c4afda3fcfc3da7ef5f00d2b7a9df06fe1d2a56e8",
       "doc/runbooks/weekly-knowledge-audit.md": "d5ef71a8fa870a15e584043681e1cc662e34f7f417e80b646e0f0dfa7bec9ceb",
       "include/StudioRuntime.h": "4e71c40cd19c8d6ece47c714cb46a99145328e79f4c7eeb8b68b7d1e0965b2dc",
@@ -26,7 +28,7 @@
       "src/core/StudioStdio.cpp": "76478fb8e5e8786388f785f95c64073d48fa6c84e37b50720eeab2773a2f6c61"
     },
     "evidence": {
-      "doc/evidence/test-runs/20261012-studio-core.json": "3f3806096df41ec64253a348801da210d644f36d27368c3ed11c94d21a3871e9"
+      "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md": "97eab677d434664f24941848e9cc3fa698bdda93dab52a56eaef26792032c08e"
     }
   },
   "capabilities": {
@@ -56,12 +58,13 @@
     }
   },
   "agent-coordinator": {
-    "reviewer": "Agent Systems Maintainers",
-    "note": "Integrated Step 0 Pre-Flight Anchor check into Contracted Agent Anchor Protocol",
+    "reviewer": "Deputy Gemini (Commission 011)",
+    "note": "Commission 011 CI/CD Three-Pass Audit Report and independent verifier contract",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/agent-native-architecture.md": "56b264decd910f24e842416305739738fb8d8bc2d9f46876fce07febf283fab1",
+      "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md": "97eab677d434664f24941848e9cc3fa698bdda93dab52a56eaef26792032c08e",
       "doc/evidence/README.md": "e8e72f455ca5dc8eaa6fb6da797578e6798c91a55f2e7975a76ae1d848520012",
       "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": "e66e354e92163214f56886ff3f82ac2214c37ae703a4e69ff117e7513a1afe66",
       "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md": "6637df3a2afecb1270273f5546c6668673661c498900dad54ce30ef52418c7b7",
@@ -69,7 +72,7 @@
       "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
     },
     "evidence": {
-      "doc/evidence/test-runs/20261012-studio-core.json": "3f3806096df41ec64253a348801da210d644f36d27368c3ed11c94d21a3871e9"
+      "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md": "97eab677d434664f24941848e9cc3fa698bdda93dab52a56eaef26792032c08e"
     }
   },
   "inference-adapters": {
@@ -104,12 +107,13 @@
     }
   },
   "session-durability": {
-    "reviewer": "Session Storage Maintainers",
-    "note": "Mapped resource managers (StudioResources, StudioProjectResources, headers)",
+    "reviewer": "Deputy Gemini (Commission 011)",
+    "note": "Commission 011 Release Provenance, SLSA v1 in-toto statements, and custodial authority",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": "06f0f80ffef901c2ef1659567be42b4ff07a5d5c0f62df7f4ee6d2c01138490f",
+      "doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md": "c835f8f156d4df3cc26e037009aff2c7f4e30ca5763e31f52963a74039635181",
       "include/StudioAssetStore.h": "40ff2a9766de81ed9d0469f4c402195b9e8e4c9f3aba43463bb72828a62c2aeb",
       "include/StudioAssets.h": "5bb071380f1870d1ab40cfaf22dd88a7a6941d74e207ed3556ef5418faf66e2f",
       "include/StudioProjectResources.h": "2be67fe7eaed780e1f1bebafa72ab158c78c88b83c07cb88da5694fb94cf4c9b",
@@ -122,7 +126,7 @@
       "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208"
     },
     "evidence": {
-      "doc/evidence/test-runs/20261013-single-writer-lock.json": "ee69c9f09521d8a325efc75e28756e724026727cd3c35e78ac8614c476ca8a8c"
+      "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md": "97eab677d434664f24941848e9cc3fa698bdda93dab52a56eaef26792032c08e"
     }
   },
   "live-capture": {

@@ -4,6 +4,8 @@ name: checks
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: read
 jobs:
   scripted-checks:
     runs-on: ubuntu-latest

@@ -43,6 +43,8 @@ Complete index of all authoritative documentation, architecture records, guides,
 | [Debugging & Diagnostic Runbooks](maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md) | `doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md` | `current-guide` | `studio-runtime` | `runbook` |
 | [Performance Benchmarking & SLOs](maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md) | `doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md` | `domain-reference` | `audio-dsp` | `reference` |
 | [Git Workflows, Hooks & PR Attestation](maintainers/GIT_WORKFLOWS_AND_HOOKS.md) | `doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md` | `current-guide` | `studio-runtime` | `reference` |
+| [CI/CD Rules & Required Checks](maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md) | `doc/maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md` | `current-guide` | `studio-runtime` | `reference` |
+| [Release Provenance & Archival](maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md) | `doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md` | `current-guide` | `session-durability` | `reference` |
 | [Contracted Agent Anchor Protocol](maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md) | `doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md` | `current-guide` | `agent-coordinator` | `reference` |
 | [Live Recording & Capture Pipeline](maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md) | `doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md` | `current-guide` | `live-capture` | `reference` |
 
@@ -67,6 +69,7 @@ Complete index of all authoritative documentation, architecture records, guides,
 | [Knowledgebase Maintenance & Reconciliation](runbooks/knowledge-maintenance.md) | `doc/runbooks/knowledge-maintenance.md` | `current-guide` | `studio-runtime` | `runbook` |
 | [Weekly Knowledge Audit](runbooks/weekly-knowledge-audit.md) | `doc/runbooks/weekly-knowledge-audit.md` | `current-guide` | `studio-runtime` | `runbook` |
 | [DSP Crash Recovery & Plugin Isolation](runbooks/dsp-crash-recovery.md) | `doc/runbooks/dsp-crash-recovery.md` | `current-guide` | `audio-dsp` | `runbook` |
+| [CI/CD Failure & Recovery Runbook](runbooks/ci-failure-and-recovery.md) | `doc/runbooks/ci-failure-and-recovery.md` | `current-guide` | `studio-runtime` | `runbook` |
 
 ---
 
@@ -75,6 +78,7 @@ Complete index of all authoritative documentation, architecture records, guides,
 | Title | Path | Scope | Domain | Kind |
 | :--- | :--- | :---: | :--- | :---: |
 | [Evidence Catalog & Artifact Registry](evidence/README.md) | `doc/evidence/README.md` | `operational-record` | `agent-coordinator` | `evidence` |
+| [CI/CD Three-Pass Audit Report (Commission 011)](evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md) | `doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md` | `operational-record` | `agent-coordinator` | `evidence` |
 | [Milestone Engineering History & Horizon Ledger](roadmap/MILESTONES.md) | `doc/roadmap/MILESTONES.md` | `operational-record` | `studio-runtime` | `evidence` |
 
 ---

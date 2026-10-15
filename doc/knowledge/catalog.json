@@ -142,6 +142,25 @@
       "decision": null
     },
     {
+      "path": "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md",
+      "title": "HEAV3NS-MUSE CI/CD Knowledge Integrity Three-Pass Audit Report",
+      "scope": "operational-record",
+      "kind": "evidence",
+      "domains": [
+        "agent-coordinator"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "audit",
+        "ci-cd",
+        "commission-011",
+        "three-pass",
+        "scenarios",
+        "inventory"
+      ],
+      "decision": null
+    },
+    {
       "path": "doc/evidence/README.md",
       "title": "Evidence Catalog & Execution Artifact Registry",
       "scope": "operational-record",
@@ -218,6 +237,25 @@
         "parent-child",
         "handoff",
         "invariants"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md",
+      "title": "CI/CD Integrity Gates & Required Status Checks",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "ci-cd",
+        "gates",
+        "ruleset",
+        "checks",
+        "change-aware",
+        "summary"
       ],
       "decision": null
     },
@@ -397,6 +435,25 @@
       "decision": null
     },
     {
+      "path": "doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md",
+      "title": "Release Provenance, Artifact Integrity & Archival Standards",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "session-durability"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "release",
+        "provenance",
+        "slsa",
+        "in-toto",
+        "custodial",
+        "archival"
+      ],
+      "decision": null
+    },
+    {
       "path": "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md",
       "title": "Subsystem Internals & Dependency DAG",
       "scope": "domain-reference",
@@ -543,6 +600,25 @@
       "domains": [],
       "curation": "unreviewed",
       "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/runbooks/ci-failure-and-recovery.md",
+      "title": "Runbook: CI/CD Failure Triage & Recovery",
+      "scope": "current-guide",
+      "kind": "runbook",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "ci",
+        "failure",
+        "triage",
+        "recovery",
+        "reproduction",
+        "runbook"
+      ],
       "decision": null
     },
     {

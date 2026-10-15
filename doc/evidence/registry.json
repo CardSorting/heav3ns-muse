@@ -55,6 +55,15 @@
       "sha256": "bd04bf3ca76d5327f47e15ae450ec299b56fceae41fe19e192008b1a850105b4",
       "status": "verified",
       "note": "Verified live capture and MIDI/automation recording pipeline"
+    },
+    "doc/evidence/ci-runs/20261015_185214-summary.json": {
+      "gate": "summary",
+      "recorded_at": "2026-10-15T18:52:14Z",
+      "command": "local-verification",
+      "platform": "Darwin arm64",
+      "sha256": "f2eb8fb23d386efdd2280066b0fd1b53076dc62812df8b8ca771a9fb999263ea",
+      "status": "pass",
+      "note": "Local pre-commit check"
     }
   }
 }

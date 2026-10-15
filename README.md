@@ -742,13 +742,31 @@ my-studio-session/
 
 HEAV3NS-MUSE includes a rigorous test suite combining unit tests and end-to-end process-level integration harnesses.
 
-### 1. Native CTest Suite
+### 1. Unified Local Verification Interface (Recommended)
+
+Run repository-wide verification matching CI/CD gates locally:
+
+```sh
+# Fast pre-commit verification (Hygiene, Knowledge, and Security gates)
+./scripts/verify.sh quick
+
+# Focused Gate 1 Knowledge Integrity verification
+./scripts/verify.sh knowledge
+
+# Focused Gate 4 Security Baseline (tokens, boundary fuzzing, path traversal)
+./scripts/verify.sh security
+
+# Full verification suite including regression and change impact analysis
+./scripts/verify.sh full
+```
+
+### 2. Native CTest Suite
 
 ```sh
 ctest --test-dir build --output-on-failure
 ```
 
-### 2. Comprehensive Process-Level Integration Harness
+### 3. Comprehensive Process-Level Integration Harness
 
 Exercises headless studio startup, JSON protocol boundaries, audio synthesis correctness, signal interruption (`SIGINT`/`SIGTERM`), memory budgets, and mock inference loops:
 
@@ -756,7 +774,7 @@ Exercises headless studio startup, JSON protocol boundaries, audio synthesis cor
 python tests/studio_process_test.py --lmms ./build/lmms --output ./build/studio-evidence
 ```
 
-### 3. VST & External Host Stress Harness
+### 4. VST & External Host Stress Harness
 
 Tests external plugin discovery, parameter modulation, and Carla patchbay connections without a display server:
 

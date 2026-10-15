@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-15T18:35:16Z",
+  "compiled_at": "2026-10-15T18:51:06Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
@@ -284,9 +284,9 @@
     "studio-runtime": {
       "title": "Studio Runtime & Process Lifecycle",
       "status": "reviewed",
-      "reviewer": "Studio Runtime Maintainers",
+      "reviewer": "Deputy Gemini (Commission 011)",
       "review_by": "2026-11-14",
-      "guides_count": 13,
+      "guides_count": 15,
       "sources_patterns": [
         "src/core/StudioRuntime.*",
         "src/core/StudioStdio.*",
@@ -319,9 +319,9 @@
     "agent-coordinator": {
       "title": "Agent Execution & Job Lifecycle",
       "status": "reviewed",
-      "reviewer": "Agent Systems Maintainers",
+      "reviewer": "Deputy Gemini (Commission 011)",
       "review_by": "2026-11-14",
-      "guides_count": 4,
+      "guides_count": 5,
       "sources_patterns": [
         "src/core/StudioAgent.*",
         "include/StudioAgent.h"
@@ -352,9 +352,9 @@
     "session-durability": {
       "title": "Session Durability, Manifests & Storage",
       "status": "reviewed",
-      "reviewer": "Session Storage Maintainers",
+      "reviewer": "Deputy Gemini (Commission 011)",
       "review_by": "2026-11-14",
-      "guides_count": 1,
+      "guides_count": 2,
       "sources_patterns": [
         "src/core/StudioStorage.*",
         "src/core/StudioAssets.*",

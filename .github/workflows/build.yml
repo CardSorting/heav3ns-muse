@@ -4,6 +4,8 @@ name: build
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: read
 jobs:
   linux-x86_64:
     name: linux-x86_64
@@ -21,7 +23,7 @@ jobs:
       - name: Configure git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
@@ -29,7 +31,7 @@ jobs:
         run: |
           echo "CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)" | tee -a "$GITHUB_ENV"
       - name: Clone fltk
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: fltk/fltk
           path: fltk
@@ -52,7 +54,7 @@ jobs:
           sudo apt-get install -y --install-recommends \
             $(xargs < .github/workflows/deps-ubuntu-24.04-fltk.txt)
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           key: ccache-${{ github.job }}-${{ github.ref }}-${{ github.run_id }}
           restore-keys: |
@@ -84,7 +86,7 @@ jobs:
         run: |
           cmake --build build --target package
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           archive: false
           path: build/lmms-*.AppImage
@@ -114,7 +116,7 @@ jobs:
       - name: Configure git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
@@ -122,7 +124,7 @@ jobs:
         run: |
           echo "CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)" | tee -a "$GITHUB_ENV"
       - name: Clone fltk
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           repository: fltk/fltk
           path: fltk
@@ -136,7 +138,7 @@ jobs:
           sudo apt-get install -y --install-recommends \
             $(xargs < .github/workflows/deps-ubuntu-24.04-fltk.txt)
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           key: ccache-${{ github.job }}-${{ github.ref }}-${{ github.run_id }}
           restore-keys: |
@@ -167,7 +169,7 @@ jobs:
         run: |
           cmake --build build --target package
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           archive: false
           path: build/lmms-*.AppImage
@@ -209,7 +211,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
@@ -220,14 +222,14 @@ jobs:
         run: rm -rf ~/Library/Caches/Homebrew/downloads
       - name: Restore Homebrew download cache
         id: cache-homebrew
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v4
         with:
           key: n/a - only restore from restore-keys
           restore-keys: |
             homebrew-${{ matrix.arch }}-
           path: ~/Library/Caches/Homebrew/downloads
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           key: "ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.ref }}\
             -${{ github.run_id }}"
@@ -263,7 +265,7 @@ jobs:
         run: |
           cmake --build build --target package
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           archive: false
           path: build/lmms-*.dmg
@@ -278,7 +280,7 @@ jobs:
           CCACHE_MAXSIZE: 500MB
       - name: Save Homebrew download cache
         if: ${{ steps.cache-homebrew.outputs.cache-matched-key != env.key }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v4
         with:
           key: ${{ env.key }}
           path: ~/Library/Caches/Homebrew/downloads
@@ -301,7 +303,7 @@ jobs:
       - name: Configure git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
@@ -310,14 +312,14 @@ jobs:
           echo "CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)" | tee -a "$GITHUB_ENV"
       - name: Cache vcpkg dependencies
         id: cache-deps
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           key: vcpkg-mingw${{ matrix.arch }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-mingw${{ matrix.arch }}-
           path: build/vcpkg_installed
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           key: "ccache-${{ github.job }}-64-${{ github.ref }}\
             -${{ github.run_id }}"
@@ -348,7 +350,7 @@ jobs:
       - name: Package
         run: cmake --build build --target package
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           archive: false
           path: build/lmms-*.exe
@@ -370,20 +372,20 @@ jobs:
       CMAKE_BUILD_PARALLEL_LEVEL: 4
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
       - name: Cache vcpkg dependencies
         id: cache-deps
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           key: vcpkg-msvc-x86_64-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-msvc-x86_64-
           path: build\vcpkg_installed
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           # yamllint disable rule:line-length
           key: "ccache-${{ github.job }}-x64-${{ github.ref }}\
@@ -435,7 +437,7 @@ jobs:
       - name: Package
         run: cmake --build build --target package
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           archive: false
           path: build\lmms-*.exe
@@ -466,13 +468,13 @@ jobs:
       CMAKE_BUILD_PARALLEL_LEVEL: 4
     steps:
       - name: Check out
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
       - name: Cache msys2 dependencies
         id: cache-deps
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           key: windows-arm64-${{ hashFiles('.github/workflows/deps-msys2-clangarm64.txt') }}
           restore-keys: |
@@ -486,7 +488,7 @@ jobs:
       - name: Install dependencies
         run: pacman --needed --noconfirm -S - < .github/workflows/deps-msys2-clangarm64.txt
       - name: Cache ccache data
-        uses: actions/cache@v6
+        uses: actions/cache@v4
         with:
           key: ccache-${{ github.job }}-${{ github.ref }}-${{ github.run_id }}
           restore-keys: |
@@ -502,7 +504,7 @@ jobs:
       - name: Package
         run: cmake --build build --target package
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           archive: false
           path: build\lmms-*.exe
