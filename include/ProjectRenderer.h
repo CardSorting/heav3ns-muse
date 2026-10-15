@@ -25,6 +25,10 @@
 #ifndef LMMS_PROJECT_RENDERER_H
 #define LMMS_PROJECT_RENDERER_H
 
+#include <atomic>
+#include <cstdint>
+#include <memory>
+
 #include "AudioFileDevice.h"
 #include "AudioEngine.h"
 #include "OutputSettings.h"
@@ -60,12 +64,21 @@ public:
 	} ;
 
 	ProjectRenderer(const OutputSettings& _os, ExportFileFormat _file_format, const QString& _out_file);
-	~ProjectRenderer() override = default;
+	~ProjectRenderer() override;
 
 	bool isReady() const
 	{
 		return m_fileDev != nullptr;
 	}
+
+	//! Complete codec output before the engine restores/deletes its file device.
+	bool finalizeOutput();
+	bool hasPluginFailure() const { return m_remotePluginFailed; }
+	bool hasDspFailure() const;
+	bool hasExecutionFailure() const { return m_executionFailed; }
+	bool hasEncodingFailure() const { return m_encodingFailed; }
+	bool wasAborted() const { return m_abort; }
+	void setExecutionTimeout(int timeoutMs) { m_executionTimeout = timeoutMs > 0 ? timeoutMs : 0; }
 
 	static ExportFileFormat getFileFormatFromExtension(
 							const QString & _ext );
@@ -75,7 +88,7 @@ public:
 	static const std::array<FileEncodeDevice, 5> fileEncodeDevices;
 
 public slots:
-	void startProcessing();
+	bool startProcessing();
 	void abortProcessing();
 
 	void updateConsoleProgress();
@@ -89,9 +102,22 @@ private:
 	void run() override;
 
 	AudioFileDevice * m_fileDev;
+	// Keep ownership until the audio engine installs the device. An export
+	// cancelled before setup must still close its codec and file descriptor.
+	std::unique_ptr<AudioFileDevice> m_unattachedFileDev;
 
-	volatile int m_progress;
-	volatile bool m_abort;
+	std::atomic<int> m_progress;
+	std::atomic<bool> m_abort;
+	std::uint64_t m_remotePluginFailureCount;
+	std::atomic_bool m_remotePluginFailed{false};
+	std::uint64_t m_dspFailureCount;
+	std::atomic_bool m_dspFailed{false};
+	std::atomic_bool m_executionFailed{false};
+	std::atomic_bool m_encodingFailed{false};
+	std::atomic<std::uint64_t> m_remoteRenderContext{0};
+	std::atomic_int m_executionTimeout{0};
+	std::atomic_bool m_started{false};
+	friend class ProjectRendererFailureTestAccess;
 
 } ;
 

@@ -6,6 +6,7 @@ ENDIF()
 
 BUILD_PLUGIN(vstbase
 	../vst_base.cpp ../VstPlugin.cpp ../VstPlugin.h ../communication.h
+	../VstParameterModels.cpp ../VstParameterModels.h
 	MOCFILES ../VstPlugin.h
 	EXPORT_BASE_NAME vstbase
 	LINK SHARED

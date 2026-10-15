@@ -28,117 +28,29 @@
 #ifndef LMMS_MIDI_EXPORT_H
 #define LMMS_MIDI_EXPORT_H
 
-#include "MidiFile.h"
-#include "DataFile.h"
 #include "ExportFilter.h"
-#include "Note.h"
-
-class QDomNode;
 
 namespace lmms
 {
 
-//! MIDI exporting base class
+// Reads the native project models. No plugin state serialization or DSP is
+// needed to export the editable note arrangement.
 class MidiExport : public ExportFilter
 {
-private:
-	//! A single MIDI note
-	struct Note
-	{
-		using Type = ::lmms::Note::Type;
-
-		//! The pitch (tone), which can be lower or higher
-		std::uint8_t pitch = 0;
-
-		//! Volume (loudness)
-		std::uint8_t volume = 0;
-
-		//! Absolute time (from song start) when the note starts playing
-		tick_t time = 0;
-
-		//! For how long the note plays
-		tick_t duration = 0;
-
-		Type type = Type::Regular;
-
-		//! Sort notes by time
-		bool operator<(const Note& b) const noexcept
-		{
-			return time < b.time;
-		}
-	};
-
-	//! A clip of MIDI notes
-	class Clip
-	{
-	private:
-		//! List of actual notes
-		std::vector<Note> m_notes;
-
-	public:
-		//! Append notes from root node to clip
-		void write(const QDomNode& root,
-			int basePitch, double baseVolume, tick_t baseTime);
-
-		//! Adjust special duration pattern clip notes by resizing them accordingly
-		void processPatternNotes(tick_t cutPos);
-
-		//! Add clip notes to MIDI file track
-		void writeToTrack(MidiFile::Track& midiTrack) const;
-
-		//! Write sorted notes to a explicitly repeating pattern clip
-		void writeToPattern(Clip& patternClip,
-			tick_t len, tick_t base, tick_t start, tick_t end);
-	};
-
-	//! Current (incremental) track channel number for non drum tracks
-	std::uint8_t m_channel = 0;
-
-	//! DataFile to be used by Qt elements
-	DataFile m_dataFile = DataFile(DataFile::Type::SongProject);
-
-	//! Matrix containing (start, end) pairs for pattern objects
-	std::vector<std::vector<std::pair<tick_t, tick_t>>> m_plists;
-
 public:
-	//! Explicit constructor for setting plugin descriptor
 	MidiExport();
 	~MidiExport() override = default;
 
-	// Default Beat Length in ticks for step notes
-	// TODO: The beat length actually varies per note, however the method that
-	// calculates it (InstrumentTrack::beatLen) requires a NotePlayHandle to do
-	// so. While we don't figure out a way to hold the beat length of each note
-	// on its member variables, we will use a default value as a beat length that
-	// will be used as an upper limit of the midi note length. This doesn't worsen
-	// the current logic used for MidiExport because right now the beat length is
-	// not even considered during the generation of the MIDI.
+	// Step-note playback length depends on InstrumentTrack::beatLen and a live
+	// NotePlayHandle. MIDI uses this upper bound, shortened at the next onset
+	// or clip boundary; it is not a measurement of the instrument's sound.
 	static constexpr int DefaultBeatLength = 1500;
 
-	//! @brief Export tracks from a project to a .mid extension MIDI file
-	//! @param tracks Song tracks
-	//! @param patternStoreTracks PatternStore tracks
-	//! @param tempo Song global tempo
-	//! @param masterPitch Song master pitch
-	//! @param filePath The path of the exported file
-	//! @return If operation was successful
 	bool tryExport(const TrackContainer::TrackList& tracks,
 		const TrackContainer::TrackList& patternStoreTracks,
 		int tempo, int masterPitch, const std::filesystem::path& filePath) override;
 
 private:
-	//! Process a given instrument track
-	void processTrack(Track& track, MidiFile::Track& midiTrack,
-		int tempo, int masterPitch, bool isPattern = false);
-
-	//! Build a repeating clip from a normal one and write to MIDI track
-	void writePatternClip(Clip& clip, const QDomElement& clipElem,
-		std::uint8_t patternIdx, MidiFile::Track& midiTrack);
-
-	//! Process a given pattern track
-	void processPatternTrack(Track& track);
-
-	//! Necessary for lmms_plugin_main()
 	gui::PluginView* instantiateView(QWidget*) override { return nullptr; }
 };
 

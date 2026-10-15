@@ -24,15 +24,15 @@
 
 #include "MicrotunerConfig.h"
 
-#include <QFile>
+#include <limits>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QRegularExpression>
-#include <QTextStream>
 
 #include "ComboBox.h"
 #include "embed.h"
@@ -40,7 +40,6 @@
 #include "FileDialog.h"
 #include "GuiApplication.h"
 #include "Keymap.h"
-#include "LcdFloatSpinBox.h"
 #include "LcdSpinBox.h"
 #include "lmms_constants.h"
 #include "lmmsversion.h"
@@ -49,6 +48,7 @@
 #include "Scale.h"
 #include "Song.h"
 #include "SubWindow.h"
+#include "TuningFile.h"
 
 namespace lmms::gui
 {
@@ -61,8 +61,7 @@ MicrotunerConfig::MicrotunerConfig() :
 	m_firstKeyModel(0, 0, NumKeys - 1, nullptr, tr("First key")),
 	m_lastKeyModel(NumKeys - 1, 0, NumKeys - 1, nullptr, tr("Last key")),
 	m_middleKeyModel(DefaultMiddleKey, 0, NumKeys - 1, nullptr, tr("Middle key")),
-	m_baseKeyModel(DefaultBaseKey, 0, NumKeys - 1, nullptr, tr("Base key")),
-	m_baseFreqModel(DefaultBaseFreq, 0.1f, 9999.999f, 0.001f, nullptr, tr("Base note frequency"))
+	m_baseKeyModel(DefaultBaseKey, 0, NumKeys - 1, nullptr, tr("Base key"))
 {
 	setWindowIcon(embed::getIconPixmap("microtuner"));
 	setWindowTitle(tr("Microtuner Configuration"));
@@ -170,11 +169,14 @@ MicrotunerConfig::MicrotunerConfig() :
 	baseKeySpin->setModel(&m_baseKeyModel);
 	keymapRangeLayout->addWidget(baseKeySpin, 1, 0);
 
-	auto baseFreqSpin = new LcdFloatSpinBox(4, 3, tr("Base note frequency"));
-	baseFreqSpin->setLabel(tr("BASE NOTE FREQ"));
-	baseFreqSpin->setModel(&m_baseFreqModel);
-	baseFreqSpin->setToolTip(tr("Base note frequency"));
-	keymapRangeLayout->addWidget(baseFreqSpin, 1, 1, 1, 2);
+	keymapRangeLayout->addWidget(new QLabel(tr("Base note frequency (Hz):")), 1, 1);
+	m_baseFreqEdit = new QLineEdit();
+	m_baseFreqEdit->setToolTip(tr("Finite positive reference frequency. Decimal and scientific notation are accepted."));
+	keymapRangeLayout->addWidget(m_baseFreqEdit, 1, 2);
+	keymapRangeLayout->addWidget(new QLabel(tr("Formal octave degree:")), 2, 0, 1, 2);
+	m_octaveDegreeEdit = new QLineEdit();
+	m_octaveDegreeEdit->setToolTip(tr("Signed scale degree advanced for each keyboard-map period. Zero uses the final scale degree."));
+	keymapRangeLayout->addWidget(m_octaveDegreeEdit, 2, 2);
 
 	auto applyKeymapButton = new QPushButton(tr("Apply keymap changes"));
 	applyKeymapButton->setToolTip(tr("Verify and apply changes made to the selected key mapping. To use the mapping, select it in the settings of a supported instrument."));
@@ -275,9 +277,9 @@ void MicrotunerConfig::updateKeymapForm()
 
 	m_keymapTextEdit->setPlainText("");
 	const std::vector<int> &map = newMap->getMap();
-	for (int value : map)
+	for (std::size_t i = 0; i < map.size(); ++i)
 	{
-		if (value >= 0) {m_keymapTextEdit->appendPlainText(QString::number(value));}
+		if (newMap->isDegreeMapped(i)) {m_keymapTextEdit->appendPlainText(QString::number(map[i]));}
 		else {m_keymapTextEdit->appendPlainText("x");}
 	}
 	QTextCursor tmp = m_keymapTextEdit->textCursor();
@@ -288,310 +290,111 @@ void MicrotunerConfig::updateKeymapForm()
 	m_lastKeyModel.setValue(newMap->getLastKey());
 	m_middleKeyModel.setValue(newMap->getMiddleKey());
 	m_baseKeyModel.setValue(newMap->getBaseKey());
-	m_baseFreqModel.setValue(newMap->getBaseFreq());
-}
-
-
-bool MicrotunerConfig::validateScaleForm()
-{
-	auto fail = [this](const QString& message){ QMessageBox::critical(this, tr("Scale parsing error"), message); };
-
-	// check name
-	QString name = m_scaleNameEdit->text();
-	if (name.length() > 0 && name[0] == '!') {fail(tr("Scale name cannot start with an exclamation mark")); return false;}
-	if (name.contains('\n')) {fail(tr("Scale name cannot contain a new-line character")); return false;}
-
-	// check intervals
-	QStringList input = m_scaleTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
-	for (auto &line: input)
-	{
-		if (line.isEmpty()) {continue;}
-		if (line[0] == '!') {continue;}		// comment
-		QString firstSection = line.section(QRegularExpression("\\s+|/"), 0, 0, QString::SectionSkipEmpty);
-		if (firstSection.contains('.'))		// cent mode
-		{
-			bool ok = true;
-			firstSection.toFloat(&ok);
-			if (!ok) {fail(tr("Interval defined in cents cannot be converted to a number")); return false;}
-		}
-		else								// ratio mode
-		{
-			bool ok = true;
-			int num = 1, den = 1;
-			num = firstSection.toInt(&ok);
-			if (!ok) {fail(tr("Numerator of an interval defined as a ratio cannot be converted to a number")); return false;}
-			if (line.contains('/'))
-			{
-				den = line.split('/').at(1).section(QRegularExpression("\\s+"), 0, 0, QString::SectionSkipEmpty).toInt(&ok);
-			}
-			if (!ok) {fail(tr("Denominator of an interval defined as a ratio cannot be converted to a number")); return false;}
-			if (num * den < 0) {fail(tr("Interval defined as a ratio cannot be negative")); return false;}
-		}
-	}
-	return true;
-}
-
-
-bool MicrotunerConfig::validateKeymapForm()
-{
-	auto fail = [this](const QString& message){ QMessageBox::critical(this, tr("Keymap parsing error"), message); };
-
-	// check name
-	QString name = m_keymapNameEdit->text();
-	if (name.length() > 0 && name[0] == '!') {fail(tr("Keymap name cannot start with an exclamation mark")); return false;}
-	if (name.contains('\n')) {fail(tr("Keymap name cannot contain a new-line character")); return false;}
-
-	// check key mappings
-	QStringList input = m_keymapTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
-	for (auto &line: input)
-	{
-		if (line.isEmpty()) {continue;}
-		if (line[0] == '!') {continue;}			// comment
-		QString firstSection = line.section(QRegularExpression("\\s+"), 0, 0, QString::SectionSkipEmpty);
-		if (firstSection == "x") {continue;}	// not mapped
-		// otherwise must contain a number
-		bool ok = true;
-		int deg = 0;
-		deg = firstSection.toInt(&ok);
-		if (!ok) {fail(tr("Scale degree cannot be converted to a whole number")); return false;}
-		if (deg < 0) {fail(tr("Scale degree cannot be negative")); return false;}
-	}
-
-	return true;
+	m_baseFreqEdit->setText(QString::number(newMap->getBaseFreq(), 'g', std::numeric_limits<float>::max_digits10));
+	m_octaveDegreeEdit->setText(QString::number(newMap->octaveDegree()));
 }
 
 
 bool MicrotunerConfig::applyScale()
 {
-	if (!validateScaleForm()) {return false;};
-
-	std::vector<Interval> newIntervals;
-	newIntervals.emplace_back(1, 1);
-
-	QStringList input = m_scaleTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
-	for (auto &line: input)
+	const auto song = Engine::getSong();
+	if (!song) { return false; }
+	QString error; std::shared_ptr<Scale> scale;
+	if (!TuningFile::parseScale(m_scaleNameEdit->text(), m_scaleTextEdit->toPlainText(), scale, error))
 	{
-		if (line.isEmpty()) {continue;}
-		if (line[0] == '!') {continue;}		// comment
-		QString firstSection = line.section(QRegularExpression("\\s+|/"), 0, 0, QString::SectionSkipEmpty);
-		if (firstSection.contains('.'))		// cent mode
-		{
-			newIntervals.emplace_back(firstSection.toFloat());
-		}
-		else								// ratio mode
-		{
-			int num = 1, den = 1;
-			num = firstSection.toInt();
-			if (line.contains('/'))
-			{
-				den = line.split('/').at(1).section(QRegularExpression("\\s+"), 0, 0, QString::SectionSkipEmpty).toInt();
-			}
-			newIntervals.emplace_back(num, den);
-		}
+		QMessageBox::critical(this, tr("Scale parsing error"), error); return false;
 	}
-
-	Song *song = Engine::getSong();
-	if (song == nullptr) {return false;}
-
-	auto newScale = std::make_shared<Scale>(m_scaleNameEdit->text(), std::move(newIntervals));
-	song->setScale(m_scaleComboModel.value(), newScale);
-
+	song->setScale(m_scaleComboModel.value(), std::move(scale));
 	return true;
 }
-
 
 bool MicrotunerConfig::applyKeymap()
 {
-	if (!validateKeymapForm()) {return false;}
-
-	std::vector<int> newMap;
-
-	QStringList input = m_keymapTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
-	for (auto &line: input)
+	const auto song = Engine::getSong();
+	if (!song) { return false; }
+	const auto previous = song->getKeymap(m_keymapComboModel.value());
+	QString error; std::shared_ptr<Keymap> keymap;
+	bool frequencyOk = false, octaveOk = false;
+	auto frequency = m_baseFreqEdit->text().toDouble(&frequencyOk);
+	if (!frequencyOk) { frequency = QLocale().toDouble(m_baseFreqEdit->text(), &frequencyOk); }
+	const auto octave = m_octaveDegreeEdit->text().toInt(&octaveOk);
+	if (!frequencyOk || !octaveOk)
 	{
-		if (line.isEmpty()) {continue;}
-		if (line[0] == '!') {continue;}			// comment
-		QString firstSection = line.section(QRegularExpression("\\s+"), 0, 0, QString::SectionSkipEmpty);
-		if (firstSection == "x")
-		{
-			newMap.push_back(-1);				// not mapped
-			continue;
-		}
-		newMap.push_back(firstSection.toInt());
+		QMessageBox::critical(this, tr("Keymap parsing error"), tr("Enter a numeric reference frequency and a signed integer formal octave degree."));
+		return false;
 	}
-
-	Song *song = Engine::getSong();
-	if (song == nullptr) {return false;}
-
-	auto newKeymap = std::make_shared<Keymap>(
-		m_keymapNameEdit->text(),
-		std::move(newMap),
-		m_firstKeyModel.value(),
-		m_lastKeyModel.value(),
-		m_middleKeyModel.value(),
-		m_baseKeyModel.value(),
-		m_baseFreqModel.value()
-	);
-	song->setKeymap(m_keymapComboModel.value(), newKeymap);
-
-	if (newKeymap->getDegree(newKeymap->getBaseKey()) == -1) {
-		QMessageBox::warning(this, tr("Invalid keymap"), tr("Base key is not mapped to any scale degree. No sound will be produced as there is no way to assign reference frequency to any note."));}
-
+	if (!TuningFile::parseKeymap(m_keymapNameEdit->text(), m_keymapTextEdit->toPlainText(),
+		m_firstKeyModel.value(), m_lastKeyModel.value(), m_middleKeyModel.value(), m_baseKeyModel.value(),
+		frequency, octave, keymap, error, previous->linearFromMiddle()))
+	{
+		QMessageBox::critical(this, tr("Keymap parsing error"), error); return false;
+	}
+	const bool referenceMapped = keymap->isMapped(keymap->getBaseKey());
+	song->setKeymap(m_keymapComboModel.value(), std::move(keymap));
+	if (!referenceMapped)
+	{
+		QMessageBox::warning(this, tr("Invalid keymap"), tr("Base key is unmapped; no reference frequency can be assigned."));
+	}
 	return true;
 }
-
 
 bool MicrotunerConfig::loadScaleFromFile()
 {
-	QString fileName = FileDialog::getOpenFileName(this, tr("Open scale"), "", tr("Scala scale definition (*.scl)"));
-	if (fileName == "") {return false;}
-	QFile file(fileName);
-	if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+	const auto song = Engine::getSong();
+	if (!song) { return false; }
+	const auto path = FileDialog::getOpenFileName(this, tr("Open scale"), "", tr("Scala scale definition (*.scl)"));
+	if (path.isEmpty()) { return false; }
+	QString error; std::shared_ptr<Scale> scale;
+	if (!TuningFile::loadScale(path, scale, error))
 	{
-		QMessageBox::critical(this, tr("Scale load failure"), tr("Unable to open selected file."));
-		return false;
+		QMessageBox::critical(this, tr("Scale load failure"), error); return false;
 	}
-	QTextStream stream(&file);
-	int i = -2, limit = 0;
-
-	m_scaleNameEdit->setText("");
-	m_scaleTextEdit->clear();
-	while (!stream.atEnd() && i < limit)
-	{
-		QString line = stream.readLine();
-		if (line != "" && line[0] == '!') {continue;}					// comment
-		switch(i) {
-			case -2:	m_scaleNameEdit->setText(line); break;			// first non-comment line = name or description
-			case -1:	limit = line.toInt(); break;					// second non-comment line = degree count
-			default:	m_scaleTextEdit->appendPlainText(line); break;	// all other lines = interval definitions
-		}
-		i++;
-	}
-
-	return applyScale();
+	song->setScale(m_scaleComboModel.value(), std::move(scale));
+	updateScaleForm(); return true;
 }
-
 
 bool MicrotunerConfig::loadKeymapFromFile()
 {
-	QString fileName = FileDialog::getOpenFileName(this, tr("Open keymap"), "", tr("Scala keymap definition (*.kbm)"));
-	if (fileName == "") {return false;}
-	QFile file(fileName);
-	if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+	const auto song = Engine::getSong();
+	if (!song) { return false; }
+	const auto path = FileDialog::getOpenFileName(this, tr("Open keymap"), "", tr("Scala keymap definition (*.kbm)"));
+	if (path.isEmpty()) { return false; }
+	QString error; std::shared_ptr<Keymap> keymap;
+	if (!TuningFile::loadKeymap(path, keymap, error))
 	{
-		QMessageBox::critical(this, tr("Keymap load failure"), tr("Unable to open selected file."));
-		return false;
+		QMessageBox::critical(this, tr("Keymap load failure"), error); return false;
 	}
-	QTextStream stream(&file);
-	int i = -7, limit = 0;
-
-	m_keymapNameEdit->setText(QFileInfo(fileName).baseName());		// .kbm does not store description, use file name
-	m_keymapTextEdit->clear();
-
-	while (!stream.atEnd() && i < limit)
-	{
-		QString line = stream.readLine();
-		if (line != "" && line[0] == '!')
-		{
-			if (line.length() > 1 && line[1] == '!' && i == -7)		// LMMS extension: double "!" occurring before any
-			{														// value is loaded marks a description field.
-				m_keymapNameEdit->setText(line.mid(2));
-			}
-			continue;
-		}
-		switch(i) {
-			case -7:	limit = line.toInt(); break;						// first non-comment line = keymap size
-			case -6:	m_firstKeyModel.setValue(line.toInt()); break;		// second non-comment line = first key
-			case -5:	m_lastKeyModel.setValue(line.toInt()); break;		// third non-comment line = last key
-			case -4:	m_middleKeyModel.setValue(line.toInt()); break;		// fourth non-comment line = middle key
-			case -3:	m_baseKeyModel.setValue(line.toInt()); break;		// fifth non-comment line = base key
-			case -2:	m_baseFreqModel.setValue(line.toDouble()); break;	// sixth non-comment line = base freq
-			case -1:	break;	// ignored									// seventh non-comment line = octave degree
-			default:	m_keymapTextEdit->appendPlainText(line); break;		// all other lines = mapping definitions
-		}
-		i++;
-	}
-
-	return applyKeymap();
+	song->setKeymap(m_keymapComboModel.value(), std::move(keymap));
+	updateKeymapForm(); return true;
 }
-
 
 bool MicrotunerConfig::saveScaleToFile()
 {
-	if (!applyScale()) {return false;}
-	QString fileName = FileDialog::getSaveFileName(this, tr("Save scale"), "", tr("Scala scale definition (*.scl)"));
-	if (fileName == "") {return false;}
-	if (QFileInfo(fileName).suffix() != "scl") {fileName = fileName + ".scl";}
-	QFile file(fileName);
-	if (!file.open(QIODevice::WriteOnly))
+	if (!applyScale()) { return false; }
+	auto path = FileDialog::getSaveFileName(this, tr("Save scale"), "", tr("Scala scale definition (*.scl)"));
+	if (path.isEmpty()) { return false; }
+	if (QFileInfo(path).suffix() != "scl") { path += ".scl"; }
+	QString error;
+	if (!TuningFile::saveScale(path, *Engine::getSong()->getScale(m_scaleComboModel.value()), error))
 	{
-		QMessageBox::critical(this, tr("Scale save failure"), tr("Unable to open selected file for writing."));
-		return false;
+		QMessageBox::critical(this, tr("Scale save failure"), error); return false;
 	}
-	Song *song = Engine::getSong();
-	if (song == nullptr) {return false;}
-
-	QTextStream stream(&file);
-	stream << "! " << QFileInfo(fileName).fileName() << "\n";
-	stream << "! Exported from LMMS " LMMS_VERSION "\n";
-	stream << "!\n";
-	stream << "! Scale description:\n";
-	stream << m_scaleNameEdit->text() << "\n";
-	stream << "!\n";
-	stream << "! Number of degrees:\n";
-	stream << song->getScale(m_scaleComboModel.value())->getIntervals().size() - 1 << "\n";
-	stream << "!\n";
-	stream << "! Intervals:\n";
-	stream << m_scaleTextEdit->toPlainText() << "\n";
-
 	return true;
 }
-
 
 bool MicrotunerConfig::saveKeymapToFile()
 {
-	if (!applyKeymap()) {return false;}
-	QString fileName = FileDialog::getSaveFileName(this, tr("Save keymap"), "", tr("Scala keymap definition (*.kbm)"));
-	if (fileName == "") {return false;}
-	if (QFileInfo(fileName).suffix() != "kbm") {fileName = fileName + ".kbm";}
-	QFile file(fileName);
-	if (!file.open(QIODevice::WriteOnly))
+	if (!applyKeymap()) { return false; }
+	auto path = FileDialog::getSaveFileName(this, tr("Save keymap"), "", tr("Scala keymap definition (*.kbm)"));
+	if (path.isEmpty()) { return false; }
+	if (QFileInfo(path).suffix() != "kbm") { path += ".kbm"; }
+	QString error;
+	if (!TuningFile::saveKeymap(path, *Engine::getSong()->getKeymap(m_keymapComboModel.value()), error))
 	{
-		QMessageBox::critical(this, tr("Keymap save failure"), tr("Unable to open selected file for writing."));
-		return false;
+		QMessageBox::critical(this, tr("Keymap save failure"), error); return false;
 	}
-	Song *song = Engine::getSong();
-	if (song == nullptr) {return false;}
-
-	QTextStream stream(&file);
-	stream << "! " << QFileInfo(fileName).fileName() << "\n";
-	stream << "! Exported from LMMS " LMMS_VERSION "\n";
-	stream << "!\n";
-	stream << "! Keymap description:\n";
-	stream << "!!" << m_keymapNameEdit->text() << "\n";
-	stream << "!\n";
-	stream << "! Keymap size:\n";
-	stream << song->getKeymap(m_keymapComboModel.value())->getMap().size() << "\n";
-	stream << "!\n";
-	stream << "! First key:\n";
-	stream << m_firstKeyModel.value() << "\n";
-	stream << "! Last key:\n";
-	stream << m_lastKeyModel.value() << "\n";
-	stream << "! Middle key:\n";
-	stream << m_middleKeyModel.value() << "\n";
-	stream << "! Base key:\n";
-	stream << m_baseKeyModel.value() << "\n";
-	stream << "! Base frequency:\n";
-	stream << m_baseFreqModel.value() << "\n";
-	stream << "! Octave degree (always using the last scale degree):\n";
-	stream << "0\n";
-	stream << "!\n";
-	stream << "! Key mappings:\n";
-	stream << m_keymapTextEdit->toPlainText() << "\n";
-
 	return true;
 }
-
 
 void MicrotunerConfig::saveSettings(QDomDocument &document, QDomElement &element)
 {

@@ -27,132 +27,105 @@
 #define LMMS_MIDI_APPLE_H
 
 #include "lmmsconfig.h"
-
 #ifdef LMMS_BUILD_APPLE
 
 #include "MidiClient.h"
 #include "MidiPort.h"
 #include <CoreMIDI/CoreMIDI.h>
-
-
-class QLineEdit;
-
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <mutex>
 
 namespace lmms
 {
-
 
 class MidiApple : public QObject, public MidiClient
 {
 	Q_OBJECT
 public:
 	MidiApple();
-	virtual ~MidiApple();
+	~MidiApple() override;
 
-	inline static QString probeDevice()
+	static QString probeDevice() { return {}; }
+	static QString name() { return QT_TRANSLATE_NOOP("MidiSetupWidget", "Apple MIDI"); }
+	static QString configSection() { return {}; }
+
+	void processOutEvent(const MidiEvent& event, const TimePos& time, const MidiPort* port) override;
+	void applyPortMode(MidiPort* port) override;
+	void removePort(MidiPort* port) override;
+	QStringList readablePorts() const override;
+	QStringList writablePorts() const override;
+	QString sourcePortName(const MidiEvent& event) const override { return MidiClient::sourcePortName(event); }
+	void subscribeReadablePort(MidiPort* port, const QString& destination, bool subscribe = true) override;
+	void subscribeWritablePort(MidiPort* port, const QString& destination, bool subscribe = true) override;
+	void connectRPChanged(QObject* receiver, const char* member) override
 	{
-		return QString(); // no midi device name
+		connect(this, SIGNAL(readablePortsChanged()), receiver, member);
 	}
-
-	inline static QString name()
+	void connectWPChanged(QObject* receiver, const char* member) override
 	{
-		return QT_TRANSLATE_NOOP( "MidiSetupWidget", "Apple MIDI" );
+		connect(this, SIGNAL(writablePortsChanged()), receiver, member);
 	}
-	inline static QString configSection()
-	{
-		return QString(); // no configuration settings
-	}
-	
-	virtual void processOutEvent( const MidiEvent & _me,
-								const TimePos & _time,
-								const MidiPort * _port );
-	
-	virtual void applyPortMode( MidiPort * _port );
-	virtual void removePort( MidiPort * _port );
-
-
-	// list devices as ports
-	virtual QStringList readablePorts() const
-	{
-		return m_inputDevices.keys();
-	}
-
-	virtual QStringList writablePorts() const
-	{
-		return m_outputDevices.keys();
-	}
-
-	// return name of port which specified MIDI event came from
-	virtual QString sourcePortName( const MidiEvent & ) const;
-
-	// (un)subscribe given MidiPort to/from destination-port
-	virtual void subscribeReadablePort( MidiPort * _port,
-									const QString & _dest,
-									bool _subscribe = true );
-
-	virtual void subscribeWritablePort( MidiPort * _port,
-									const QString & _dest,
-									bool _subscribe = true );
-
-	virtual void connectRPChanged( QObject * _receiver,
-									const char * _member )
-	{
-		connect( this, SIGNAL( readablePortsChanged() ),
-				_receiver, _member );
-	}
-
-
-	virtual void connectWPChanged( QObject * _receiver,
-									const char * _member )
-	{
-		connect( this, SIGNAL( writablePortsChanged() ),
-				_receiver, _member );
-	}
-
-
-	virtual bool isRaw() const
-	{
-		return false;
-	}
-
-
-private:// slots:
-	void updateDeviceList();
-
+	bool hasQueuedInputDelivery() const override { return true; }
+	InputBackendStatus inputBackendStatus() const override;
+	bool isAvailable() const;
 
 private:
-	void openDevices();
-	void closeDevices();
-	void openMidiReference( MIDIEndpointRef reference, QString refName,bool isIn );
-	MIDIClientRef getMidiClientRef();
-	void midiInClose( MIDIEndpointRef reference );
-	static void NotifyCallback( const MIDINotification *message, void *refCon );
-	static void ReadCallback( const MIDIPacketList *pktlist, void *readProcRefCon, void *srcConnRefCon );
-	void HandleReadCallback( const MIDIPacketList *pktlist, void *srcConnRefCon );
-	void notifyMidiPortList( MidiPortList portList, MidiEvent midiEvent);
-	char * getFullName( MIDIEndpointRef &endpoint_ref );
-	void sendMidiOut( MIDIEndpointRef & endPointRef, const MidiEvent& event );
-	MIDIPacketList createMidiPacketList( const MidiEvent& event );
+	friend class MidiAppleTestAccess;
+	explicit MidiApple(bool initializeNative);
+	class SourceParser;
+	struct SourceInfo;
+	struct EndpointInfo
+	{
+		MIDIEndpointRef endpoint = 0;
+		QString name;
+		SInt32 uniqueID = 0;
+		MIDIDeviceRef device = 0;
+	};
+	using SourceMap = QMap<MIDIEndpointRef, std::shared_ptr<SourceInfo>>;
+	using SubMap = QMap<QString, MidiPortList>;
 
-	MIDIClientRef mClient = 0;
+	static void NotifyCallback(const MIDINotification* notification, void* context) noexcept;
+	static void ReadCallback(const MIDIPacketList* packets, void* clientToken, void* sourceToken) noexcept;
+	static QMap<QString, MIDIEndpointRef> endpointNames(const QList<EndpointInfo>& endpoints);
+	static bool createMidiPacketList(const MidiEvent& event, MIDIPacketList& packets);
+
+	void initialize();
+	void closeDevices();
+	void updateDeviceList();
+	void scheduleDeviceUpdateLocked();
+	void handlePacketsLocked(const MIDIPacketList* packets, std::uintptr_t sourceToken);
+	void processSourceEventLocked(const QString& sourceName, const MidiEvent& event);
+	void retireSourceLocked(const std::shared_ptr<SourceInfo>& source);
+	void faultSourceSubscribersLocked(const QString& sourceName);
+	std::uintptr_t registerSource(MIDIEndpointRef endpoint, const QString& name, SInt32 uniqueID = 0, MIDIDeviceRef device = 0);
+	void renameSourceLocked(const std::shared_ptr<SourceInfo>& source, const QString& name);
+	void recordError(OSStatus status) noexcept;
+
+	// Callback lookup holds the registry before this mutex. CoreMIDI API calls hold neither.
+	mutable std::mutex m_devicesMutex;
+	std::mutex m_apiMutex;
+	std::uintptr_t m_callbackToken = 0;
+	MIDIClientRef m_client = 0; // The native client belongs to the process service.
+	MIDIPortRef m_inputPort = 0;
+	MIDIPortRef m_outputPort = 0;
+	bool m_closing = false;
+	bool m_updatePending = false;
+	std::atomic<int> m_nativeError{0};
 	QMap<QString, MIDIEndpointRef> m_inputDevices;
 	QMap<QString, MIDIEndpointRef> m_outputDevices;
-	QMap<MIDIEndpointRef, MIDIPortRef> m_sourcePortRef;
-
-	// subscriptions
-	using SubMap = QMap<QString, MidiPortList>;
+	QMap<MIDIEndpointRef, MIDIDeviceRef> m_outputEndpointDevices;
+	SourceMap m_sources;
+	QMap<std::uintptr_t, std::shared_ptr<SourceInfo>> m_sourceTokens;
 	SubMap m_inputSubs;
 	SubMap m_outputSubs;
 
 signals:
 	void readablePortsChanged();
 	void writablePortsChanged();
-
-} ;
-
+};
 
 } // namespace lmms
-
 #endif // LMMS_BUILD_APPLE
-
 #endif // LMMS_MIDI_APPLE_H

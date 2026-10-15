@@ -110,9 +110,7 @@ void AutomationClipView::disconnectObject( QAction * _a )
 		float oldMin = m_clip->getMin();
 		float oldMax = m_clip->getMax();
 
-		m_clip->m_objects.erase( std::find( m_clip->m_objects.begin(),
-					m_clip->m_objects.end(),
-				dynamic_cast<AutomatableModel *>( j ) ) );
+		if (!m_clip->removeObject(dynamic_cast<AutomatableModel*>(j))) { return; }
 		update();
 
 		//If automation editor is opened, update its display after disconnection

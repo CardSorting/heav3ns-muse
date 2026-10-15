@@ -26,6 +26,7 @@
 #define LMMS_GUI_MIXER_CHANNEL_VIEW_H
 
 #include <QWidget>
+#include <QPointer>
 
 class QGraphicsView;
 class QLabel;
@@ -57,6 +58,7 @@ class MixerChannelView : public QWidget
 	Q_PROPERTY(QColor strokeInnerInactive READ strokeInnerInactive WRITE setStrokeInnerInactive)
 public:
 	MixerChannelView(QWidget* parent, MixerView* mixerView, int channelIndex);
+	~MixerChannelView() override;
 	void paintEvent(QPaintEvent* event) override;
 	void contextMenuEvent(QContextMenuEvent*) override;
 	void mousePressEvent(QMouseEvent*) override;
@@ -120,7 +122,10 @@ private:
 	AutomatableButton* m_soloButton;
 	PeakIndicator* m_peakIndicator = nullptr;
 	Fader* m_fader;
-	EffectRackView* m_effectRackView;
+	// The rack is laid out under MixerView, but belongs to this channel view.
+	QPointer<EffectRackView> m_effectRackView;
+	QMetaObject::Connection m_muteConnection;
+	QMetaObject::Connection m_soloConnection;
 	MixerView* m_mixerView;
 	int m_channelIndex = 0;
 	bool m_inRename = false;

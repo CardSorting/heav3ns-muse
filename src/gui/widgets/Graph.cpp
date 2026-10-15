@@ -29,7 +29,12 @@
 #include "DeprecationHelper.h"
 #include "FileDialog.h"
 #include "StringPairDrag.h"
-#include "Oscillator.h"
+#include "GraphModel.h"
+#include "Engine.h"
+#include "Song.h"
+#include <QPointer>
+#include <algorithm>
+#include <cmath>
 
 namespace lmms
 {
@@ -58,6 +63,20 @@ Graph::Graph( QWidget * _parent, Style _style, int _width,
 
 	QObject::connect( gModel, SIGNAL(lengthChanged()),
 			this, SLOT(updateGraph()));
+}
+
+QString Graph::loadUserWaveform(graphModel* target)
+{
+	QPointer<graphModel> model = target;
+	const auto path = FileDialog::openWaveformFile();
+	if (path.isEmpty() || !model) { return {}; }
+	QString error;
+	if (!model->loadWaveform(path, error))
+	{
+		if (Engine::getSong()) { Engine::getSong()->collectError(error); }
+		return {};
+	}
+	return path;
 }
 
 void Graph::setForeground( const QPixmap &_pixmap )
@@ -187,7 +206,7 @@ void Graph::drawLineAt( int _x, int _y, int _lastx )
 {
 	float minVal = model()->minValue();
 	float maxVal = model()->maxValue();
-	if ( width() <= 4 )
+	if (width() <= 4 || height() <= 5)
 	{
 		return;
 	}
@@ -200,6 +219,7 @@ void Graph::drawLineAt( int _x, int _y, int _lastx )
 	_y -= 2;
 	_lastx -= 2;
 
+	_x = std::clamp(_x, 0, width() - 5);
 	_lastx = qMax( 0, qMin( _lastx, width()-5 ) );
 
 	float range = minVal - maxVal;
@@ -230,6 +250,7 @@ void Graph::drawLineAt( int _x, int _y, int _lastx )
 	
 	// calculate line drawing variables
 	int linelen = sample_end - sample_begin;
+	if (linelen <= 0) { return; }
 	if (linelen == 1)
 	{
 		val_begin = val;
@@ -237,15 +258,17 @@ void Graph::drawLineAt( int _x, int _y, int _lastx )
 	//int xstep = _x > _lastx ? -1 : 1;
 	float ystep = ( val_end - val_begin ) / linelen;
 
-	// draw a line
+	// Publish the entire stroke through the model's checked audio boundary.
+	QVector<float> samples(model()->length());
+	std::copy_n(model()->samples(), model()->length(), samples.begin());
 	for ( int i = 0 ; i < linelen; i++ )
 	{
-		model()->drawSampleAt( sample_begin + i , val_begin + ((i ) * ystep));
+		float value = val_begin + i * ystep;
+		if (model()->step() > 0) { value = std::floor(value / model()->step()) * model()->step(); }
+		samples[std::clamp(sample_begin + i, 0, model()->length() - 1)] = std::clamp(value, minVal, maxVal);
 	}
-
-	// We've changed [sample_end, sample_begin)
-	// However, samplesChanged expects two end points
-	model()->samplesChanged(sample_begin, sample_end - 1);
+	QString error;
+	model()->setSamplesChecked({samples.constData(), static_cast<std::size_t>(samples.size())}, error);
 }
 
 void Graph::changeSampleAt( int _x, int _y )
@@ -419,7 +442,7 @@ void Graph::dropEvent( QDropEvent * _de )
 
 	if( type == "samplefile" )
 	{
-		// TODO: call setWaveToUser
+		// TODO: use the native waveform loader for audio-file drops.
 		// loadSampleFromFile( value );
 		_de->accept();
 	}
@@ -462,282 +485,5 @@ void Graph::updateGraph()
 
 
 } // namespace gui
-
-graphModel::graphModel(float ymin, float ymax, int length, Model* parent, bool defaultConstructed, float step) :
-	Model(parent, tr("Graph"), defaultConstructed),
-	m_samples(length),
-	m_length(length),
-	m_minValue(ymin),
-	m_maxValue(ymax),
-	m_step(std::clamp(step, 0.f, std::abs(ymax - ymin)))
-{
-}
-
-void graphModel::setRange(float ymin, float ymax)
-{
-	if (ymin == m_minValue && ymax == m_maxValue) { return; }
-	// Step sizes less than zero or larger than the entire range of
-	// values are nonsense, clamp those
-	m_step = std::clamp(m_step, 0.f, std::abs(ymax - ymin));
-	m_minValue = ymin;
-	m_maxValue = ymax;
-	// Trim existing values
-	for (float& sample : m_samples) {
-		sample = std::clamp(sample, ymin, ymax);
-	}
-	emit rangeChanged();
-}
-
-void graphModel::setLength( int _length )
-{
-	if( _length != m_length )
-	{
-		m_length = _length;
-		if( m_samples.size() < m_length )
-		{
-			m_samples.resize( m_length );
-		}
-		emit lengthChanged();
-	}
-}
-
-
-
-void graphModel::setSampleAt( int x, float val )
-{
-	drawSampleAt( x, val );
-	emit samplesChanged( x, x );
-}
-
-
-
-void graphModel::setSamples( const float * _samples )
-{
-	std::copy( _samples, _samples + length(), m_samples.begin());
-
-	emit samplesChanged( 0, length()-1 );
-}
-
-
-
-void graphModel::setWaveToSine()
-{
-	for( int i = 0; i < length(); i++ )
-	{
-		m_samples[i] = Oscillator::sinSample(
-				i / static_cast<float>( length() ) );
-	}
-
-	emit samplesChanged( 0, length() - 1 );
-};
-
-
-
-void graphModel::setWaveToTriangle()
-{
-	for( int i = 0; i < length(); i++ )
-	{
-		m_samples[i] = Oscillator::triangleSample(
-				i / static_cast<float>( length() ) );
-	}
-
-	emit samplesChanged( 0, length() - 1 );
-};
-
-
-
-void graphModel::setWaveToSaw()
-{
-	for( int i = 0; i < length(); i++ )
-	{
-		m_samples[i] = Oscillator::sawSample(
-				i / static_cast<float>( length() ) );
-	}
-
-	emit samplesChanged( 0, length() - 1 );
-};
-
-
-
-void graphModel::setWaveToSquare()
-{
-	for( int i = 0; i < length(); i++ )
-	{
-		m_samples[i] = Oscillator::squareSample(
-				i / static_cast<float>( length() ) );
-	}
-
-	emit samplesChanged( 0, length() - 1 );
-};
-
-
-
-void graphModel::setWaveToNoise()
-{
-	for( int i = 0; i < length(); i++ )
-	{
-		m_samples[i] = Oscillator::noiseSample(
-				i / static_cast<float>( length() ) );
-	}
-
-	emit samplesChanged( 0, length() - 1 );
-};
-
-QString graphModel::setWaveToUser()
-{
-	QString fileName = gui::FileDialog::openWaveformFile();
-	if( fileName.isEmpty() == false )
-	{
-		auto sampleBuffer = SampleBuffer::fromFile(fileName);
-		for( int i = 0; i < length(); i++ )
-		{
-			m_samples[i] = Oscillator::userWaveSample(sampleBuffer.get(), i / static_cast<float>(length()));
-		}
-	}
-
-	emit samplesChanged( 0, length() - 1 );
-	return fileName;
-};
-
-
-
-void graphModel::smooth()
-{
-	// store values in temporary array
-	QVector<float> temp = m_samples;
-
-	// Smoothing
-	m_samples[0] = ( temp[length()-1] + ( temp[0] * 2 ) + temp[1] ) * 0.25f;
-	for ( int i=1; i < ( length()-1 ); i++ )
-	{
-		m_samples[i] = ( temp[i-1] + ( temp[i] * 2 ) + temp[i+1] ) * 0.25f;
-	}
-	m_samples[length()-1] = ( temp[length()-2] + ( temp[length()-1] * 2 ) + temp[0] ) * 0.25f;
-
-	emit samplesChanged(0, length()-1);
-}
-
-void graphModel::smoothNonCyclic()
-{
-	// store values in temporary array
-	QVector<float> temp = m_samples;
-
-	// Smoothing
-	//m_samples[0] = ( ( temp[0] * 3 ) + temp[1] ) * 0.25f;
-	for ( int i=1; i < ( length()-1 ); i++ )
-	{
-		m_samples[i] = ( temp[i-1] + ( temp[i] * 2 ) + temp[i+1] ) * 0.25f;
-	}
-	//m_samples[length()-1] = ( temp[length()-2] + ( temp[length()-1] * 3 ) ) * 0.25f;
-
-	emit samplesChanged(0, length()-1);
-}
-
-void graphModel::convolve(const float *convolution,
-	const int convolutionLength, const int centerOffset)
-{
-	// store values in temporary array
-	QVector<float> temp = m_samples;
-	const int graphLength = length();
-	// make a cyclic convolution
-	for ( int i = 0; i <  graphLength; i++ )
-	{
-		float sum = 0.0f;
-		for ( int j = 0; j < convolutionLength; j++ )
-		{
-			sum += convolution[j] * temp[( i + j ) % graphLength];
-		}
-		m_samples[( i + centerOffset ) % graphLength] = sum;
-	}
-	emit samplesChanged(0, graphLength - 1);
-}
-
-void graphModel::normalize()
-{
-	float max = 0.0001f;
-	float avg = 0.0f;
-
-	// first correct dc offset by normalizing to average
-	for( int i = 0; i < length(); i++ )
-		avg += m_samples[i];
-	avg /= length();
-	for( int i = 0; i < length(); i++ )
-		m_samples[i] -= avg;
-
-	// then maximize
-	for( int i = 0; i < length(); i++ )
-		max = qMax( max, qAbs( m_samples[i] ) );
-
-	for( int i = 0; i < length(); i++ )
-		m_samples[i] = qBound( m_minValue, m_samples[i] / max, m_maxValue );
-
-	// signal changes if any
-	if( max != 1.0f || avg != 0.0f )
-		emit samplesChanged( 0, length()-1 );
-}
-
-
-
-void graphModel::invert()
-{
-	const float range = m_maxValue - m_minValue;
-
-	for( int i = 0; i < length(); i++ )
-		m_samples[i] = m_minValue + ( range - ( m_samples[i] - m_minValue ) );
-
-	emit samplesChanged( 0, length()-1 );
-}
-
-
-
-void graphModel::shiftPhase( int _deg )
-{
-	// calculate offset in samples
-	const int offset = ( _deg * length() ) / 360; //multiply first because integers
-	
-	// store values in temporary array
-	QVector<float> temp = m_samples;
-	
-	// shift phase
-	for( int i = 0; i < length(); i++ )
-	{
-		int o = ( i + offset ) % length();
-		while( o < 0 ) o += length();
-		m_samples[i] = temp[o];
-	}
-	
-	emit samplesChanged( 0, length()-1 );
-}
-
-void graphModel::clear()
-{
-	const int graph_length = length();
-	for( int i = 0; i < graph_length; i++ )
-		m_samples[i] = 0;
-	emit samplesChanged( 0, graph_length - 1 );
-}
-
-
-// Clear any part of the graph that isn't displayed
-void graphModel::clearInvisible()
-{
-	const int graph_length = length();
-	const int full_graph_length = m_samples.size();
-	for( int i = graph_length; i < full_graph_length; i++ )
-		m_samples[i] = 0;
-	emit samplesChanged( graph_length, full_graph_length - 1 );
-}
-
-void graphModel::drawSampleAt(int x, float val)
-{
-	// snap to the grid
-	if (m_step > 0) { val = std::floor(val / m_step) * m_step; }
-	// boundary crop
-	x = std::clamp(x, 0, length() - 1);
-	val = std::clamp(val, minValue(), maxValue());
-	// change sample shape
-	m_samples[x] = val;
-}
-
 
 } // namespace lmms

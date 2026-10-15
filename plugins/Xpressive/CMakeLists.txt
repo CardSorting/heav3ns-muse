@@ -1,28 +1,24 @@
 include(BuildPlugin)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Dexprtk_disable_sc_andor")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Dexprtk_disable_return_statement")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Dexprtk_disable_break_continue")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Dexprtk_disable_comments")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Dexprtk_disable_string_capabilities")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Dexprtk_disable_rtl_io_file")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Dexprtk_disable_rtl_vecops")
-
-if(NOT MSVC)
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
-endif()
-
-if(LMMS_BUILD_WIN32 OR LMMS_BUILD_CYGWIN)
-	if(MSVC)
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj")
-	else()
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wa,-mbig-obj -Dexprtk_disable_enhanced_features")
-	endif()
-endif()
-
 add_library(exprtk INTERFACE)
 target_include_directories(exprtk INTERFACE exprtk)
 set_target_properties(exprtk PROPERTIES SYSTEM TRUE)
+target_compile_definitions(exprtk INTERFACE
+	exprtk_disable_sc_andor exprtk_disable_return_statement
+	exprtk_disable_break_continue exprtk_disable_comments
+	exprtk_disable_string_capabilities exprtk_disable_rtl_io_file
+	exprtk_disable_rtl_vecops)
+if(NOT MSVC)
+	target_compile_options(exprtk INTERFACE -fexceptions)
+endif()
+if(LMMS_BUILD_WIN32 OR LMMS_BUILD_CYGWIN)
+	if(MSVC)
+		target_compile_options(exprtk INTERFACE /bigobj)
+	else()
+		target_compile_options(exprtk INTERFACE -Wa,-mbig-obj)
+		target_compile_definitions(exprtk INTERFACE exprtk_disable_enhanced_features)
+	endif()
+endif()
 
 build_plugin(xpressive
 	Xpressive.cpp

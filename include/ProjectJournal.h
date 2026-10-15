@@ -55,6 +55,7 @@ public:
 	bool canRedo() const;
 
 	void addJournalCheckPoint( JournallingObject *jo );
+	bool addPreparedJournalCheckPoint(JournallingObject* object, const DataFile& state);
 
 	bool isJournalling() const
 	{
@@ -113,13 +114,16 @@ private:
 		DataFile data;
 	} ;
 	using CheckPointStack = QStack<CheckPoint>;
+	void restoreLatest(CheckPointStack& source, CheckPointStack& destination, const QString& action);
 
 	JoIdMap m_joIDs;
+	jo_id_t m_nextAllocationId = 1;
 
 	CheckPointStack m_undoCheckPoints;
 	CheckPointStack m_redoCheckPoints;
 
 	bool m_journalling;
+	bool m_restoring = false;
 
 } ;
 

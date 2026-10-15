@@ -52,8 +52,17 @@ public:
 	//! Write `size` sample frames from `buf` into the output file.
 	virtual void writeBuffer(const SampleFrame* buf, const f_cnt_t frames) = 0;
 
+	//! Finalize codec headers, flush and close output, reporting any errors.
+	//! Call only after the rendering thread has stopped; safe to call again.
+	virtual bool finalizeOutput();
+	bool hasWriteError() const { return m_writeError; }
+
 protected:
+	// Zero frames are a no-op. Nonempty writes require finite stereo input and
+	// a count representable by native codec/conversion buffer APIs.
+	bool admitBuffer(const SampleFrame* data, f_cnt_t frames);
 	int writeData( const void* data, int len );
+	void recordWriteError() { m_writeError = true; }
 
 	inline bool outputFileOpened() const
 	{
@@ -66,11 +75,13 @@ protected:
 	}
 
 private:
+	bool m_finalized = false;
 	void startProcessingImpl() override {}
 	void stopProcessingImpl() override {}
 
 	QFile m_outputFile;
 	OutputSettings m_outputSettings;
+	bool m_writeError = false;
 } ;
 
 using AudioFileDeviceInstantiaton

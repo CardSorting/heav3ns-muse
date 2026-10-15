@@ -28,14 +28,25 @@
 #include <QProgressDialog>
 #include <QDomElement>
 #include <QWriteLocker>
+#include <QReadLocker>
+#include <QScopedValueRollback>
+#include <QThread>
+#include <QPointer>
+#include <QScopeGuard>
+#include <stdexcept>
+#include <algorithm>
+#include <limits>
 
+#include "AudioEngine.h"
 #include "AutomationClip.h"
+#include "Engine.h"
 #include "embed.h"
 #include "TrackContainer.h"
 #include "PatternClip.h"
 #include "PatternStore.h"
 #include "PatternTrack.h"
 #include "Song.h"
+#include "FileResourceIO.h"
 
 #include "GuiApplication.h"
 #include "MainWindow.h"
@@ -66,16 +77,36 @@ TrackContainer::~TrackContainer()
 
 void TrackContainer::saveSettings( QDomDocument & _doc, QDomElement & _this )
 {
+	if (thread() != QThread::currentThread() || m_savingTracks || m_loadingTracks) { throw std::logic_error("Native track container save is already active or on another thread"); }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	const QPointer<TrackContainer> owner(this);
+	m_savingTracks = true;
+	const auto saving = qScopeGuard([owner] { if (owner) { owner->m_savingTracks = false; } });
+	std::vector<QPointer<Track>> tracks;
+	{
+		const QReadLocker lock(&m_tracksMutex);
+		for (auto track : m_tracks) { tracks.emplace_back(track); }
+	}
+	std::size_t next = 0;
+	const auto ready = [&](bool complete = false) {
+		if (!owner || owner->m_tracks.size() != tracks.size()) { throw std::runtime_error("Native track container changed during serialization"); }
+		if (!complete && next < tracks.size() && (!tracks[next] || owner->m_tracks[next] != tracks[next].data())) { throw std::runtime_error("Native track identity changed during serialization"); }
+		for (std::size_t index = 0; complete && index < tracks.size(); ++index)
+		{ if (!tracks[index] || owner->m_tracks[index] != tracks[index].data()) { throw std::runtime_error("Native track roster changed during serialization"); } }
+	};
 	_this.setTagName( classNodeName() );
 	_this.setAttribute( "type", nodeName() );
-
-	// save settings of each track
-	m_tracksMutex.lockForRead();
-	for (const auto& track : m_tracks)
+	ready();
+	// Native serializers may remove tracks. Never retain the roster lock across them.
+	for (const auto& track : tracks)
 	{
+		QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready();
 		track->saveState(_doc, _this);
+		ready();
+		++next;
 	}
-	m_tracksMutex.unlock();
+	ready(true);
 }
 
 
@@ -83,14 +114,26 @@ void TrackContainer::saveSettings( QDomDocument & _doc, QDomElement & _this )
 
 void TrackContainer::loadSettings( const QDomElement & _this )
 {
+	if (thread() != QThread::currentThread() || m_loadingTracks || m_savingTracks) { throw std::logic_error("Native track container restoration cannot reenter or overlap serialization"); }
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	const QPointer<TrackContainer> owner(this);
+	const QPointer<Song> song(Engine::getSong());
+	m_loadingTracks = true;
+	const auto loading = qScopeGuard([owner] { if (owner) { owner->m_loadingTracks = false; } });
+	const auto ready = [&] { if (!owner || !song || Engine::getSong() != song.data()) { throw std::runtime_error("Native track container restoration context retired"); } };
+	const auto check = [&] { ready(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready(); };
 	bool journalRestore = _this.parentNode().nodeName() == "journaldata";
 	if( journalRestore )
 	{
 		clearAllTracks();
+		ready();
 	}
 
-	static QProgressDialog * pd = nullptr;
+	static QPointer<QProgressDialog> pd;
 	bool was_null = ( pd == nullptr );
+	QPointer<QProgressDialog> progress(pd);
+	const auto disposeProgress = qScopeGuard([&] { if (was_null && progress) { delete progress.data(); } });
 	if (!journalRestore && gui::getGUI() != nullptr)
 	{
 		if( pd == nullptr )
@@ -99,21 +142,29 @@ void TrackContainer::loadSettings( const QDomElement & _this )
 						tr( "Cancel" ), 0,
 						Engine::getSong()->getLoadingTrackCount(),
 						gui::getGUI()->mainWindow());
+			progress = pd;
 			pd->setWindowModality( Qt::ApplicationModal );
+			ready(); if (!progress) { throw std::runtime_error("Native project load progress dialog retired"); }
 			pd->setWindowTitle( tr( "Please wait..." ) );
+			ready(); if (!progress) { throw std::runtime_error("Native project load progress dialog retired"); }
 			pd->show();
+			ready();
 		}
 	}
 
 	QDomNode node = _this.firstChild();
 	while( !node.isNull() )
 	{
-		if( pd != nullptr )
+		check();
+		if (progress)
 		{
-			pd->setValue( pd->value() + 1 );
+			progress->setValue(progress->value() + 1);
+			ready();
 			QCoreApplication::instance()->processEvents(
 						QEventLoop::AllEvents, 100 );
-			if( pd->wasCanceled() )
+			ready();
+			if (!progress) { throw std::runtime_error("Native project load progress dialog retired"); }
+			if (progress->wasCanceled())
 			{
 				if (gui::getGUI() != nullptr)
 				{
@@ -121,36 +172,31 @@ void TrackContainer::loadSettings( const QDomElement & _this )
 					tr( "Project loading was cancelled." ),
 					embed::getIconPixmap( "project_file", 24, 24 ),
 					2000 );
+					ready();
 				}
 				Engine::getSong()->loadingCancelled();
 				break;
 			}
 		}
 
-		if( node.isElement() &&
+		if (node.isElement() && node.nodeName() == "track" &&
 			!node.toElement().attribute( "metadata" ).toInt() )
 		{
 			QString trackName = node.toElement().hasAttribute( "name" ) ?
 						node.toElement().attribute( "name" ) :
 						node.firstChild().toElement().attribute( "name" );
-			if( pd != nullptr )
+			if (progress)
 			{
-				pd->setLabelText( tr("Loading Track %1 (%2/Total %3)").arg( trackName ).
-						  arg( pd->value() + 1 ).arg( Engine::getSong()->getLoadingTrackCount() ) );
+				progress->setLabelText(tr("Loading Track %1 (%2/Total %3)").arg(trackName).
+					arg(progress->value() + 1).arg(song->getLoadingTrackCount()));
+				ready();
 			}
-			Track::create( node.toElement(), this );
+			if (!Track::create(node.toElement(), this)) { ready(); song->collectError(tr("Unavailable native track type in project")); }
+			ready();
 		}
 		node = node.nextSibling();
 	}
 
-	if( pd != nullptr )
-	{
-		if( was_null )
-		{
-			delete pd;
-			pd = nullptr;
-		}
-	}
 }
 
 
@@ -192,34 +238,86 @@ void TrackContainer::addTrack( Track * _track )
 
 void TrackContainer::removeTrack( Track * _track )
 {
-	// need a read locker to ensure that m_tracks doesn't change after reading index.
-	//   After checking that index != -1, we need to upgrade the lock to a write locker before changing m_tracks.
-	//   But since Qt offers no function to promote a read lock to a write lock, we must start with the write locker.
-	QWriteLocker lockTracksAccess(&m_tracksMutex);
-	auto it = std::find(m_tracks.begin(), m_tracks.end(), _track);
-	if (it != m_tracks.end())
+	if (!_track) { return; }
+	const auto engine = Engine::audioEngine();
+	const auto changes = engine ? engine->requestChangesGuard() : AudioEngine::RequestChangesGuard{};
+	const QPointer<TrackContainer> owner(this);
+	const QPointer<Track> target(_track);
 	{
-		// If the track is solo, all other tracks are muted. Change this before removing the solo track:
-		if (_track->isSolo()) {
-			_track->setSolo(false);
-		}
-		m_tracks.erase(it);
-		lockTracksAccess.unlock();
-
-		if( Engine::getSong() )
-		{
-			Engine::getSong()->setModified();
-		}
-		emit trackRemoved();
+		QReadLocker lock(&m_tracksMutex);
+		if (std::find(m_tracks.begin(), m_tracks.end(), target.data()) == m_tracks.end()) { return; }
 	}
+	// Solo restoration emits native model notifications. Never hold the roster
+	// lock or retain an iterator across them: callbacks may inspect, move or
+	// remove peers, and may even detach this track through a nested call.
+	if (target->isSolo()) { target->setSolo(false); }
+	if (!owner || !target) { return; }
+	{
+		QWriteLocker lock(&owner->m_tracksMutex);
+		const auto found = std::find(owner->m_tracks.begin(), owner->m_tracks.end(), target.data());
+		if (found == owner->m_tracks.end()) { return; }
+		owner->m_tracks.erase(found);
+	}
+	if (auto song = Engine::getSong()) { song->setModified(); }
+	if (owner) { emit owner->trackRemoved(); }
 }
 
-void TrackContainer::moveTrack(Track* track, int indexTo)
+bool TrackContainer::moveTrack(Track* track, int indexTo)
 {
-	m_tracks.erase(std::find(m_tracks.begin(), m_tracks.end(), track));
-	m_tracks.insert(m_tracks.begin() + indexTo, track);
+	if (QThread::currentThread() != thread() || m_movingTrack) { return false; }
+	const auto engine = Engine::audioEngine();
+	const auto guard = engine ? engine->requestChangesGuard() : AudioEngine::RequestChangesGuard{};
+	const auto found = std::find(m_tracks.begin(), m_tracks.end(), track);
+	if (!track || found == m_tracks.end() || track->trackContainer() != this
+		|| indexTo < 0 || indexTo >= static_cast<int>(m_tracks.size())) { return false; }
+	const auto indexFrom = static_cast<int>(found - m_tracks.begin());
+	if (indexFrom == indexTo) { return true; }
+
+	std::vector<Track*> crossedPatterns;
+	auto pattern = dynamic_cast<PatternTrack*>(track);
+	auto store = Engine::patternStore();
+	PatternTrack* selectedPattern = nullptr;
+	if (pattern)
+	{
+		if (this != Engine::getSong() || !store) { return false; }
+		const int count = countTracks(Track::Type::Pattern);
+		// Check every slot before swapping anything. A sparse/malformed store
+		// must not create clips or partially reorder native pattern ownership.
+		for (auto candidate : m_tracks)
+		{
+			if (auto owner = dynamic_cast<PatternTrack*>(candidate))
+			{
+				const int index = owner->patternIndex();
+				if (index < 0 || index >= count || PatternTrack::findPatternTrack(index) != owner) { return false; }
+			}
+		}
+		for (auto row : store->tracks())
+		{
+			if (row->numOfClips() < count) { return false; }
+			for (int i = 0; i < count; ++i) { if (!row->getClips()[i]) { return false; } }
+		}
+		selectedPattern = PatternTrack::findPatternTrack(store->currentPattern());
+		const int direction = indexTo > indexFrom ? 1 : -1;
+		for (int index = indexFrom + direction; index != indexTo + direction; index += direction)
+		{
+			if (dynamic_cast<PatternTrack*>(m_tracks[index])) { crossedPatterns.push_back(m_tracks[index]); }
+		}
+	}
+
+	QScopedValueRollback<bool> moving(m_movingTrack, true);
+	{
+		QWriteLocker lock(&m_tracksMutex);
+		if (indexFrom < indexTo) { std::rotate(m_tracks.begin() + indexFrom, m_tracks.begin() + indexFrom + 1, m_tracks.begin() + indexTo + 1); }
+		else { std::rotate(m_tracks.begin() + indexTo, m_tracks.begin() + indexFrom, m_tracks.begin() + indexFrom + 1); }
+	}
+	// Moving over several rows rotates all intervening pattern columns, rather
+	// than swapping only the endpoints. Existing clip/model identities survive.
+	for (auto crossed : crossedPatterns) { PatternTrack::swapPatternTracks(track, crossed); }
+	if (selectedPattern) { store->setCurrentPattern(selectedPattern->patternIndex()); }
+	if (auto song = Engine::getSong()) { song->setModified(); }
 
 	emit trackMoved();
+	return true;
 }
 
 
@@ -233,12 +331,11 @@ void TrackContainer::updateAfterTrackAdd()
 
 void TrackContainer::clearAllTracks()
 {
-	//m_tracksMutex.lockForWrite();
-	while (!m_tracks.empty())
+	const QPointer<TrackContainer> owner(this);
+	while (owner && !owner->m_tracks.empty())
 	{
-		delete m_tracks.front();
+		delete owner->m_tracks.front();
 	}
-	//m_tracksMutex.unlock();
 }
 
 
@@ -282,8 +379,8 @@ AutomatedValueMap TrackContainer::automatedValuesFromTracks(const TrackList &tra
 			if (clipNum < 0) {
 				track->getClipsInRange(clips, 0, time);
 			} else {
-				Q_ASSERT(track->numOfClips() > clipNum);
-				clips.push_back(track->getClip(clipNum));
+				if (clipNum < track->numOfClips() && track->getClips()[clipNum])
+				{ clips.push_back(track->getClips()[clipNum]); }
 			}
 		default:
 			break;
@@ -292,11 +389,12 @@ AutomatedValueMap TrackContainer::automatedValuesFromTracks(const TrackList &tra
 
 	AutomatedValueMap valueMap;
 
-	Q_ASSERT(std::is_sorted(clips.begin(), clips.end(), Clip::comparePosition));
+	// Song ranges are inserted in time order. Explicit column reads retain
+	// native row precedence even when editor positions are not sorted.
 
 	for(Clip* clip : clips)
 	{
-		if (clip->isMuted() || clip->startPosition() > time) {
+		if (clip->isMuted() || (clipNum < 0 && clip->startPosition() > time)) {
 			continue;
 		}
 
@@ -305,7 +403,7 @@ AutomatedValueMap TrackContainer::automatedValuesFromTracks(const TrackList &tra
 			if (! p->hasAutomation()) {
 				continue;
 			}
-			TimePos relTime = time - p->startPosition() - p->startTimeOffset();
+			TimePos relTime = (clipNum >= 0 ? time : time - p->startPosition()) - p->startTimeOffset();
 			if (!p->isInPattern()) {
 				relTime = std::min(static_cast<int>(relTime), p->length() - p->startTimeOffset());
 			}
@@ -313,7 +411,7 @@ AutomatedValueMap TrackContainer::automatedValuesFromTracks(const TrackList &tra
 
 			for (AutomatableModel* model : p->objects())
 			{
-				valueMap[model] = value;
+				if (model) { valueMap[model] = value; }
 			}
 		}
 		else if (auto* pattern = dynamic_cast<PatternClip*>(clip))
@@ -323,13 +421,17 @@ AutomatedValueMap TrackContainer::automatedValuesFromTracks(const TrackList &tra
 
 			TimePos patTime = time - clip->startPosition();
 			patTime = std::min(patTime, clip->length());
-			patTime = patTime % (patStore->lengthOfPattern(patIndex) * TimePos::ticksPerBar());
+			const auto patternLength = static_cast<qint64>(patStore->lengthOfPattern(patIndex)) * TimePos::ticksPerBar();
+			if (patternLength <= 0 || patternLength > std::numeric_limits<tick_t>::max()) { continue; }
+			// Match PatternTrack playback's signed source offset and wrapping.
+			const auto sourceTime = static_cast<qint64>(patTime.getTicks()) - clip->startTimeOffset().getTicks();
+			patTime = static_cast<int>((sourceTime % patternLength + patternLength) % patternLength);
 
 			auto patValues = patStore->automatedValuesAt(patTime, patIndex);
 			for (auto it=patValues.begin(); it != patValues.end(); it++)
 			{
 				// override old values, pattern track with the highest index takes precedence
-				valueMap[it.key()] = it.value();
+				if (it.key()) { valueMap[it.key()] = it.value(); }
 			}
 		}
 		else

@@ -30,89 +30,85 @@
 #include "endian_handling.h"
 #include "AudioEngine.h"
 #include "ConfigManager.h"
+#include "FileResourceIO.h"
+#include "AlsaPcmIo.h"
+#include <QScopeGuard>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <fcntl.h>
+#include <limits>
+#include <stdexcept>
+#include <vector>
 
 namespace lmms
 {
 
-AudioAlsa::AudioAlsa( bool & _success_ful, AudioEngine*  _audioEngine ) :
-	AudioDevice(std::clamp<ch_cnt_t>(
-		ConfigManager::inst()->value("audioalsa", "channels").toInt(),
-		DEFAULT_CHANNELS,
-		DEFAULT_CHANNELS), _audioEngine),
-	m_handle( nullptr ),
-	m_hwParams( nullptr ),
-	m_swParams(nullptr)
+namespace
 {
-	_success_ful = false;
-
-	if( setenv( "PULSE_ALSA_HOOK_CONF", "/dev/null", 0 ) )
-	{
-		fprintf( stderr,
-		"Could not avoid possible interception by PulseAudio\n" );
-	}
-
-	if (int err = snd_pcm_open(&m_handle, probeDevice().toLatin1().constData(), SND_PCM_STREAM_PLAYBACK, 0); err < 0)
-	{
-		printf( "Playback open error: %s\n", snd_strerror( err ) );
-		return;
-	}
-
-	snd_pcm_hw_params_malloc( &m_hwParams );
-	snd_pcm_sw_params_malloc( &m_swParams );
-
-	if (int err = setHWParams(channels(), SND_PCM_ACCESS_RW_INTERLEAVED); err < 0)
-	{
-		printf( "Setting of hwparams failed: %s\n",
-							snd_strerror( err ) );
-		return;
-	}
-	if (int err = setSWParams(); err < 0)
-	{
-		printf( "Setting of swparams failed: %s\n",
-							snd_strerror( err ) );
-		return;
-	}
-
-	// set FD_CLOEXEC flag for all file descriptors so forked processes
-	// do not inherit them
-	int count = snd_pcm_poll_descriptors_count( m_handle );
-	auto ufds = new pollfd[count];
-	snd_pcm_poll_descriptors( m_handle, ufds, count );
-	for (int i = 0; i < std::max(3, count); ++i)
-	{
-		const int fd = ( i >= count ) ? ufds[0].fd+i : ufds[i].fd;
-		int oldflags = fcntl( fd, F_GETFD, 0 );
-		if( oldflags < 0 )
-			continue;
-		oldflags |= FD_CLOEXEC;
-		fcntl( fd, F_SETFD, oldflags );
-	}
-	delete[] ufds;
-	_success_ful = true;
+const detail::AlsaPcmIo nativeIo;
+constexpr int ProgressTimeoutMs = 10000;
+constexpr int WaitIntervalMs = 25;
 }
 
+AudioAlsa::AudioAlsa(bool& successful, AudioEngine* engine)
+	: AudioAlsa(successful, engine, nativeIo, probeDevice(), ProgressTimeoutMs)
+{
+}
 
+AudioAlsa::AudioAlsa(bool& successful, AudioEngine* engine, const detail::AlsaPcmIo& io, const QString& device, int timeoutMs)
+	: AudioDevice(DEFAULT_CHANNELS, engine), m_io(io), m_timeoutMs(timeoutMs)
+{
+	successful = false;
+	const auto cleanup = qScopeGuard([&] { if (!successful) { closeResources(); } });
+	const auto check = [] { QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } };
+	check();
+	if (setenv("PULSE_ALSA_HOOK_CONF", "/dev/null", 0))
+	{ std::fprintf(stderr, "Could not avoid possible interception by PulseAudio\n"); }
 
+	if (const auto error = snd_pcm_open(&m_handle, device.toUtf8().constData(), SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK); error < 0)
+	{ std::fprintf(stderr, "Playback open error: %s\n", snd_strerror(error)); return; }
+	check();
+	if (snd_pcm_hw_params_malloc(&m_hwParams) < 0 || snd_pcm_sw_params_malloc(&m_swParams) < 0) { return; }
+	if (const auto error = setHWParams(channels(), SND_PCM_ACCESS_RW_INTERLEAVED); error < 0)
+	{ std::fprintf(stderr, "Setting of hwparams failed: %s\n", snd_strerror(error)); return; }
+	check();
+	if (const auto error = setSWParams(); error < 0)
+	{ std::fprintf(stderr, "Setting of swparams failed: %s\n", snd_strerror(error)); return; }
+
+	// Touch only descriptors actually returned by this PCM. Some plugins expose
+	// no poll descriptors; neighbouring descriptor numbers belong to other owners.
+	const auto count = snd_pcm_poll_descriptors_count(m_handle);
+	if (count < 0) { return; }
+	if (count > 0)
+	{
+		std::vector<pollfd> descriptors(static_cast<std::size_t>(count));
+		const auto filled = snd_pcm_poll_descriptors(m_handle, descriptors.data(), count);
+		if (filled < 0 || filled > count) { return; }
+		for (int i = 0; i < filled; ++i)
+		{
+			check();
+			const auto fd = descriptors[i].fd;
+			if (fd < 0) { continue; }
+			const auto flags = fcntl(fd, F_GETFD, 0);
+			if (flags < 0 || fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) { return; }
+		}
+	}
+	check(); successful = true;
+}
 
 AudioAlsa::~AudioAlsa()
 {
-	if( m_handle != nullptr )
-	{
-		snd_pcm_close( m_handle );
-	}
-
-	if( m_hwParams != nullptr )
-	{
-		snd_pcm_hw_params_free( m_hwParams );
-	}
-
-	if( m_swParams != nullptr )
-	{
-		snd_pcm_sw_params_free( m_swParams );
-	}
+	AudioDevice::stopProcessing();
+	closeResources();
 }
 
-
+void AudioAlsa::closeResources() noexcept
+{
+	if (m_handle) { snd_pcm_close(m_handle); m_handle = nullptr; }
+	if (m_hwParams) { snd_pcm_hw_params_free(m_hwParams); m_hwParams = nullptr; }
+	if (m_swParams) { snd_pcm_sw_params_free(m_swParams); m_swParams = nullptr; }
+}
 
 
 QString AudioAlsa::probeDevice()
@@ -171,72 +167,143 @@ AudioAlsa::DeviceInfoCollection AudioAlsa::getAvailableDevices()
 
 
 
-int AudioAlsa::handleError( int _err )
+bool AudioAlsa::processing() const
 {
-	if( _err == -EPIPE )
-	{
-		// under-run
-		_err = snd_pcm_prepare( m_handle );
-		if( _err < 0 )
-			printf( "Can't recover from underrun, prepare "
-					"failed: %s\n", snd_strerror( _err ) );
-		return ( 0 );
-	}
-#ifdef ESTRPIPE
-	else if( _err == -ESTRPIPE )
-	{
-		while( ( _err = snd_pcm_resume( m_handle ) ) == -EAGAIN )
-		{
-			sleep( 1 );	// wait until the suspend flag
-					// is released
-		}
-
-		if( _err < 0 )
-		{
-			_err = snd_pcm_prepare( m_handle );
-			if( _err < 0 )
-				printf( "Can't recover from suspend, prepare "
-					"failed: %s\n", snd_strerror( _err ) );
-		}
-		return ( 0 );
-	}
-#endif
-	return _err;
+	return !m_stopRequested.load(std::memory_order_acquire) && AudioDevice::isRunning();
 }
 
+void AudioAlsa::requestStop()
+{
+	m_stopRequested.store(true, std::memory_order_release);
+	m_stopSemaphore.release();
+}
 
-
+void AudioAlsa::fail(ProcessingFailure failure, int error) noexcept
+{
+	if (m_stopRequested.exchange(true, std::memory_order_acq_rel)) { return; }
+	reportProcessingFailure(failure, error); m_startupSemaphore.release();
+}
 
 void AudioAlsa::startProcessingImpl()
 {
+	requestStop(); wait();
+	while (m_stopSemaphore.tryAcquire()) { }
+	while (m_startupSemaphore.tryAcquire()) { }
+	m_cleanupFailure = ProcessingFailure::None; m_cleanupError = 0;
+	m_prepared.store(false, std::memory_order_release);
+	m_stopRequested.store(false, std::memory_order_release);
+	QElapsedTimer deadline; deadline.start();
 	start(QThread::HighPriority);
+	try
+	{
+		for (;;)
+		{
+			QString error;
+			if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+			if (!AudioDevice::isRunning() || m_prepared.load(std::memory_order_acquire)) { break; }
+			if (deadline.elapsed() >= m_timeoutMs) { fail(ProcessingFailure::Start, -ETIMEDOUT); break; }
+			m_startupSemaphore.tryAcquire(1, WaitIntervalMs);
+		}
+	}
+	catch (...)
+	{
+		fail(ProcessingFailure::Start, -ECANCELED); requestStop(); wait(); throw;
+	}
+	if (!AudioDevice::isRunning()) { requestStop(); wait(); }
 }
-
-
-
 
 void AudioAlsa::stopProcessingImpl()
 {
-	stopProcessingThread( this );
+	requestStop(); wait();
+	reportProcessingFailure(m_cleanupFailure, m_cleanupError);
+}
+
+bool AudioAlsa::recover(int error, QElapsedTimer& progress)
+{
+	if (!processing()) { return false; }
+	if (error == -EINTR || error == -EAGAIN) { return true; }
+	if (error == -EPIPE) { error = m_io.prepare(m_handle); }
+#ifdef ESTRPIPE
+	else if (error == -ESTRPIPE)
+	{
+		while (processing() && (error = m_io.resume(m_handle)) == -EAGAIN)
+		{
+			if (progress.elapsed() >= m_timeoutMs) { fail(ProcessingFailure::Disconnected, -ETIMEDOUT); return false; }
+			m_stopSemaphore.tryAcquire(1, WaitIntervalMs);
+		}
+		if (!processing()) { return false; }
+		if (error < 0) { error = m_io.prepare(m_handle); }
+	}
+#endif
+	if (error < 0) { fail(ProcessingFailure::Disconnected, error); return false; }
+	return processing();
+}
+
+bool AudioAlsa::writeBuffer(const float* data, snd_pcm_uframes_t frames)
+{
+	snd_pcm_uframes_t offset = 0;
+	QElapsedTimer progress; progress.start();
+	while (offset < frames && processing())
+	{
+		const auto remaining = frames - offset;
+		const auto written = m_io.write(m_handle, data + offset * channels(), remaining);
+		if (!processing()) { return false; }
+		if (written > 0)
+		{
+			if (static_cast<snd_pcm_uframes_t>(written) > remaining)
+			{ fail(ProcessingFailure::InvalidCallback, -EOVERFLOW); return false; }
+			offset += static_cast<snd_pcm_uframes_t>(written); progress.restart(); continue;
+		}
+		if (written < std::numeric_limits<int>::min())
+		{ fail(ProcessingFailure::InvalidCallback, -EOVERFLOW); return false; }
+		if (progress.elapsed() >= m_timeoutMs) { fail(ProcessingFailure::Disconnected, -ETIMEDOUT); return false; }
+		if (written == 0 || written == -EAGAIN)
+		{
+			const auto ready = m_io.wait(m_handle, WaitIntervalMs);
+			if (ready < 0 && !recover(ready, progress)) { return false; }
+		}
+		else if (!recover(static_cast<int>(written), progress)) { return false; }
+		// A plugin can report immediate readiness yet accept no frames. Avoid
+		// spinning while preserving the unwritten suffix and the stop wakeup.
+		m_stopSemaphore.tryAcquire(1, 1);
+	}
+	return offset == frames && processing();
 }
 
 void AudioAlsa::run()
 {
-	const auto framesPerAudioBuffer = audioEngine()->framesPerAudioBuffer();
-	auto buf = std::vector<float>(framesPerAudioBuffer * channels());
-	while (AudioDevice::isRunning())
+	bool prepared = false;
+	const auto cleanup = qScopeGuard([&]
 	{
-		audioEngine()->renderNextBuffer({buf.data(), channels(), framesPerAudioBuffer});
-
-		if (const auto framesWritten = snd_pcm_writei(m_handle, buf.data(), framesPerAudioBuffer); framesWritten < 0)
+		if (prepared)
 		{
-			handleError(framesWritten);
-			continue;
+			try
+			{
+				if (const auto error = m_io.drop(m_handle); error < 0)
+				{ m_cleanupError = error; m_cleanupFailure = ProcessingFailure::Stop; }
+			}
+			catch (...) { m_cleanupError = -EIO; m_cleanupFailure = ProcessingFailure::Exception; }
+		}
+		m_startupSemaphore.release();
+	});
+	try
+	{
+		if (!m_handle) { fail(ProcessingFailure::Start, -ENODEV); return; }
+		const auto frames = audioEngine()->framesPerAudioBuffer();
+		auto buffer = std::vector<float>(static_cast<std::size_t>(frames) * channels());
+		if (!processing()) { return; }
+		if (const auto error = m_io.prepare(m_handle); error < 0) { fail(ProcessingFailure::Start, error); return; }
+		prepared = true;
+		if (!processing()) { return; }
+		m_prepared.store(true, std::memory_order_release); m_startupSemaphore.release();
+		while (processing())
+		{
+			audioEngine()->renderNextBuffer({buffer.data(), channels(), frames});
+			if (!writeBuffer(buffer.data(), frames)) { break; }
 		}
 	}
+	catch (...) { fail(ProcessingFailure::Exception, -EIO); }
 }
-
-
 
 
 int AudioAlsa::setHWParams( const ch_cnt_t _channels, snd_pcm_access_t _access )
@@ -282,11 +349,12 @@ int AudioAlsa::setHWParams( const ch_cnt_t _channels, snd_pcm_access_t _access )
 							snd_strerror( err ) );
 			return err;
 		}
+		setSampleRate(audioEngine()->baseSampleRate());
 	}
 
 	m_periodSize = audioEngine()->framesPerPeriod();
 	m_bufferSize = m_periodSize * 8;
-	int dir;
+	int dir = 0;
 	if (int err = snd_pcm_hw_params_set_period_size_near(m_handle, m_hwParams, &m_periodSize, &dir); err < 0)
 	{
 		printf( "Unable to set period size %lu for playback: %s\n",
@@ -298,6 +366,7 @@ int AudioAlsa::setHWParams( const ch_cnt_t _channels, snd_pcm_access_t _access )
 	{
 		printf( "Unable to get period size for playback: %s\n",
 							snd_strerror( err ) );
+		return err;
 	}
 
 	dir = 0;
@@ -308,11 +377,9 @@ int AudioAlsa::setHWParams( const ch_cnt_t _channels, snd_pcm_access_t _access )
 		return ( err );
 	}
 
-	if (int err = snd_pcm_hw_params_get_buffer_size(m_hwParams, &m_bufferSize); 2 * m_periodSize > m_bufferSize)
-	{
-		printf( "buffer to small, could not use\n" );
-		return ( err );
-	}
+	if (const auto error = snd_pcm_hw_params_get_buffer_size(m_hwParams, &m_bufferSize); error < 0) { return error; }
+	if (m_periodSize == 0 || m_bufferSize / 2 < m_periodSize)
+	{ std::fprintf(stderr, "Playback buffer is smaller than two periods\n"); return -EINVAL; }
 
 
 	// write the parameters to device
@@ -359,8 +426,7 @@ int AudioAlsa::setSWParams()
 	// align all transfers to 1 sample
 	
 #if SND_LIB_VERSION < ((1<<16)|(0)|16)
-	if( ( err = snd_pcm_sw_params_set_xfer_align( m_handle,
-							m_swParams, 1 ) ) < 0 )
+	if (int err = snd_pcm_sw_params_set_xfer_align(m_handle, m_swParams, 1); err < 0)
 	{
 		printf( "Unable to set transfer align for playback: %s\n",
 							snd_strerror( err ) );

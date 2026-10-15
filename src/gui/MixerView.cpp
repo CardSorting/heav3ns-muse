@@ -23,12 +23,14 @@
  */
 
 #include "MixerView.h"
+#include <algorithm>
 
 #include <QHBoxLayout>
 #include <QLayout>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScopedValueRollback>
 #include <QStyle>
 #include <QKeyEvent>
 #include <QStackedLayout>
@@ -96,8 +98,8 @@ MixerView::MixerView(Mixer* mixer) :
 	// add master channel
 	m_mixerChannelViews.resize(mixer->numChannels());
 	MixerChannelView * masterView = new MixerChannelView(this, this, 0);
-	connectToSoloAndMute(0);
 	m_mixerChannelViews[0] = masterView;
+	connectToSoloAndMute(0);
 
 	m_racksLayout->addWidget(m_mixerChannelViews[0]->m_effectRackView);
 
@@ -111,6 +113,7 @@ MixerView::MixerView(Mixer* mixer) :
 		m_mixerChannelViews[i] = new MixerChannelView(m_channelAreaWidget, this, i);
 		connectToSoloAndMute(i);
 		chLayout->addWidget(m_mixerChannelViews[i]);
+		m_racksLayout->addWidget(m_mixerChannelViews[i]->m_effectRackView);
 	}
 
 	// add the scrolling section to the main layout
@@ -157,18 +160,20 @@ MixerView::MixerView(Mixer* mixer) :
 
 	updateGeometry();
 
-	auto* mainWindow = getGUI()->mainWindow();
-
-	// timer for updating faders
-	connect(mainWindow, &MainWindow::periodicUpdate, this, &MixerView::updateFaders);
+	connect(mixer, &Mixer::channelMoved, this, &MixerView::channelMoved);
 
 	layout()->setSizeConstraint(QLayout::SetMinimumSize);
 
-	// add ourself to workspace
-	mainWindow->addWindowedWidget(this);
-
-	parentWidget()->setAttribute(Qt::WA_DeleteOnClose, false);
-	parentWidget()->move(5, 310);
+	// The presentation can also be attached to an already initialized engine
+	// without constructing the complete application window hierarchy.
+	if (auto gui = getGUI())
+	{
+		auto mainWindow = gui->mainWindow();
+		connect(mainWindow, &MainWindow::periodicUpdate, this, &MixerView::updateFaders);
+		mainWindow->addWindowedWidget(this);
+		parentWidget()->setAttribute(Qt::WA_DeleteOnClose, false);
+		parentWidget()->move(5, 310);
+	}
 
 	// we want to receive dataChanged-signals in order to update
 	setModel(mixer);
@@ -179,6 +184,8 @@ MixerView::MixerView(Mixer* mixer) :
 
 int MixerView::addNewChannel()
 {
+	if (m_changingViews) { return -1; }
+	QScopedValueRollback<bool> changing(m_changingViews, true);
 	// add new mixer channel and redraw the form.
 	Mixer * mix = getMixer();
 
@@ -190,14 +197,20 @@ int MixerView::addNewChannel()
 
 	updateMixerChannel(newChannelIndex);
 
-	updateMaxChannelSelector();
-
 	return newChannelIndex;
 }
 
 
 void MixerView::refreshDisplay()
 {
+	if (m_changingViews) { return; }
+	QScopedValueRollback<bool> changing(m_changingViews, true);
+	refreshDisplayImpl();
+}
+
+void MixerView::refreshDisplayImpl()
+{
+	m_currentMixerChannel = m_mixerChannelViews[0];
 	// delete all views and re-add them
 	for (int i = 1; i<m_mixerChannelViews.size(); ++i)
 	{
@@ -232,34 +245,6 @@ void MixerView::refreshDisplay()
 		updateMixerChannel(i);
 	}
 
-	updateMaxChannelSelector();
-}
-
-
-// update the and max. channel number for every instrument
-void MixerView::updateMaxChannelSelector()
-{
-	const TrackContainer::TrackList& songTracks = Engine::getSong()->tracks();
-	const TrackContainer::TrackList& patternStoreTracks = Engine::patternStore()->tracks();
-
-	for (const auto& trackList : {songTracks, patternStoreTracks})
-	{
-		for (const auto& track : trackList)
-		{
-			if (track->type() == Track::Type::Instrument)
-			{
-				auto inst = (InstrumentTrack*)track;
-				inst->mixerChannelModel()->setRange(0,
-					m_mixerChannelViews.size()-1,1);
-			}
-			else if (track->type() == Track::Type::Sample)
-			{
-				auto strk = (SampleTrack*)track;
-				strk->mixerChannelModel()->setRange(0,
-					m_mixerChannelViews.size()-1,1);
-			}
-		}
-	}
 }
 
 
@@ -282,8 +267,6 @@ void MixerView::loadSettings(const QDomElement& domElement)
 
 void MixerView::toggledSolo()
 {
-	getMixer()->toggledSolo();
-
 	updateAllMixerChannels();
 }
 
@@ -308,18 +291,19 @@ void MixerView::updateAllMixerChannels()
 
 void MixerView::connectToSoloAndMute(int channelIndex)
 {
+	disconnectFromSoloAndMute(channelIndex);
+	const auto view = m_mixerChannelViews[channelIndex];
 	auto * mixerChannel = getMixer()->mixerChannel(channelIndex);
 
-	connect(&mixerChannel->m_muteModel, &BoolModel::dataChanged, this, &MixerView::toggledMute, Qt::DirectConnection);
-	connect(&mixerChannel->m_soloModel, &BoolModel::dataChanged, this, &MixerView::toggledSolo, Qt::DirectConnection);
+	view->m_muteConnection = connect(&mixerChannel->m_muteModel, &BoolModel::dataChanged, this, &MixerView::toggledMute, Qt::DirectConnection);
+	view->m_soloConnection = connect(&mixerChannel->m_soloModel, &BoolModel::dataChanged, this, &MixerView::toggledSolo, Qt::DirectConnection);
 }
 
 void MixerView::disconnectFromSoloAndMute(int channelIndex)
 {
-	auto * mixerChannel = getMixer()->mixerChannel(channelIndex);
-
-	disconnect(&mixerChannel->m_muteModel, &BoolModel::dataChanged, this, &MixerView::toggledMute);
-	disconnect(&mixerChannel->m_soloModel, &BoolModel::dataChanged, this, &MixerView::toggledSolo);
+	const auto view = m_mixerChannelViews[channelIndex];
+	disconnect(view->m_muteConnection);
+	disconnect(view->m_soloConnection);
 }
 
 
@@ -379,27 +363,38 @@ void MixerView::updateMixerChannel(int index)
 void MixerView::deleteChannel(int index)
 {
 	// can't delete master
-	if (index == 0) return;
+	if (m_changingViews || index <= 0 || index >= m_mixerChannelViews.size()) { return; }
+	QScopedValueRollback<bool> changing(m_changingViews, true);
+	deleteChannelImpl(index);
+}
 
-	// Disconnect from the solo/mute models of the channel we are about to delete
-	disconnectFromSoloAndMute(index);
+void MixerView::deleteChannelImpl(int index)
+{
 
 	// remember selected line
-	int selLine = m_currentMixerChannel->channelIndex();
+	auto selected = m_currentMixerChannel;
+	auto removed = m_mixerChannelViews[index];
+	// Focus loss while retiring the widgets must not rename a shifted native
+	// channel or access the removed final index.
+	disconnect(removed->m_renameLineEdit, &QLineEdit::editingFinished, removed, &MixerChannelView::renameFinished);
 
 	Mixer* mixer = getMixer();
-	// in case the deleted channel is soloed or the remaining
-	// channels will be left in a muted state
-	mixer->clearChannel(index);
-
 	// delete the real channel
-	mixer->deleteChannel(index);
+	if (!mixer->deleteChannel(index))
+	{
+		connect(removed->m_renameLineEdit, &QLineEdit::editingFinished, removed, &MixerChannelView::renameFinished, Qt::UniqueConnection);
+		return;
+	}
+	disconnectFromSoloAndMute(index);
 
-	chLayout->removeWidget(m_mixerChannelViews[index]);
-	m_racksLayout->removeWidget(m_mixerChannelViews[index]);
+	chLayout->removeWidget(removed);
+	m_racksLayout->removeWidget(removed->m_effectRackView);
 	// delete MixerChannelView later to prevent a crash when deleting from context menu
-	m_mixerChannelViews[index]->hide();
-	m_mixerChannelViews[index]->deleteLater();
+	removed->m_effectRackView->hide();
+	removed->m_effectRackView->setEnabled(false);
+	removed->hide();
+	removed->setEnabled(false);
+	removed->deleteLater();
 	m_channelAreaWidget->adjustSize();
 
 	// make sure every channel knows what index it is
@@ -409,14 +404,10 @@ void MixerView::deleteChannel(int index)
 	}
 	m_mixerChannelViews.remove(index);
 
-	// select the next channel
-	if (selLine >= m_mixerChannelViews.size())
-	{
-		selLine = m_mixerChannelViews.size() - 1;
-	}
-	setCurrentMixerChannel(selLine);
+	// Retain the selected channel object when an earlier channel was removed.
+	if (selected == removed) { setCurrentMixerChannel(std::min(index, static_cast<int>(m_mixerChannelViews.size()) - 1)); }
+	else { setCurrentMixerChannel(selected); }
 
-	updateMaxChannelSelector();
 }
 
 void MixerView::deleteUnusedChannels()
@@ -435,27 +426,25 @@ void MixerView::deleteUnusedChannels()
 
 void MixerView::moveChannelLeft(int index)
 {
-	// can't move master or first channel left or last channel right
-	if (index <= 1 || index >= m_mixerChannelViews.size()) { return; }
-
 	m_mixer->moveChannelLeft(index);
+}
 
-	const auto layoutIndex = chLayout->indexOf(m_mixerChannelViews[index]);
-	assert(layoutIndex >= 1);
-
-	chLayout->removeWidget(m_mixerChannelViews[index]);
-	chLayout->insertWidget(layoutIndex - 1, m_mixerChannelViews[index]);
-
-	m_mixerChannelViews[index]->setChannelIndex(index - 1);
-	m_mixerChannelViews[index - 1]->setChannelIndex(index);
-	std::swap(m_mixerChannelViews[index - 1], m_mixerChannelViews[index]);
+void MixerView::channelMoved(int from, int to)
+{
+	if (from <= 0 || to <= 0 || from >= m_mixerChannelViews.size() || to >= m_mixerChannelViews.size()) { return; }
+	auto view = m_mixerChannelViews[from];
+	chLayout->removeWidget(view);
+	m_mixerChannelViews.move(from, to);
+	chLayout->insertWidget(to - 1, view); // Master is outside the scrolling layout.
+	for (int index = std::min(from, to); index <= std::max(from, to); ++index) { m_mixerChannelViews[index]->setChannelIndex(index); }
+	setCurrentMixerChannel(m_currentMixerChannel);
 }
 
 
 
 void MixerView::moveChannelRight(int index)
 {
-	moveChannelLeft(index + 1);
+	m_mixer->moveChannelRight(index);
 }
 
 
@@ -544,12 +533,14 @@ void MixerView::setCurrentMixerChannel(int channel)
 
 void MixerView::clear()
 {
-	for (auto i = m_mixerChannelViews.size() - 1; i > 0; --i) { deleteChannel(i); }
-	getMixer()->clearChannel(0);
+	if (m_changingViews) { return; }
+	QScopedValueRollback<bool> changing(m_changingViews, true);
+	for (auto i = m_mixerChannelViews.size() - 1; i > 0; --i) { deleteChannelImpl(i); }
+	if (!getMixer()->clearChannel(0)) { return; }
 
 	m_mixerChannelViews[0]->reset();
 
-	refreshDisplay();
+	refreshDisplayImpl();
 }
 
 

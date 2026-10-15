@@ -25,12 +25,13 @@
 #ifndef LMMS_SAMPLE_RECORD_HANDLE_H
 #define LMMS_SAMPLE_RECORD_HANDLE_H
 
-#include <QList>
-#include <QPair>
+#include <QPointer>
+#include <atomic>
 #include <memory>
 
 #include "PlayHandle.h"
 #include "TimePos.h"
+#include "SampleRecordingBuffer.h"
 
 namespace lmms
 {
@@ -45,7 +46,7 @@ class Track;
 class SampleRecordHandle : public PlayHandle
 {
 public:
-	SampleRecordHandle( SampleClip* clip );
+	SampleRecordHandle(SampleClip* clip, f_cnt_t frameLimit = 0, bool reservedCompletion = false);
 	~SampleRecordHandle() override;
 
 	void play( SampleFrame* _working_buffer ) override;
@@ -55,20 +56,28 @@ public:
 
 	f_cnt_t framesRecorded() const;
 	std::shared_ptr<const SampleBuffer> createSampleBuffer();
+	static bool finalizePendingRecordings(QString& error);
+	bool recordsClip(const SampleClip* clip) const;
+	bool reservedCompletion() const { return m_reservedCompletion; }
 
 
 private:
 	virtual void writeBuffer( const SampleFrame* _ab,
 						const f_cnt_t _frames );
 
-	using bufferList = QList<QPair<SampleFrame*, f_cnt_t>>;
-	bufferList m_buffers;
-	f_cnt_t m_framesRecorded;
+	SampleRecordingBuffer m_recording;
+	std::uint64_t m_inputErrorEpoch = 0;
+	std::atomic<f_cnt_t> m_framesRecorded{0};
 	TimePos m_minLength;
 
 	Track * m_track;
 	PatternTrack* m_patternTrack;
-	SampleClip * m_clip;
+	QPointer<SampleClip> m_clip;
+	// Identity only, never dereferenced; retirement still finds a deleted clip's take.
+	const SampleClip* m_clipIdentity = nullptr;
+	bool m_registeredTake = false;
+	f_cnt_t m_frameLimit = 0;
+	bool m_reservedCompletion = false;
 
 } ;
 

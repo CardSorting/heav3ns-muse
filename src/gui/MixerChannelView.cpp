@@ -106,8 +106,8 @@ MixerChannelView::MixerChannelView(QWidget* parent, MixerView* mixerView, int ch
 	m_renameLineEdit->setReadOnly(true);
 	m_renameLineEdit->installEventFilter(this);
 
-	auto renameLineEditScene = new QGraphicsScene{};
 	m_renameLineEditView = new QGraphicsView{};
+	auto renameLineEditScene = new QGraphicsScene{m_renameLineEditView};
 	m_renameLineEditView->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	m_renameLineEditView->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	m_renameLineEditView->setAttribute(Qt::WA_TransparentForMouseEvents, true);
@@ -159,6 +159,16 @@ MixerChannelView::MixerChannelView(QWidget* parent, MixerView* mixerView, int ch
 	connect(m_renameLineEdit, &QLineEdit::editingFinished, this, &MixerChannelView::renameFinished);
 
 	setFocusPolicy(Qt::StrongFocus);
+}
+
+MixerChannelView::~MixerChannelView()
+{
+	disconnect(m_renameLineEdit, &QLineEdit::editingFinished, this, &MixerChannelView::renameFinished);
+	disconnect(m_muteConnection);
+	disconnect(m_soloConnection);
+	// Its QWidget parent is the shared rack area. QPointer also covers the
+	// reverse order when that parent is destroyed before the channel view.
+	delete m_effectRackView.data();
 }
 
 void MixerChannelView::contextMenuEvent(QContextMenuEvent*)
@@ -283,7 +293,7 @@ void MixerChannelView::renameFinished()
 	const auto mc = mixerChannel();
 	if (!newName.isEmpty() && mc->m_name != newName)
 	{
-		mc->m_name = newName;
+		mc->setName(newName);
 		m_renameLineEdit->setText(elideName(newName));
 		Engine::getSong()->setModified();
 	}

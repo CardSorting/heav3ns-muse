@@ -701,8 +701,8 @@ void FileBrowserTreeWidget::openInSlicerT(FileItem* item, bool songEditor)
 
 	auto* track = dynamic_cast<InstrumentTrack*>(Track::create(Track::Type::Instrument, tc));
 
-	track->loadInstrument("slicert");
-	track->instrument()->loadFile(item->fullName());
+	const QString path = item->fullName();
+	if (auto instrument = track->loadInstrument("slicert")) { instrument->loadFile(path); }
 }
 
 QList<QAction*> FileBrowserTreeWidget::getContextActions(FileItem* file, bool songEditor)
@@ -945,7 +945,7 @@ void FileBrowserTreeWidget::mouseReleaseEvent(QMouseEvent * me )
 
 void FileBrowserTreeWidget::handleFile(FileItem * f, InstrumentTrack * it)
 {
-	Engine::audioEngine()->requestChangeInModel();
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
 	switch( f->handling() )
 	{
 		case FileItem::FileHandling::LoadAsProject:
@@ -958,6 +958,7 @@ void FileBrowserTreeWidget::handleFile(FileItem * f, InstrumentTrack * it)
 		case FileItem::FileHandling::LoadByPlugin:
 		{
 			const QString e = f->extension();
+			const QString path = f->fullName();
 			Instrument * i = it->instrument();
 			if( i == nullptr ||
 				!i->descriptor()->supportsFileType( e ) )
@@ -966,7 +967,7 @@ void FileBrowserTreeWidget::handleFile(FileItem * f, InstrumentTrack * it)
 					getPluginFactory()->pluginSupportingExtension(e);
 				i = it->loadInstrument(piakn.info.name(), &piakn.key);
 			}
-			i->loadFile( f->fullName() );
+			if (i) { i->loadFile(path); }
 			break;
 		}
 
@@ -984,7 +985,6 @@ void FileBrowserTreeWidget::handleFile(FileItem * f, InstrumentTrack * it)
 		default:
 			break;
 	}
-	Engine::audioEngine()->doneChangeInModel();
 }
 
 

@@ -78,6 +78,8 @@ public:
 		return "patternstore";
 	}
 
+	// Read existing MIDI extent in rounded bars without creating cells. Absent
+	// or empty patterns retain the one-bar fallback; invalid meter returns zero.
 	bar_t lengthOfPattern(int pattern) const;
 	inline bar_t lengthOfCurrentPattern()
 	{

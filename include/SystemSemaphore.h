@@ -47,6 +47,9 @@ public:
 	auto operator=(SystemSemaphore&& other) noexcept -> SystemSemaphore&;
 
 	auto acquire() noexcept -> bool;
+	//! Tries once without blocking. False leaves the semaphore unchanged.
+	auto tryAcquire() noexcept -> bool;
+	auto acquireFor(unsigned int milliseconds) noexcept -> bool;
 	auto release() noexcept -> bool;
 
 	auto key() const noexcept -> const std::string& { return m_key; }

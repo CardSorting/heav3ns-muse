@@ -23,6 +23,7 @@
  */
 
 #include "Plugin.h"
+#include <stdexcept>
 
 #include <QDomElement>
 #include <QLibrary>
@@ -168,6 +169,12 @@ void Plugin::loadFile( const QString & )
 {
 }
 
+bool Plugin::setFileResource(const QString&, const QString&, QString& error)
+{
+	error = tr("This plugin does not expose a checked native file resource operation.");
+	return false;
+}
+
 
 
 
@@ -247,6 +254,31 @@ Plugin * Plugin::instantiate(const QString& pluginName, Model * parent,
 void Plugin::collectErrorForUI( QString errMsg )
 {
 	Engine::getSong()->collectError( errMsg );
+}
+
+Plugin::ExpressionResult Plugin::validateExpression(const QString&, const QString&)
+{
+	ExpressionResult result; result.error = "This native plugin does not expose editable expressions"; return result;
+}
+
+Plugin::NativePresetInfo Plugin::inspectNativePreset(const QString&)
+{
+	throw std::runtime_error("This plugin does not expose native preset files");
+}
+
+Plugin::NativePresetInfo Plugin::loadNativePreset(const QString&)
+{
+	throw std::runtime_error("This plugin does not expose native preset files");
+}
+
+Plugin::NativePresetInfo Plugin::saveNativePreset(const QString&, bool)
+{
+	throw std::runtime_error("This plugin does not expose native preset files");
+}
+
+bool Plugin::setExpression(const QString&, const QString&, ExpressionResult& result)
+{
+	result = {}; result.error = "This native plugin does not expose editable expressions"; return false;
 }
 
 

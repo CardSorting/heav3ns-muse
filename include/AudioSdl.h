@@ -75,6 +75,7 @@ public:
 private:
 	void startProcessingImpl() override;
 	void stopProcessingImpl() override;
+	void closeDevices() noexcept;
 
 	static void sdlAudioCallback( void * _udata, Uint8 * _buf, int _len );
 	void sdlAudioCallback( Uint8 * _buf, int _len );
@@ -82,11 +83,12 @@ private:
 	static void sdlInputAudioCallback( void * _udata, Uint8 * _buf, int _len );
 	void sdlInputAudioCallback( Uint8 * _buf, int _len );
 
-	SDL_AudioSpec m_audioHandle;
-	SDL_AudioDeviceID m_outputDevice;
+	SDL_AudioSpec m_audioHandle{};
+	SDL_AudioDeviceID m_outputDevice = 0;
 
-	SDL_AudioSpec m_inputAudioHandle;
-	SDL_AudioDeviceID m_inputDevice;
+	SDL_AudioSpec m_inputAudioHandle{};
+	SDL_AudioDeviceID m_inputDevice = 0;
+	bool m_audioInitialized = false;
 } ;
 
 

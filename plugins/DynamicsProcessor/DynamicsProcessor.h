@@ -39,6 +39,13 @@ class RmsHelper;
 class DynProcEffect : public Effect
 {
 public:
+	std::vector<GraphResource> graphResources() override
+	{
+		return {
+			{"transfer", tr("Dynamics curve"), "absolute output amplitude", &m_dpControls.m_wavegraphModel}
+		};
+	}
+
 	DynProcEffect( Model * _parent,
 			const Descriptor::SubPluginFeatures::Key * _key );
 	~DynProcEffect() override;

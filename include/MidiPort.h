@@ -29,6 +29,13 @@
 #include <QString>
 #include <QList>
 #include <QMap>
+#include <QSet>
+#include <QStringList>
+#include <array>
+#include <mutex>
+#include <memory>
+#include <utility>
+#include <QPointer>
 
 #include "Midi.h"
 #include "TimePos.h"
@@ -68,6 +75,8 @@ class MidiPort : public Model, public SerializingObject
 	mapPropertyFromModel(bool,isWritable,setWritable,m_writableModel);
 public:
 	using Map = QMap<QString, bool>;
+	enum class OutputSource { Track, Instrument };
+	static constexpr unsigned int OutputNoteLimit = 4096;
 
 	enum class Mode
 	{
@@ -112,7 +121,17 @@ public:
 	}
 
 	void processInEvent( const MidiEvent& event, const TimePos& time = TimePos() );
-	void processOutEvent( const MidiEvent& event, const TimePos& time = TimePos() );
+	void processOutEvent(const MidiEvent& event, const TimePos& time = TimePos(), OutputSource source = OutputSource::Track);
+	OutputSource outputSource() const;
+	bool acceptsOutput(OutputSource source) const;
+	void setOutputSource(OutputSource source);
+	// Release only notes/pedals submitted by this port before retiring routing.
+	// Native backends provide no hardware-delivery acknowledgment.
+	void releaseOutput();
+	unsigned int trackedOutputNotes() const;
+	void detachInputProcessor();
+	bool inputDeliveryFailed();
+	bool resetInputDelivery(QString& error, bool& changed);
 
 
 	void saveSettings( QDomDocument& doc, QDomElement& thisElement ) override;
@@ -125,6 +144,9 @@ public:
 
 	void subscribeReadablePort( const QString& port, bool subscribe = true );
 	void subscribeWritablePort( const QString& port, bool subscribe = true );
+	QStringList requestedReadablePorts() const;
+	QStringList requestedWritablePorts() const;
+	MidiClient* client() const { return m_midiClient; }
 
 	const Map& readablePorts() const
 	{
@@ -153,10 +175,56 @@ private slots:
 
 
 private:
+	void setModeImpl(Mode mode);
+	// A returned backend callback may retire the port before its lock unwinds.
+	class OutputLock
+	{
+	public:
+		OutputLock() = default;
+		~OutputLock() = default;
+		OutputLock(const OutputLock&) = delete;
+		OutputLock& operator=(const OutputLock&) = delete;
+		explicit OutputLock(std::shared_ptr<std::recursive_mutex> mutex) : m_mutex(std::move(mutex)), m_lock(*m_mutex) { }
+		OutputLock(OutputLock&&) noexcept = default;
+		OutputLock& operator=(OutputLock&& other) noexcept
+		{
+			if (this != &other) { m_lock = std::unique_lock<std::recursive_mutex>{}; m_mutex = std::move(other.m_mutex); m_lock = std::move(other.m_lock); }
+			return *this;
+		}
+		bool owns_lock() const noexcept { return m_lock.owns_lock(); }
+		void unlock() { m_lock.unlock(); }
+	private:
+		std::shared_ptr<std::recursive_mutex> m_mutex;
+		std::unique_lock<std::recursive_mutex> m_lock;
+	};
+	OutputLock lockOutput() const { return OutputLock(m_outputMutex); }
+	class Transition
+	{
+	public:
+		Transition(MidiPort* port, bool MidiPort::* flag, bool release = false);
+		~Transition();
+		Transition(const Transition&) = delete;
+		Transition& operator=(const Transition&) = delete;
+		void check() const;
+	private:
+		QPointer<MidiPort> m_owner;
+		MidiClient* m_client;
+		bool MidiPort::* m_flag;
+	};
 	MidiClient* m_midiClient;
 	MidiEventProcessor* m_midiEventProcessor;
+	bool m_clientTransfer = false; // serialized with output; owner stages routing
+	bool m_retiring = false;
+	bool m_serializingSettings = false, m_changingMode = false, m_updatingMode = false;
+	bool m_changingName = false, m_changingSource = false, m_releasingOutput = false;
+	bool m_changingReadable = false, m_changingWritable = false;
 
 	Mode m_mode;
+	OutputSource m_outputSource = OutputSource::Track;
+	const std::shared_ptr<std::recursive_mutex> m_outputMutex = std::make_shared<std::recursive_mutex>();
+	std::array<std::array<quint16, MidiMaxKey + 1>, MidiChannelCount> m_outputNotes{};
+	std::array<std::array<bool, 2>, MidiChannelCount> m_outputPedals{};
+	unsigned int m_trackedOutputNotes = 0;
 
 	IntModel m_inputChannelModel;
 	IntModel m_outputChannelModel;
@@ -172,13 +240,18 @@ private:
 
 	Map m_readablePorts;
 	Map m_writablePorts;
+	QSet<QString> m_requestedReadablePorts;
+	QSet<QString> m_requestedWritablePorts;
 
 
 	friend class gui::ControllerConnectionDialog;
 	friend class gui::InstrumentMidiIOView;
+	friend class MidiPortTestAccess;
+	friend class MidiClient;
 
 
 signals:
+	void outputSourceChanged();
 	void readablePortsChanged();
 	void writablePortsChanged();
 	void modeChanged();

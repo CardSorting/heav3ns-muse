@@ -62,7 +62,7 @@ EffectView::EffectView( Effect * _model, QWidget * _parent ) :
 	m_bypass->setEnabled( isEnabled );
 	m_bypass->setToolTip(tr("On/Off"));
 
-	connect(getGUI()->mainWindow(), &MainWindow::periodicUpdate, this, &EffectView::corruptStateUpdate);
+	if (auto gui = getGUI()) { connect(gui->mainWindow(), &MainWindow::periodicUpdate, this, &EffectView::corruptStateUpdate); }
 
 	m_wetDry = new Knob(KnobType::Bright26, tr("W/D"), this, Knob::LabelRendering::LegacyFixedFontSize);
 	m_wetDry->move( 40 - m_wetDry->width() / 2, 5 );
@@ -90,9 +90,13 @@ EffectView::EffectView( Effect * _model, QWidget * _parent ) :
 		m_controlView = effect()->controls()->createView();
 		if (m_controlView)
 		{
-			m_subWindow = getGUI()->mainWindow()->addWindowedWidget(m_controlView);
-			m_subWindow->setWindowFlag(Qt::WindowMaximizeButtonHint, false);
-			m_subWindow->hide();
+			if (auto gui = getGUI())
+			{
+				m_subWindow = gui->mainWindow()->addWindowedWidget(m_controlView);
+				m_subWindow->setWindowFlag(Qt::WindowMaximizeButtonHint, false);
+				m_subWindow->hide();
+			}
+			else { m_controlView->setParent(this, Qt::Window); m_controlView->hide(); }
 		}
 	}
 
@@ -117,17 +121,18 @@ EffectView::~EffectView()
 
 void EffectView::editControls()
 {
-	if( m_subWindow )
+	if (m_controlView)
 	{
+		auto window = m_subWindow ? static_cast<QWidget*>(m_subWindow) : static_cast<QWidget*>(m_controlView);
 		if (!m_controlView->isVisible())
 		{
-			m_subWindow->show();
-			m_subWindow->raise();
+			window->show();
+			window->raise();
 			effect()->controls()->setViewVisible(true); // TODO is this even needed?
 		}
 		else
 		{
-			m_subWindow->hide();
+			window->hide();
 			effect()->controls()->setViewVisible( false );
 		}
 	}

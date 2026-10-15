@@ -46,6 +46,7 @@ public:
 			const QString & _file,
 			AudioEngine* audioEngine );
 	~AudioFileOgg() override;
+	bool finalizeOutput() override;
 
 	static AudioFileDevice * getInst( const QString & outputFilename,
 					  OutputSettings const & outputSettings,
@@ -58,13 +59,18 @@ public:
 
 private:
 	void writeBuffer(const SampleFrame* _ab, const f_cnt_t _frames) override;
-	vorbis_info m_vi;
-	vorbis_dsp_state m_vds;
-	vorbis_comment m_vc;
-	vorbis_block m_vb;
-	ogg_stream_state m_oss;
-	ogg_packet m_packet;
-	ogg_page m_page;
+	void encodeBuffer(const SampleFrame* data, int frames);
+	vorbis_info m_vi{};
+	vorbis_dsp_state m_vds{};
+	vorbis_comment m_vc{};
+	vorbis_block m_vb{};
+	ogg_stream_state m_oss{};
+	ogg_packet m_packet{};
+	ogg_page m_page{};
+	bool m_dspInitialized = false;
+	bool m_blockInitialized = false;
+	bool m_streamInitialized = false;
+	bool m_finalized = false;
 };
 
 } // namespace lmms

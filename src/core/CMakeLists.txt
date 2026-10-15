@@ -8,6 +8,13 @@ set(LMMS_SRCS
 	core/AudioEngineWorkerThread.cpp
 	core/AudioResampler.cpp
 	core/AutomatableModel.cpp
+	core/NativeLinkedControls.cpp
+	core/NativeControlLinkJournal.cpp
+	core/NativeClipTransfer.cpp
+	core/NativeClipEdit.cpp
+	core/NativeNoteTransfer.cpp
+	core/NativeNoteShift.cpp
+	core/NativeNoteGlue.cpp
 	core/AutomationClip.cpp
 	core/AutomationNode.cpp
 	core/BandLimitedWave.cpp
@@ -17,18 +24,24 @@ set(LMMS_SRCS
 	core/ComboBoxModel.cpp
 	core/ConfigManager.cpp
 	core/Controller.cpp
+	core/NativeValueNotification.cpp
 	core/ControllerConnection.cpp
 	core/DataFile.cpp
+	core/StudioAssetStore.cpp
+	core/FileSearch.cpp
+	core/StudioAssets.cpp
 	core/DrumSynth.cpp
 	core/Effect.cpp
 	core/EffectChain.cpp
 	core/Engine.cpp
 	core/EnvelopeAndLfoParameters.cpp
 	core/fft_helpers.cpp
+	core/GraphModel.cpp
 	core/Mixer.cpp
 	core/ImportFilter.cpp
 	core/InlineAutomation.cpp
 	core/Instrument.cpp
+	core/NativeTrackSaveSnapshot.cpp
 	core/InstrumentFunctions.cpp
 	core/InstrumentPlayHandle.cpp
 	core/InstrumentSoundShaping.cpp
@@ -44,6 +57,7 @@ set(LMMS_SRCS
 	core/Metronome.cpp
 	core/MicroTimer.cpp
 	core/Microtuner.cpp
+	core/TuningFile.cpp
 	core/MixHelpers.cpp
 	core/Model.cpp
 	core/ModelVisitor.cpp
@@ -60,6 +74,7 @@ set(LMMS_SRCS
 	core/Plugin.cpp
 	core/PluginIssue.cpp
 	core/PluginFactory.cpp
+	core/PluginHost.cpp
 	core/PresetPreviewPlayHandle.cpp
 	core/ProjectJournal.cpp
 	core/ProjectRenderer.cpp
@@ -69,10 +84,13 @@ set(LMMS_SRCS
 	core/RingBuffer.cpp
 	core/Sample.cpp
 	core/SampleBuffer.cpp
+	core/FileResourceSnapshot.cpp
+	core/FileResourceIO.cpp
 	core/SampleClip.cpp
 	core/SampleDecoder.cpp
 	core/SamplePlayHandle.cpp
 	core/SampleRecordHandle.cpp
+	core/SampleRecordingBuffer.cpp
 	core/Scale.cpp
 	core/LmmsSemaphore.cpp
 	core/SerializingObject.cpp
@@ -83,6 +101,7 @@ set(LMMS_SRCS
 	core/TimePos.cpp
 	core/ToolPlugin.cpp
 	core/Track.cpp
+	core/TrackRenderScope.cpp
 	core/TrackContainer.cpp
 	core/UpgradeExtendedNoteRange.h
 	core/UpgradeExtendedNoteRange.cpp
@@ -90,6 +109,21 @@ set(LMMS_SRCS
 	core/ValueBuffer.cpp
 	core/VstSyncController.cpp
 	core/StepRecorder.cpp
+	core/StudioCapabilities.cpp
+	core/StudioRuntime.cpp
+	core/StudioAudio.cpp
+	core/StudioRecording.cpp
+	core/StudioMidiRecording.cpp
+	core/StudioAutomationRecording.cpp
+	core/StudioMidiLearn.cpp
+	core/MidiNoteRecorder.cpp
+	core/StudioInference.cpp
+	core/StudioAgent.cpp
+	core/StudioStdio.cpp
+	core/StudioSignals.cpp
+	core/StudioStorage.cpp
+	core/StudioResources.cpp
+	core/StudioProjectResources.cpp
 
 	core/audio/AudioAlsa.cpp
 	core/audio/AudioDevice.cpp
@@ -99,6 +133,7 @@ set(LMMS_SRCS
 	core/audio/AudioFileFlac.cpp
 	core/audio/AudioFileWave.cpp
 	core/audio/AudioJack.cpp
+	core/audio/JackAudioBuses.cpp
 	core/audio/AudioSndio.cpp
 	core/audio/AudioPortAudio.cpp
 	core/audio/AudioPulseAudio.cpp
@@ -122,9 +157,11 @@ set(LMMS_SRCS
 	core/midi/MidiAlsaSeq.cpp
 	core/midi/MidiClient.cpp
 	core/midi/MidiController.cpp
+	core/midi/AutoDetectMidiController.cpp
 	core/midi/MidiEventToByteSeq.cpp
 	core/midi/MidiJack.cpp
 	core/midi/MidiSndio.cpp
+	core/midi/RawMidiOutput.cpp
 	core/midi/MidiApple.cpp
 	core/midi/MidiPort.cpp
 	core/midi/MidiWinMM.cpp

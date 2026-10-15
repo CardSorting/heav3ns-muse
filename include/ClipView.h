@@ -115,7 +115,7 @@ public:
 	QVector<ClipView *> getClickedClips();
 
 	// Methods to remove, copy, cut, paste and mute a QVector of Clip views
-	void copy( QVector<ClipView *> clipvs );
+	bool copy( QVector<ClipView *> clipvs );
 	void cut( QVector<ClipView *> clipvs );
 	void paste();
 	// remove and toggleMute are static because they don't depend
@@ -345,11 +345,11 @@ private:
 	//! @returns the width of a note's resize area in pixels.
 	//! @note When zoomed in, this is a constant pixel value, but when zoomed far out, it is a fraction of the clip width.
 	int resizeGripWidth() const;
-	
+
 	//! @returns Whether the user can left-resize this clip so that the start of the clip bounds is before the start of the clip content.
 	virtual bool isResizableBeforeStart() { return true; };
 
-	
+
 	//! @brief Split this Clip into two clips
 	//! @param pos the position of the split, relative to the start of the clip
 	//! @return true if the clip could be split

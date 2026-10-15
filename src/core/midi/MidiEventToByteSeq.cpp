@@ -32,11 +32,35 @@
 namespace lmms
 {
 
+std::optional<MidiEvent> readFromByteSeq(const uint8_t* data, std::size_t size, MidiEvent::Source source)
+{
+	if (!data || size < 2 || size > 3 || data[0] < 0x80 || data[0] >= 0xf0) { return std::nullopt; }
+	const auto type = static_cast<MidiEventTypes>(data[0] & 0xf0);
+	const std::size_t expected = type == MidiProgramChange || type == MidiChannelPressure ? 2 : 3;
+	if (size != expected) { return std::nullopt; }
+	for (std::size_t i = 1; i < size; ++i) { if (data[i] > 127) { return std::nullopt; } }
+	const auto first = type == MidiPitchBend ? data[1] | (data[2] << 7) : data[1];
+	const auto second = type == MidiPitchBend || size == 2 ? 0 : data[2];
+	return MidiEvent(type, data[0] & 0x0f, first, second, nullptr, source);
+}
 
 std::size_t writeToByteSeq(
 	const MidiEvent& ev, uint8_t *data, std::size_t bufsize)
 {
-	Q_ASSERT(bufsize >= 3);
+	if (!data || bufsize < 3 || ev.channel() < 0 || ev.channel() >= MidiChannelCount) { return 0; }
+	switch (ev.type())
+	{
+	case MidiNoteOn: case MidiNoteOff: case MidiKeyPressure: case MidiControlChange:
+		if (ev.param(0) < 0 || ev.param(0) > 127 || ev.param(1) < 0 || ev.param(1) > 127) { return 0; }
+		break;
+	case MidiProgramChange: case MidiChannelPressure:
+		if (ev.param(0) < 0 || ev.param(0) > 127) { return 0; }
+		break;
+	case MidiPitchBend:
+		if (ev.param(0) < 0 || ev.param(0) > MidiMaxPitchBend) { return 0; }
+		break;
+	default: return 0;
+	}
 
 	std::size_t size = 0;
 	data[0] = ev.type() | (ev.channel() & 0x0F);

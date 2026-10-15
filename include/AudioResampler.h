@@ -79,12 +79,15 @@ public:
 	 * @throws `std::invalid_argument` if a channel mismatch has been detected.
 	 * @throws `std::runtime_error` if the resampling process has failed.
 	 *
-	 * @remark This utility class does not cache the input and output buffers, making it stateless. In other words,
-	 * `input` is directly resampled into the `output`.
+	 * @remark The native converter retains filter state between calls. Input and output buffers remain caller-owned.
 	 *
 	 * @returns the result of the resampling process. See @ref Result for more details.
 	 */
 	[[nodiscard]] auto process(InterleavedBufferView<const float> input, InterleavedBufferView<float> output) -> Result;
+	// Offline/native-file conversion can finish a stream and drain its buffered
+	// output. Existing realtime callers retain the two-argument streaming API.
+	[[nodiscard]] auto process(InterleavedBufferView<const float> input, InterleavedBufferView<float> output,
+		bool endOfInput) -> Result;
 
 	/**
 	 * @brief Resets the internal resampler state.

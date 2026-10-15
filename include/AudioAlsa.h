@@ -33,12 +33,17 @@
 #define ALSA_PCM_NEW_HW_PARAMS_API
 
 #include <alsa/asoundlib.h>
+#include <QElapsedTimer>
+#include <QSemaphore>
 #include <QThread>
+#include <vector>
 
 #include "AudioDevice.h"
 
 namespace lmms
 {
+
+namespace detail { struct AlsaPcmIo; }
 
 class AudioAlsa : public QThread, public AudioDevice
 {
@@ -91,22 +96,36 @@ public:
 	static DeviceInfoCollection getAvailableDevices();
 
 private:
+	friend class AudioAlsaTestAccess;
+	AudioAlsa(bool& successful, AudioEngine* engine, const detail::AlsaPcmIo& io, const QString& device, int timeoutMs);
 	void startProcessingImpl() override;
 	void stopProcessingImpl() override;
 	void run() override;
+	void requestStop();
+	void closeResources() noexcept;
+	void fail(ProcessingFailure failure, int error) noexcept;
+	bool processing() const;
+	bool recover(int error, QElapsedTimer& progress);
+	bool writeBuffer(const float* data, snd_pcm_uframes_t frames);
 
 	int setHWParams( const ch_cnt_t _channels, snd_pcm_access_t _access );
 	int setSWParams();
-	int handleError( int _err );
+	const detail::AlsaPcmIo& m_io;
+	const int m_timeoutMs;
+	std::atomic_bool m_stopRequested{true};
+	std::atomic_bool m_prepared{false};
+	QSemaphore m_startupSemaphore;
+	QSemaphore m_stopSemaphore;
+	// Written by the worker; read/reset only after joining it.
+	ProcessingFailure m_cleanupFailure = ProcessingFailure::None;
+	int m_cleanupError = 0;
+	snd_pcm_t* m_handle = nullptr;
 
+	snd_pcm_uframes_t m_bufferSize = 0;
+	snd_pcm_uframes_t m_periodSize = 0;
 
-	snd_pcm_t * m_handle;
-
-	snd_pcm_uframes_t m_bufferSize;
-	snd_pcm_uframes_t m_periodSize;
-
-	snd_pcm_hw_params_t * m_hwParams;
-	snd_pcm_sw_params_t * m_swParams;
+	snd_pcm_hw_params_t* m_hwParams = nullptr;
+	snd_pcm_sw_params_t* m_swParams = nullptr;
 } ;
 
 } // namespace lmms

@@ -26,6 +26,9 @@
 
 #include <QDomElement>
 #include <QPlainTextEdit>
+#include <QScopedValueRollback>
+#include <QSignalBlocker>
+#include <QThread>
 
 #include "AudioEngine.h"
 #include "Engine.h"
@@ -77,6 +80,11 @@ O2 -> trianglew(2t*f)*(0.5+0.5sinew(12*A1*t))+sinew(t*f)*(0.5+0.5sinew(12*A1*t+0
  ***********************************************************************/
 #define GRAPH_LENGTH 4096
 
+namespace
+{
+const QStringList expressionKeys{"w1", "w2", "w3", "o1", "o2"};
+}
+
 Xpressive::Xpressive(InstrumentTrack* instrument_track) :
 	Instrument(instrument_track, &xpressive_plugin_descriptor),
 	m_graphO1(-1.0f, 1.0f, 360, this),
@@ -107,6 +115,119 @@ Xpressive::Xpressive(InstrumentTrack* instrument_track) :
 {
 	m_outputExpression[0]="sinew(integrate(f*(1+0.05sinew(12t))))*(2^(-(1.1+A2)*t)*(0.4+0.1(1+A3)+0.4sinew((2.5+2A1)t))^2)";
 	m_outputExpression[1]="expw(integrate(f*atan(500t)*2/pi))*0.5+0.12";
+	graphModel* raw[] = {&m_rawgraphW1, &m_rawgraphW2, &m_rawgraphW3};
+	FloatModel* smoothing[] = {&m_smoothW1, &m_smoothW2, &m_smoothW3};
+	for (int index = 0; index < 3; ++index)
+	{
+		connect(raw[index], &graphModel::samplesChanged, this, [this, index] { refreshWave(index); });
+		connect(smoothing[index], &FloatModel::dataChanged, this, [this, index] { refreshWave(index); });
+	}
+}
+
+void Xpressive::refreshWave(int index)
+{
+	if (index < 0 || index >= 3) { return; }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	graphModel* raw[] = {&m_rawgraphW1, &m_rawgraphW2, &m_rawgraphW3};
+	graphModel* processed[] = {&m_graphW1, &m_graphW2, &m_graphW3};
+	FloatModel* smoothing[] = {&m_smoothW1, &m_smoothW2, &m_smoothW3};
+	WaveSample* waves[] = {&m_W1, &m_W2, &m_W3};
+	smooth(smoothing[index]->value(), raw[index], processed[index]);
+	waves[index]->copyFrom(processed[index]);
+}
+
+void Xpressive::graphEdited(const QString& key)
+{
+	QScopedValueRollback<bool> changing(m_expressionChanging, true);
+	for (int index = 0; index < 3; ++index)
+	{
+		if (key == expressionKeys[index]) { m_wavesExpression[index].clear(); emit expressionSourceChanged(key); }
+	}
+}
+
+std::vector<Plugin::ExpressionResource> Xpressive::expressionResources() const
+{
+	const QStringList common{"t", "srate", "pi", "e", "seed", "sinew", "squarew", "trianglew", "saww", "moogsaww", "moogw",
+		"expw", "expnw", "cent", "semitone", "rand", "randv", "randsv", "last", "integrate"};
+	auto outputSymbols = common; outputSymbols << "f" << "key" << "bnote" << "v" << "tempo" << "rel" << "trel" << "A1" << "A2" << "A3" << "W1" << "W2" << "W3";
+	std::vector<ExpressionResource> result;
+	for (int index = 0; index < 5; ++index)
+	{
+		const bool output = index >= 3;
+		result.push_back({expressionKeys[index], output ? tr("Output %1 expression").arg(index - 2) : tr("Wave %1 expression").arg(index + 1),
+			QString::fromLatin1(output ? m_outputExpression[index - 3] : m_wavesExpression[index]), output ? "output" : "waveform",
+			output ? outputSymbols : common,
+			output ? "ExprTk scalar formula, e.g. W1(integrate(f)). Preview: 360 frames at 360 Hz, f=10, key=5, v=0.5, rel=trel=0; current tempo/base note/A1-A3 and W1-W3. Playback uses real note values. Empty text silences this output for new notes; edits affect new notes."
+				: "ExprTk scalar formula, e.g. sinew(t). Generates 4096 native samples over t=[0,1), srate=4096, followed by native smoothing. Nonfinite generated samples become zero. Empty text retains the existing waveform."
+		});
+		result.back().semantics += " Standard ExprTk math functions are available; logic, assignment and control structures are disabled. Source is ASCII without NUL, at most 65536 characters.";
+	}
+	return result;
+}
+
+XpressiveExpressionContext Xpressive::expressionContext(int index, bool consumeRandom) const
+{
+	XpressiveExpressionContext context; context.output = index >= 3;
+	context.length = context.sampleRate = context.output ? 360 : GRAPH_LENGTH;
+	context.baseNote = instrumentTrack()->baseNote(); context.tempo = Engine::getSong()->getTempo();
+	context.parameters = {m_parameterA1.value(), m_parameterA2.value(), m_parameterA3.value()};
+	context.waves = {&m_graphW1, &m_graphW2, &m_graphW3};
+	const graphModel* raw[]{&m_rawgraphW1, &m_rawgraphW2, &m_rawgraphW3};
+	if (!context.output) { context.currentWave = raw[index]; }
+	context.interpolate = {m_interpolateW1.value(), m_interpolateW2.value(), m_interpolateW3.value()};
+	context.consumeRandom = consumeRandom; return context;
+}
+
+Plugin::ExpressionResult Xpressive::validateExpression(const QString& key, const QString& source)
+{
+	ExpressionResult result;
+	if (QThread::currentThread() != thread() || m_expressionChanging) { result.error = "Native expression validation requires its owner thread outside an active edit"; return result; }
+	const int index = expressionKeys.indexOf(key);
+	if (index < 0) { result.error = "Unknown native Xpressive expression key"; return result; }
+	QScopedValueRollback<bool> changing(m_expressionChanging, true);
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	return previewXpressiveExpression(source, expressionContext(index));
+}
+
+bool Xpressive::setExpression(const QString& key, const QString& source, ExpressionResult& result)
+{
+	result = {};
+	if (QThread::currentThread() != thread() || m_expressionChanging) { result.error = "Native expression editing requires its owner thread outside an active edit"; return false; }
+	const int index = expressionKeys.indexOf(key);
+	if (index < 0) { result.error = "Unknown native Xpressive expression key"; return false; }
+	QScopedValueRollback<bool> changing(m_expressionChanging, true);
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	result = previewXpressiveExpression(source, expressionContext(index, true));
+	if (!result.valid) { return false; }
+	const bool output = index >= 3;
+	auto& stored = output ? m_outputExpression[index - 3] : m_wavesExpression[index];
+	const auto previous = stored; stored = source.trimmed().isEmpty() ? QByteArray{} : source.toLatin1();
+	graphModel* graphs[]{&m_rawgraphW1, &m_rawgraphW2, &m_rawgraphW3, &m_graphO1, &m_graphO2};
+	// Empty waveform text releases formula ownership while preserving its
+	// accepted samples. Empty output text represents a disabled oscillator.
+	if ((output || !stored.isEmpty()) && !graphs[index]->setSamplesChecked(result.preview, result.error))
+	{
+		stored = previous; result.valid = false; return false;
+	}
+	m_exprValid.setValue(false);
+	emit expressionSourceChanged(key);
+	return true;
+}
+
+Plugin::ExpressionResult Xpressive::refreshExpressionPreview(int index)
+{
+	ExpressionResult result;
+	if (QThread::currentThread() != thread() || m_expressionChanging) { result.error = "Native preview refresh requires its owner thread outside an active edit"; return result; }
+	if (index < 0 || index >= 5) { result.error = "Unknown native Xpressive expression index"; return result; }
+	const auto source = index >= 3 ? m_outputExpression[index - 3] : m_wavesExpression[index];
+	result = validateExpression(expressionKeys[index], QString::fromLatin1(source));
+	if (index >= 3)
+	{
+		const auto graph = index == 3 ? &m_graphO1 : &m_graphO2;
+		if (result.valid) { QString error; graph->setSamplesChecked(result.preview, error); }
+		else { graph->clear(); }
+	}
+	m_exprValid.setValue(!result.valid); return result;
 }
 
 void Xpressive::saveSettings(QDomDocument & _doc, QDomElement & _this) {
@@ -146,6 +267,8 @@ void Xpressive::saveSettings(QDomDocument & _doc, QDomElement & _this) {
 }
 
 void Xpressive::loadSettings(const QDomElement & _this) {
+	if (QThread::currentThread() != thread() || m_expressionChanging) { collectErrorForUI("Cannot load Xpressive during an active native expression edit"); return; }
+	QScopedValueRollback<bool> changing(m_expressionChanging, true);
 
 	m_outputExpression[0]=_this.attribute( "O1").toLatin1();
 	m_outputExpression[1]=_this.attribute( "O2").toLatin1();
@@ -166,27 +289,11 @@ void Xpressive::loadSettings(const QDomElement & _this) {
 	m_panning2.loadSettings(_this,"PAN2");
 	m_relTransition.loadSettings(_this,"RELTRANS");
 
-	int size = 0;
-	char * dst = 0;
-	base64::decode( _this.attribute( "W1sample"), &dst, &size );
-
-	m_rawgraphW1.setSamples( (float*) dst );
-	delete[] dst;
-	base64::decode( _this.attribute( "W2sample"), &dst, &size );
-
-	m_rawgraphW2.setSamples( (float*) dst );
-	delete[] dst;
-	base64::decode( _this.attribute( "W3sample"), &dst, &size );
-
-	m_rawgraphW3.setSamples( (float*) dst );
-	delete[] dst;
-
-	smooth(m_smoothW1.value(),&m_rawgraphW1,&m_graphW1);
-	smooth(m_smoothW2.value(),&m_rawgraphW2,&m_graphW2);
-	smooth(m_smoothW3.value(),&m_rawgraphW3,&m_graphW3);
-	m_W1.copyFrom(&m_graphW1);
-	m_W2.copyFrom(&m_graphW2);
-	m_W3.copyFrom(&m_graphW3);
+	m_rawgraphW1.loadSampleAttribute(_this, "W1sample");
+	m_rawgraphW2.loadSampleAttribute(_this, "W2sample");
+	m_rawgraphW3.loadSampleAttribute(_this, "W3sample");
+	for (int index = 0; index < 3; ++index) { refreshWave(index); }
+	for (const auto& key : expressionKeys) { emit expressionSourceChanged(key); }
 }
 
 
@@ -522,128 +629,39 @@ XpressiveView::XpressiveView(Instrument * _instrument, QWidget * _parent) :
 }
 
 
-void XpressiveView::expressionChanged() {
-	auto e = castModel<Xpressive>();
-	QByteArray text = m_expressionEditor->toPlainText().toLatin1();
+void XpressiveView::expressionChanged()
+{
+	auto instrument = castModel<Xpressive>();
+	const int index = m_selectedGraphGroup->model()->value();
+	if (index < 0 || index >= expressionKeys.size()) { return; }
+	Plugin::ExpressionResult result;
+	const auto source = m_expressionEditor->toPlainText();
+	const bool accepted = instrument->setExpression(expressionKeys[index], source, result);
+	instrument->exprValid().setValue(!accepted);
+	m_expressionEditor->setToolTip(result.error);
+	if (m_wave_expr) { m_graph->setEnabled(m_smoothKnob->model()->value() == 0 && source.trimmed().isEmpty()); }
+	if (accepted) { Engine::getSong()->setModified(); }
+}
 
-	switch (m_selectedGraphGroup->model()->value()) {
-		case W1_EXPR:
-			e->wavesExpression(0) = text;
-			break;
-		case W2_EXPR:
-			e->wavesExpression(1) = text;
-			break;
-		case W3_EXPR:
-			e->wavesExpression(2) = text;
-			break;
-		case O1_EXPR:
-			e->outputExpression(0) = text;
-			break;
-		case O2_EXPR:
-			e->outputExpression(1) = text;
-			break;
-	}
-	if (m_wave_expr)
-		m_graph->setEnabled(m_smoothKnob->model()->value() == 0 && text.size() == 0);
-
-	if (text.size()>0)
+void XpressiveView::nativeExpressionChanged(const QString& key)
+{
+	const int index = m_selectedGraphGroup->model()->value();
+	if (index < 0 || index >= expressionKeys.size() || expressionKeys[index] != key) { return; }
+	const auto instrument = castModel<Xpressive>();
+	const auto source = QString::fromLatin1(index >= 3 ? instrument->outputExpression(index - 3) : instrument->wavesExpression(index));
+	if (m_expressionEditor->toPlainText() != source)
 	{
-		const unsigned int sample_rate=m_raw_graph->length();
-		ExprFront expr(text.constData(),sample_rate);
-		float t=0;
-		const float f=10,key=5,v=0.5;
-		unsigned int frame_counter = 0;
-		expr.add_variable("t", t);
-
-		if (m_output_expr)
-		{
-			expr.add_constant("f", f);
-			expr.add_constant("key", key);
-			expr.add_constant("rel", 0);
-			expr.add_constant("trel", 0);
-			expr.add_constant("bnote",e->instrumentTrack()->baseNote());
-			expr.add_constant("v", v);
-			expr.add_constant("tempo", Engine::getSong()->getTempo());
-			expr.add_constant("A1", e->parameterA1().value());
-			expr.add_constant("A2", e->parameterA2().value());
-			expr.add_constant("A3", e->parameterA3().value());
-			expr.add_cyclic_vector("W1",e->graphW1().samples(),e->graphW1().length());
-			expr.add_cyclic_vector("W2",e->graphW2().samples(),e->graphW2().length());
-			expr.add_cyclic_vector("W3",e->graphW3().samples(),e->graphW3().length());
-		}
-		expr.setIntegrate(&frame_counter,sample_rate);
-		expr.add_constant("srate",sample_rate);
-
-		const bool parse_ok=expr.compile();
-
-		if (parse_ok) {
-			e->exprValid().setValue(0);
-			const unsigned int length = static_cast<unsigned int>(m_raw_graph->length());
-			auto const samples = new float[length];
-			// frame_counter's reference is used in the integrate function.
-			for (frame_counter = 0; frame_counter < length; ++frame_counter)
-			{
-				t = frame_counter / (float) length;
-				samples[frame_counter] = expr.evaluate();
-				if (std::isinf(samples[frame_counter]) != 0 || std::isnan(samples[frame_counter]) != 0)
-				{
-					samples[frame_counter] = 0;
-				}
-			}
-			m_raw_graph->setSamples(samples);
-			delete[] samples;
-			if (m_wave_expr)
-			{
-				smoothChanged();
-			}
-			else
-			{
-				Engine::getSong()->setModified();
-			}
-		}
-		else
-		{
-			e->exprValid().setValue(1);
-			if (m_output_expr)
-				m_raw_graph->clear();
-		}
+		const QSignalBlocker blocker(m_expressionEditor); m_expressionEditor->setPlainText(source);
 	}
-	else
-	{
-		e->exprValid().setValue(0);
-		if (m_output_expr)
-			m_raw_graph->clear();
-	}
+	m_expressionEditor->setToolTip({});
+	if (m_wave_expr) { m_graph->setEnabled(m_smoothKnob->model()->value() == 0 && source.isEmpty()); }
 }
 
 void XpressiveView::smoothChanged()
 {
 
 	auto e = castModel<Xpressive>();
-	float smoothness=0;
-	switch (m_selectedGraphGroup->model()->value()) {
-	case W1_EXPR:
-		smoothness=e->smoothW1().value();
-		break;
-	case W2_EXPR:
-		smoothness=e->smoothW2().value();
-		break;
-	case W3_EXPR:
-		smoothness=e->smoothW3().value();
-		break;
-	}
-	Xpressive::smooth(smoothness,m_raw_graph,m_graph->model());
-	switch (m_selectedGraphGroup->model()->value()) {
-	case W1_EXPR:
-		e->W1().copyFrom(m_graph->model());
-		break;
-	case W2_EXPR:
-		e->W2().copyFrom(m_graph->model());
-		break;
-	case W3_EXPR:
-		e->W3().copyFrom(m_graph->model());
-		break;
-	}
+	e->refreshWave(m_selectedGraphGroup->model()->value());
 	Engine::getSong()->setModified();
 	m_graph->setEnabled(m_smoothKnob->model()->value() == 0 && m_expressionEditor->toPlainText().size() == 0);
 }
@@ -668,6 +686,7 @@ void XpressiveView::graphDrawn()
 
 void XpressiveView::modelChanged() {
 	auto b = castModel<Xpressive>();
+	connect(b, &Xpressive::expressionSourceChanged, this, &XpressiveView::nativeExpressionChanged, Qt::UniqueConnection);
 
 	m_expressionValidToggle->setModel( &b->exprValid() );
 	m_generalPurposeKnob[0]->setModel( &b->parameterA1() );
@@ -684,6 +703,7 @@ void XpressiveView::modelChanged() {
 
 void XpressiveView::updateLayout() {
 	auto e = castModel<Xpressive>();
+	const QSignalBlocker editorSignals(m_expressionEditor);
 	m_output_expr=false;
 	m_wave_expr=false;
 	switch (m_selectedGraphGroup->model()->value()) {
@@ -744,6 +764,8 @@ void XpressiveView::updateLayout() {
 		m_waveInterpolate->hide();
 		break;
 	}
+	const auto preview = e->refreshExpressionPreview(m_selectedGraphGroup->model()->value());
+	m_expressionEditor->setToolTip(preview.error);
 }
 
 void XpressiveView::sinWaveClicked() {
@@ -802,7 +824,7 @@ void XpressiveView::expWaveClicked()
 
 void XpressiveView::usrWaveClicked() {
 	m_expressionEditor->setPlainText("");
-	QString fileName = m_raw_graph->setWaveToUser();
+	QString fileName = Graph::loadUserWaveform(m_raw_graph);
 	smoothChanged();
 	Engine::getSong()->setModified();
 }

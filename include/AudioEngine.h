@@ -26,8 +26,12 @@
 #define LMMS_AUDIO_ENGINE_H
 
 #include <mutex>
+#include <functional>
+#include <exception>
+#include <algorithm>
 
 #include <QThread>
+#include <QStringList>
 #include <samplerate.h>
 
 #include <memory>
@@ -40,14 +44,16 @@
 #include "LocklessList.h"
 #include "AudioEngineProfiler.h"
 #include "PlayHandle.h"
+#include "MidiClient.h"
 
 
 namespace lmms
 {
 
-class MidiClient;
 class AudioBusHandle;  // IWYU pragma: keep
+class AudioBusOutput;
 class AudioEngineWorkerThread;
+class SampleClip;
 
 constexpr f_cnt_t MINIMUM_BUFFER_SIZE = 32;
 constexpr f_cnt_t DEFAULT_BUFFER_SIZE = 256;
@@ -66,6 +72,28 @@ class LMMS_EXPORT AudioEngine : public QObject
 {
 	Q_OBJECT
 public:
+	enum class DspFailure : std::uint8_t
+	{
+		None, NoteSetupException, InstrumentJobException, EffectJobException,
+		MixerJobException, QueueOverflow, MixException, NonfiniteOutput, CorruptedEffect,
+		MixerDependency
+	};
+	struct DspStatus { DspFailure failure; std::uint64_t failures; };
+	DspStatus dspStatus() const
+	{
+		const auto state = m_dspState.load(std::memory_order_acquire);
+		return {static_cast<DspFailure>(state & 0xff), state >> 8};
+	}
+	static const char* dspFailureName(DspFailure failure);
+	// Numeric publication from native processing; no Qt callback or allocation.
+	void reportDspFailure(DspFailure failure) noexcept;
+	bool canResetDspFailure();
+	// Brief native model admission; release its lock before JACK joins/drains.
+	bool canChangeBackendGraph();
+	// Joining callbacks from an owner-thread model edit would invert the lock order.
+	bool canJoinBackendCallbacks() const;
+	// Control-thread retry only, after transport, recording and export stop.
+	bool resetDspFailure();
 	/**
 	 * @brief RAII helper for requestChangesInModel.
 	 * Used by AudioEngine::requestChangesGuard.
@@ -109,6 +137,7 @@ public:
 	void initDevices();
 	void clear();
 	void clearNewPlayHandles();
+	void finishSampleRecordings(const SampleClip* clip = nullptr);
 
 
 	// audio-device-stuff
@@ -124,12 +153,36 @@ public:
 	{
 		return m_audioDevStartFailed;
 	}
+	const QString& requestedAudioBackend() const { return m_requestedAudioBackend; }
+	const QString& requestedMidiBackend() const { return m_requestedMidiBackend; }
+	struct MidiBackendStartupFailure
+	{
+		QString name;
+		bool nativeCodeAvailable;
+		int nativeErrorCode;
+	};
+	const std::vector<MidiBackendStartupFailure>& midiBackendStartupFailures() const { return m_midiBackendStartupFailures; }
 
 	//! Set new audio device. Old device will be deleted,
 	//! unless it's stored using storeAudioDevice
 	void setAudioDevice(AudioDevice* _dev, bool startNow);
-	void storeAudioDevice();
-	void restoreAudioDevice();
+	// Native notification receivers catch their own exceptions and report the
+	// first failure here. The owner rethrows only after Qt dispatch returns.
+	bool reportDeviceNotificationFailure(std::exception_ptr failure) noexcept;
+	// Select exactly one compiled factory using its loaded native settings.
+	// Requires stopped/disarmed transport; failure restores the prior device.
+	void selectAudioBackend(const QString& name);
+	bool storeAudioDevice();
+	// Retain a failed reservation for control-thread retry; safe in cleanup.
+	bool restoreAudioDevice() noexcept;
+	enum class DeviceRestoreFailure { None, WrongThread, Busy, StopException, NotificationException, RestartException, RestartFailed, ExportStopException };
+	static const char* deviceRestoreFailureName(DeviceRestoreFailure failure);
+	DeviceRestoreFailure deviceRestoreFailure() const { return m_deviceRestoreFailure.load(); }
+	bool isRestoringAudioDevice() const { return m_restoringAudioDevice.load(); }
+	bool isChangingAudioDevice() const { return m_changingAudioDevice.load(); }
+	bool hasStoredAudioDevice() const { return m_oldAudioDev != nullptr; }
+	// Monotonic identity for owner-thread cleanup; release does not reuse an ID.
+	std::uint64_t audioDeviceReservationGeneration() const noexcept { return m_audioDeviceReservationGeneration.load(); }
 	inline AudioDevice * audioDev()
 	{
 		return m_audioDev;
@@ -139,9 +192,8 @@ public:
 	// audio-bus-handle-stuff
 	inline void addAudioBusHandle(AudioBusHandle* busHandle)
 	{
-		requestChangeInModel();
+		const auto guard = requestChangesGuard();
 		m_audioBusHandles.push_back(busHandle);
-		doneChangeInModel();
 	}
 
 	void removeAudioBusHandle(AudioBusHandle* busHandle);
@@ -157,6 +209,19 @@ public:
 	{
 		return m_midiClient;
 	}
+	struct MidiBackendSelection
+	{
+		unsigned int ports = 0, inputResetsRequired = 0, retirementExceptions = 0, notificationFailures = 0;
+		bool audioRestored = false;
+		MidiClient::OutputAbandonment outputAbandonment;
+		QString previousBackend;
+	};
+	// Exact, process-local selection. A returned result means MIDI committed;
+	// audioRestored=false retains audio.device.restore recovery, not MIDI rollback.
+	// Explicit abandonment retires eligible terminal output without claiming
+	// physical cleanup; the returned receipt retains its uncertainty.
+	MidiBackendSelection selectMidiBackend(const QString& name, bool abandonFailedOutput = false);
+	bool isChangingMidiBackend() const { return m_changingMidiClient.load(); }
 
 
 	// play-handle stuff
@@ -169,7 +234,7 @@ public:
 		return m_playHandles;
 	}
 
-	void removePlayHandlesOfTypes(Track * track, PlayHandle::Types types);
+	void removePlayHandlesOfTypes(Track* track, PlayHandle::Types types, bool preserveReservedRecordings = false);
 
 	AudioEngineProfiler& profiler()
 	{
@@ -193,9 +258,9 @@ public:
 	{
 		return m_audioDev != nullptr ? m_audioDev->sampleRate() : m_baseSampleRate;
 	}
-	
 
-	sample_rate_t inputSampleRate() const	
+
+	sample_rate_t inputSampleRate() const
 	{
 		return m_audioDev != nullptr ? m_audioDev->sampleRate() : m_baseSampleRate;
 	}
@@ -229,6 +294,14 @@ public:
 	bool criticalXRuns() const;
 
 	void pushInputFrames( SampleFrame* _ab, const f_cnt_t _frames );
+	std::uint64_t inputErrorEpoch() const { return m_inputErrorEpoch.load(std::memory_order_relaxed); }
+	// Safe for backend shutdown callbacks; active takes and stale queued input fail.
+	void invalidateInput() { m_inputErrorEpoch.fetch_add(1, std::memory_order_relaxed); }
+	void discardInputBuffers();
+	bool inputBufferFault() const
+	{
+		return m_inputBufferFault[m_inputBufferRead] || m_inputBufferEpoch[m_inputBufferRead] != inputErrorEpoch();
+	}
 
 	inline const SampleFrame* inputBuffer()
 	{
@@ -289,6 +362,21 @@ public:
 	//! @copydoc renderNextBuffer(InterleavedBufferView<float>)
 	void renderNextBuffer(PlanarBufferView<float> dst) { renderNextBuffer<PlanarBufferView<float>>(dst); }
 
+	struct BusDestination
+	{
+		std::shared_ptr<const AudioBusOutput> source;
+		PlanarBufferView<float> output;
+	};
+	/**
+	 * Render master and native stereo buses with one shared period cursor.
+	 * Destinations must have the same frame count as master and disjoint writable
+	 * buffers. A null, disabled or retired bus source produces silence. Sources
+	 * are retained on the model owner thread before the device callback starts.
+	 * This holds the model lock through copying, so bus retirement cannot race
+	 * a partially consumed period. It does not manage native device port lifetime.
+	 */
+	void renderNextBuffer(PlanarBufferView<float> dst, std::span<const BusDestination> buses);
+
 	//! Block until a change in model can be done (i.e. wait for audio thread)
 	void requestChangeInModel();
 	void doneChangeInModel();
@@ -300,6 +388,9 @@ public:
 
 	static bool isAudioDevNameValid(QString name);
 	static bool isMidiDevNameValid(QString name);
+	// Compiled native factories; discovery does not open or probe hardware.
+	static QStringList availableAudioDeviceNames();
+	static QStringList availableMidiClientNames();
 
 	//! @returns true if sanitization of inf/nan values is enabled
 	bool sanitizationEnabled() { return m_sanitizationEnabled.load(std::memory_order_relaxed); }
@@ -314,36 +405,54 @@ signals:
 
 
 private:
-	void renderNextBuffer(AudioBufferView<float> auto dst)
+	void copyBusOutputs(std::span<const BusDestination> buses, f_cnt_t sourceOffset, f_cnt_t outputOffset, f_cnt_t frames);
+	static void silenceBusOutputs(std::span<const BusDestination> buses);
+	std::uint64_t refreshOutputFailure();
+
+	void renderNextBuffer(AudioBufferView<float> auto dst, std::span<const BusDestination> buses = {})
 	{
-		for (auto frame = f_cnt_t{0}; frame < dst.frames(); ++frame)
+		const auto failures = refreshOutputFailure();
+		for (auto offset = f_cnt_t{0}; offset < dst.frames(); )
 		{
 			if (m_outputBufferReadIndex == m_framesPerPeriod) { m_outputBufferReadIndex = 0; }
 			if (m_outputBufferReadIndex == 0) { renderNextPeriod(); }
-
-			switch (dst.channels())
+			const auto frames = std::min(dst.frames() - offset, m_framesPerPeriod - m_outputBufferReadIndex);
+			for (auto frame = f_cnt_t{0}; frame < frames; ++frame)
 			{
-			case 0:
-				assert(false);
-				break;
-			case 1:
-				dst.sample(0, frame) = m_outputBufferRead[m_outputBufferReadIndex].average();
-				break;
-			case 2:
-				dst.sample(0, frame) = m_outputBufferRead[m_outputBufferReadIndex][0];
-				dst.sample(1, frame) = m_outputBufferRead[m_outputBufferReadIndex][1];
-				break;
-			default:
-				dst.sample(0, frame) = m_outputBufferRead[m_outputBufferReadIndex][0];
-				dst.sample(1, frame) = m_outputBufferRead[m_outputBufferReadIndex][1];
-				for (auto channel = 2; channel < dst.channels(); ++channel)
+				const auto& sample = m_outputBufferRead[m_outputBufferReadIndex + frame];
+				switch (dst.channels())
 				{
-					dst.sample(channel, frame) = 0.f;
+				case 0:
+					assert(false);
+					break;
+				case 1:
+					dst.sample(0, offset + frame) = sample.average();
+					break;
+				default:
+					dst.sample(0, offset + frame) = sample[0];
+					dst.sample(1, offset + frame) = sample[1];
+					for (auto channel = 2; channel < dst.channels(); ++channel)
+					{
+						dst.sample(channel, offset + frame) = 0.f;
+					}
+					break;
 				}
-				break;
 			}
-
-			++m_outputBufferReadIndex;
+			if (!buses.empty()) { copyBusOutputs(buses, m_outputBufferReadIndex, offset, frames); }
+			m_outputBufferReadIndex += frames;
+			offset += frames;
+		}
+		// A fault in a later native period invalidates the entire callback,
+		// including an already-copied prefix and all independent bus outputs.
+		const auto status = dspStatus();
+		if (status.failure != DspFailure::None || status.failures != failures)
+		{
+			for (auto channel = ch_cnt_t{0}; channel < dst.channels(); ++channel)
+			{
+				for (auto frame = f_cnt_t{0}; frame < dst.frames(); ++frame) { dst.sample(channel, frame) = 0.f; }
+			}
+			silenceBusOutputs(buses);
+			refreshOutputFailure();
 		}
 	}
 
@@ -355,7 +464,14 @@ private:
 
 
 	AudioDevice * tryAudioDevices();
+	std::unique_ptr<AudioDevice> createAudioDevice(const QString& name);
+	void setAudioDeviceImpl(AudioDevice* device, bool startNow);
+	void selectAudioBackend(const QString& name, const std::function<std::unique_ptr<AudioDevice>()>& factory);
 	MidiClient * tryMidiClients();
+	std::unique_ptr<MidiClient> createMidiClient(const QString& name, bool& successful);
+	MidiBackendSelection selectMidiBackend(const QString& name, const std::function<std::unique_ptr<MidiClient>()>& factory, bool abandonFailedOutput = false);
+	bool backendGraphIdle();
+	bool canTransferMidiClient(const MidiClient* source);
 
 	void renderStageNoteSetup();
 	void renderStageInstruments();
@@ -374,6 +490,12 @@ private:
 	f_cnt_t m_framesPerAudioBuffer;
 	f_cnt_t m_framesPerPeriod;
 	sample_rate_t m_baseSampleRate;
+	std::atomic<std::uint64_t> m_inputErrorEpoch{0};
+	// Low byte is the latched first cause; the high 56 bits count failures.
+	std::atomic<std::uint64_t> m_dspState{0};
+	std::uint64_t m_outputFailureCount = 0; // only the single native render consumer writes this
+	bool m_inputBufferFault[2]{};
+	std::uint64_t m_inputBufferEpoch[2]{};
 
 	SampleFrame* m_inputBuffer[2];
 	f_cnt_t m_inputBufferFrames[2];
@@ -398,15 +520,35 @@ private:
 	float m_masterGain;
 
 	// audio device stuff
-	void doSetAudioDevice( AudioDevice *_dev );
 	AudioDevice * m_audioDev;
 	AudioDevice * m_oldAudioDev;
+	// Private test-peer checkpoints run only after Qt notification dispatch has
+	// returned. Fault fixtures must never throw through a connected Qt slot.
+	enum class DeviceTransitionPoint { SetupAfterQuality, SetupAfterRate, RestoreAfterQuality, RestoreAfterRate };
+	void deviceTransitionCheckpoint(DeviceTransitionPoint point);
+	std::function<void(DeviceTransitionPoint)> m_deviceTransitionProbe;
+	void notifyDeviceChange(bool quality);
+	std::exception_ptr* m_deviceNotificationFailure = nullptr;
+	std::atomic<std::uint64_t> m_audioDeviceReservationGeneration{0};
+	void updateMidiInputAdmission();
+	bool m_storedAudioDeviceWasRunning = false;
+	bool m_audioDeviceReservationTouched = false;
+	bool m_restoredAudioDeviceInstalled = false;
+	bool m_restoreQualityNotified = false;
+	bool m_restoreRateNotified = false;
+	std::atomic_bool m_restoringAudioDevice{false};
+	std::atomic_bool m_changingAudioDevice{false};
+	std::atomic<DeviceRestoreFailure> m_deviceRestoreFailure{DeviceRestoreFailure::None};
 	QString m_audioDevName;
+	QString m_requestedAudioBackend;
+	QString m_requestedMidiBackend;
 	bool m_audioDevStartFailed;
 
 	// MIDI device stuff
 	MidiClient * m_midiClient;
 	QString m_midiClientName;
+	std::atomic_bool m_changingMidiClient{false};
+	std::vector<MidiBackendStartupFailure> m_midiBackendStartupFailures;
 
 	AudioEngineProfiler m_profiler;
 
@@ -416,8 +558,15 @@ private:
 	std::recursive_mutex m_changeMutex;
 
 	friend class Engine;
+	friend class Song;
 	friend class AudioEngineWorkerThread;
 	friend class ProjectRenderer;
+	friend class StudioMidiLearnTestAccess;
+	friend class StudioBackendSelectionTestAccess;
+	friend class StudioMidiBackendSelectionTestAccess;
+	friend class MidiClient;
+	friend class MidiJackTestAccess;
+	friend class AudioDeviceTransitionTestAccess;
 } ;
 
 } // namespace lmms

@@ -117,7 +117,8 @@ bool Sample::play(SampleFrame* dst, PlaybackState* state, size_t numFrames, Loop
 		}
  
 		const auto [inputFramesUsed, outputFramesGenerated] = state->m_resampler.process(
-			{&state->m_bufferView.data()[0][0], 2, state->m_bufferView.size()}, {&dst[0][0], 2, numFrames});
+			{state->m_bufferView.empty() ? state->m_buffer.front().data() : state->m_bufferView.front().data(),
+				2, state->m_bufferView.size()}, {dst->data(), 2, numFrames});
 
 		if (inputFramesUsed == 0 && outputFramesGenerated == 0)
 		{
@@ -165,6 +166,7 @@ f_cnt_t Sample::render(SampleFrame* dst, f_cnt_t size, PlaybackState* state, Loo
 			break;
 		}
 
+		if (state->m_frameIndex < 0 || static_cast<std::size_t>(state->m_frameIndex) >= m_buffer->size()) { return frame; }
 		const auto value
 			= m_buffer->data()[m_reversed ? m_buffer->size() - state->m_frameIndex - 1 : state->m_frameIndex]
 			* m_amplification;

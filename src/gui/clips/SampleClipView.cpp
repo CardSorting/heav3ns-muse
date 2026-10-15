@@ -27,6 +27,7 @@
 #include <QApplication>
 #include <QMenu>
 #include <QPainter>
+#include <QPointer>
 
 #include "FileDialog.h"
 #include "GuiApplication.h"
@@ -70,8 +71,8 @@ void SampleClipView::updateSample()
 	// set tooltip to filename so that user can see what sample this
 	// sample-clip contains
 	setToolTip(
-		!m_clip->m_sample.sampleFile().isEmpty()
-			? PathUtil::toAbsolute(m_clip->m_sample.sampleFile())
+		!m_clip->sampleFile().isEmpty()
+			? PathUtil::toAbsolute(m_clip->sampleFile())
 			: tr("Double-click to open sample")
 	);
 }
@@ -187,20 +188,11 @@ void SampleClipView::mouseReleaseEvent(QMouseEvent *_me)
 void SampleClipView::mouseDoubleClickEvent( QMouseEvent * )
 {
 	if (m_trackView->trackContainerView()->knifeMode()) { return; }
-
+	const QPointer<SampleClipView> owner(this); const QPointer<SampleClip> clip(m_clip); const QPointer<Song> song(Engine::getSong());
 	const QString selectedAudioFile = FileDialog::openAudioFile();
-
-	if (selectedAudioFile.isEmpty()) { return; }
-	
-	if (!m_clip->hasSampleFileLoaded(selectedAudioFile))
-	{
-		auto sampleBuffer = SampleBuffer::fromFile(selectedAudioFile);
-		if (sampleBuffer != SampleBuffer::emptyBuffer())
-		{
-			m_clip->setSampleBuffer(sampleBuffer);
-		}
-	}
-	m_clip->updateLength();
+	if (selectedAudioFile.isEmpty() || !owner || !clip || !song || Engine::getSong() != song.data() || m_clip != clip.data()) { return; }
+	if (!clip->hasSampleFileLoaded(selectedAudioFile))
+	{ QString error; if (!clip->loadSampleFile(selectedAudioFile, error, clip->sampleUnresolved()) && song && Engine::getSong() == song.data()) { song->collectError(error); } }
 }
 
 
@@ -279,26 +271,27 @@ void SampleClipView::paintEvent( QPaintEvent * pe )
 	float nom = Engine::getSong()->getTimeSigModel().getNumerator();
 	float den = Engine::getSong()->getTimeSigModel().getDenominator();
 	float ticksPerBar = DefaultTicksPerBar * nom / den;
-	float offsetStart = m_clip->startTimeOffset() / ticksPerBar * pixelsPerBar();
-	float sampleLength = m_clip->sampleLength() * ppb / ticksPerBar;
-
 	const auto& sample = m_clip->m_sample;
-
-	const auto sampleRextX = static_cast<int>(offsetStart) - m_paintPixmapXPosition;
 
 	if (sample.sampleSize() > 0)
 	{
+		const double pixelsPerFrame = ppb / ticksPerBar / Engine::framesPerTick(sample.sampleRate());
+		const int windowX = static_cast<int>(m_clip->startTimeOffset() / ticksPerBar * ppb)
+			- m_paintPixmapXPosition;
+		const int fullX = windowX - static_cast<int>(sample.startFrame() * pixelsPerFrame);
+		const auto windowRect = QRect(windowX, spacing,
+			static_cast<int>((sample.endFrame() - sample.startFrame()) * pixelsPerFrame), height() - spacing);
 		const auto param = SampleThumbnail::VisualizeParameters{
-			.sampleRect = QRect(sampleRextX, spacing, sampleLength, height() - spacing),
-			.viewportRect = viewPortRect,
+			.sampleRect = QRect(fullX, spacing, static_cast<int>(sample.sampleSize() * pixelsPerFrame), height() - spacing),
+			.viewportRect = viewPortRect.intersected(windowRect),
 			.amplification = sample.amplification(),
 			.reversed = sample.reversed()
 		};
 
-		m_sampleThumbnail.visualize(param, p);
+		if (!param.viewportRect.isEmpty()) { m_sampleThumbnail.visualize(param, p); }
 	}
 
-	QString name = PathUtil::cleanName(m_clip->m_sample.sampleFile());
+	QString name = m_clip->name().isEmpty() ? PathUtil::cleanName(m_clip->sampleFile()) : m_clip->name();
 	paintTextLabel(name, p);
 
 	// disable antialiasing for borders, since its not needed
@@ -355,9 +348,7 @@ void SampleClipView::paintEvent( QPaintEvent * pe )
 
 void SampleClipView::reverseSample()
 {
-	m_clip->m_sample.setReversed(!m_clip->m_sample.reversed());
-	m_clip->setStartTimeOffset(m_clip->length() - m_clip->startTimeOffset() - m_clip->sampleLength());
-	Engine::getSong()->setModified();
+	m_clip->reverseSample();
 	update();
 }
 

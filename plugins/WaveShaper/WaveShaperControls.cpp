@@ -73,12 +73,7 @@ void WaveShaperControls::loadSettings( const QDomElement & _this )
 	m_clipModel.loadSettings( _this, "clipInput" );
 
 //load waveshape
-	int size = 0;
-	char * dst = 0;
-	base64::decode( _this.attribute( "waveShape"), &dst, &size );
-
-	m_wavegraphModel.setSamples( (float*) dst );
-	delete[] dst;
+	m_wavegraphModel.loadSampleAttribute(_this, "waveShape");
 
 }
 

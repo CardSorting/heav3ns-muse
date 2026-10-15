@@ -39,6 +39,7 @@ AudioFileWave::AudioFileWave( OutputSettings const & outputSettings,
 	m_sf( nullptr )
 {
 	successful = outputFileOpened() && startEncoding();
+	if (!successful) { recordWriteError(); }
 }
 
 
@@ -46,7 +47,7 @@ AudioFileWave::AudioFileWave( OutputSettings const & outputSettings,
 
 AudioFileWave::~AudioFileWave()
 {
-	finishEncoding();
+	finalizeOutput();
 }
 
 
@@ -95,40 +96,44 @@ bool AudioFileWave::startEncoding()
 
 void AudioFileWave::writeBuffer(const SampleFrame* _ab, const f_cnt_t _frames)
 {
+	if (!admitBuffer(_ab, _frames)) { return; }
+	if (!m_sf) { recordWriteError(); return; }
 	OutputSettings::BitDepth bitDepth = getOutputSettings().getBitDepth();
 
 	if( bitDepth == OutputSettings::BitDepth::Depth32Bit || bitDepth == OutputSettings::BitDepth::Depth24Bit )
 	{
-		auto buf = new float[_frames * channels()];
+		m_floatBuffer.resize(_frames * channels()); auto buf = m_floatBuffer.data();
 		for( f_cnt_t frame = 0; frame < _frames; ++frame )
 		{
 			for( ch_cnt_t chnl = 0; chnl < channels(); ++chnl )
 			{
-				buf[frame * channels() + chnl] = _ab[frame][chnl];
+				buf[frame * channels() + chnl] = chnl < DEFAULT_CHANNELS ? _ab[frame][chnl] : 0.f;
 			}
 		}
-		sf_writef_float( m_sf, buf, _frames );
-		delete[] buf;
+		if (sf_writef_float(m_sf, buf, _frames) != _frames) { recordWriteError(); }
 	}
 	else
 	{
-		auto buf = new int_sample_t[_frames * channels()];
+		m_integerBuffer.resize(_frames * channels()); auto buf = m_integerBuffer.data();
 		convertToS16(_ab, _frames, buf, isBigEndian());
 
-		sf_writef_short( m_sf, buf, _frames );
-		delete[] buf;
+		if (sf_writef_short(m_sf, buf, _frames) != _frames) { recordWriteError(); }
 	}
 }
 
 
 
 
-void AudioFileWave::finishEncoding()
+bool AudioFileWave::finalizeOutput()
 {
 	if( m_sf )
 	{
-		sf_close( m_sf );
+		const int encodingError = sf_error(m_sf);
+		const int closeError = sf_close(m_sf);
+		if (encodingError || closeError) { recordWriteError(); }
+		m_sf = nullptr;
 	}
+	return AudioFileDevice::finalizeOutput();
 }
 
 } // namespace lmms

@@ -26,6 +26,7 @@
 #define LMMS_TRACK_H
 
 #include <vector>
+#include <atomic>
 
 #include <QColor>
 
@@ -41,6 +42,8 @@ namespace lmms
 class TimePos;
 class TrackContainer;
 class Clip;
+class TrackRenderScope;
+class NativeTrackSaveSnapshot;
 
 
 namespace gui
@@ -66,10 +69,25 @@ char const *const FILENAME_FILTER = "[\\0000-\x1f\"*/:<>?\\\\|\x7f]";
 class LMMS_EXPORT Track : public Model, public JournallingObject
 {
 	Q_OBJECT
-	mapPropertyFromModel(bool,isMuted,setMuted,m_mutedModel);
+	mapPropertyFromModel(bool,isMutedByModel,setMuted,m_mutedModel);
 	mapPropertyFromModel(bool,isSolo,setSolo,m_soloModel);
 public:
 	using clipVector = std::vector<Clip*>;
+	bool isMuted() const;
+	bool isRenderExcluded() const;
+	// An admitted stem contributes its arranged extent even if prior automation
+	// left its model muted. Audio still uses isMuted().
+	bool isRenderSelected() const;
+	bool beginNoteRecording(const void* owner)
+	{
+		const void* empty = nullptr;
+		return owner && m_noteRecordingOwner.compare_exchange_strong(empty, owner, std::memory_order_acq_rel);
+	}
+	void endNoteRecording(const void* owner)
+	{
+		if (owner) { m_noteRecordingOwner.compare_exchange_strong(owner, nullptr, std::memory_order_acq_rel); }
+	}
+	bool isNoteRecording() const { return m_noteRecordingOwner.load(std::memory_order_acquire) != nullptr; }
 
 	enum class Type
 	{
@@ -106,8 +124,12 @@ public:
 	//! @param tc The track container to attach to
 	static Track* create(const QDomElement& element, TrackContainer* tc);
 
-	//! @brief Clone a track from this track
+	//! @brief Clone native settings and clip contents. Returns null and records
+	//! a native error when the duplicate cannot be created completely.
 	Track * clone();
+	// Validate native recording and pattern-column ownership before a user
+	// removal. Throws before mutation; loaders/destructors retain raw teardown.
+	void requireIdleForRemoval();
 
 
 	// pure virtual functions
@@ -289,7 +311,7 @@ private:
 	//! @param presetMode Describes whether to save the track as a preset or not.
 	//! @todo Does this accurately describe the parameters? I think not!?
 	//! @todo Save the track height
-	void saveTrack(QDomDocument& doc, QDomElement& element, bool presetMode);
+	void saveTrack(QDomDocument& doc, QDomElement& element, bool presetMode, bool includeClips = true, const NativeTrackSaveSnapshot* source = nullptr);
 
 	//! @brief Load the settings from a file
 	//!
@@ -305,16 +327,28 @@ private:
 
 private:
 	TrackContainer* m_trackContainer;
+	std::atomic<const void*> m_noteRecordingOwner{nullptr};
+	std::atomic_bool m_renderExcluded{false};
+	std::atomic_bool m_renderSelected{false};
 	Type m_type;
 	QString m_name;
 	int m_height;
 
 protected:
+	virtual bool canLoadTrackState() const { return true; }
+	virtual bool canSaveTrackState() const { return true; }
+	bool isSavingTrackState() const noexcept { return m_savingTrackState; }
+	bool isLoadingTrackState() const noexcept { return m_loadingTrackState || m_loadingPresetState; }
+	bool isDispatchingTrackSpecificState() const noexcept { return m_dispatchingTrackSpecificState; }
 	BoolModel m_mutedModel;
 	BoolModel m_soloModel;
 
 private:
-	bool m_mutedBeforeSolo;
+	bool m_mutedBeforeSolo = false;
+	bool m_loadingTrackState = false;
+	bool m_savingTrackState = false;
+	bool m_loadingPresetState = false;
+	bool m_dispatchingTrackSpecificState = false;
 
 	clipVector m_clips;
 
@@ -323,6 +357,9 @@ private:
 	std::optional<QColor> m_color;
 
 	friend class gui::TrackView;
+	friend class TrackRenderScope;
+	friend class TrackRenderScopeLifecycleTestAccess;
+	friend class RenderManagerPreparationTestAccess;
 
 
 signals:

@@ -37,11 +37,12 @@ AudioFileFlac::AudioFileFlac(OutputSettings const& outputSettings, ch_cnt_t cons
 	m_sf(nullptr)
 {
 	successful = outputFileOpened() && startEncoding();
+	if (!successful) { recordWriteError(); }
 }
 
 AudioFileFlac::~AudioFileFlac()
 {
-	finishEncoding();
+	finalizeOutput();
 }
 
 bool AudioFileFlac::startEncoding()
@@ -65,20 +66,22 @@ bool AudioFileFlac::startEncoding()
 			m_sfinfo.format |= SF_FORMAT_PCM_16;
 	}
 
+	// Reuse QFile's native descriptor so Unicode paths work on every platform.
+	m_sf = sf_open_fd(outputFileHandle(), SFM_WRITE, &m_sfinfo, false);
+	if (!m_sf)
+	{
+		qWarning("Error: AudioFileFlac::startEncoding: %s", sf_strerror(nullptr));
+		return false;
+	}
+
 #ifdef LMMS_HAVE_SF_COMPLEVEL
 	double compression = getOutputSettings().getCompressionLevel();
-	sf_command(m_sf, SFC_SET_COMPRESSION_LEVEL, &compression, sizeof(double));
+	if (sf_command(m_sf, SFC_SET_COMPRESSION_LEVEL, &compression, sizeof(double)) != SF_TRUE)
+	{
+		qWarning("AudioFileFlac: native compression setting was rejected");
+		return false;
+	}
 #endif
-
-	m_sf = sf_open(
-#ifdef LMMS_BUILD_WIN32
-		outputFile().toLocal8Bit().constData(),
-#else
-		outputFile().toUtf8().constData(),
-#endif
-		SFM_WRITE,
-		&m_sfinfo
-	);
 
 	sf_command(m_sf, SFC_SET_CLIPPING, nullptr, SF_TRUE);
 
@@ -89,12 +92,14 @@ bool AudioFileFlac::startEncoding()
 
 void AudioFileFlac::writeBuffer(const SampleFrame* _ab, f_cnt_t const frames)
 {
+	if (!admitBuffer(_ab, frames)) { return; }
+	if (!m_sf) { recordWriteError(); return; }
 	OutputSettings::BitDepth depth = getOutputSettings().getBitDepth();
 	float clipvalue = std::nextafterf( -1.0f, 0.0f );
 
 	if (depth == OutputSettings::BitDepth::Depth24Bit || depth == OutputSettings::BitDepth::Depth32Bit) // Float encoding
 	{
-		auto buf = std::vector<sample_t>(frames * channels());
+		m_floatBuffer.resize(frames * channels()); auto& buf = m_floatBuffer;
 		for(f_cnt_t frame = 0; frame < frames; ++frame)
 		{
 			for(ch_cnt_t channel=0; channel<channels(); ++channel)
@@ -102,28 +107,32 @@ void AudioFileFlac::writeBuffer(const SampleFrame* _ab, f_cnt_t const frames)
 				// Clip the negative side to just above -1.0 in order to prevent it from changing sign
 				// Upstream issue: https://github.com/erikd/libsndfile/issues/309
 				// When this commit is reverted libsndfile-1.0.29 must be made a requirement for FLAC
-				buf[frame*channels() + channel] = std::max(clipvalue, _ab[frame][channel]);
+				buf[frame*channels() + channel] = channel < DEFAULT_CHANNELS ? std::max(clipvalue, _ab[frame][channel]) : 0.f;
 			}
 		}
-		sf_writef_float(m_sf, static_cast<float*>(buf.data()), frames);
+		if (sf_writef_float(m_sf, buf.data(), frames) != frames) { recordWriteError(); }
 	}
 	else // integer PCM encoding
 	{
-		auto buf = std::vector<int_sample_t>(frames * channels());
+		m_integerBuffer.resize(frames * channels()); auto& buf = m_integerBuffer;
 		convertToS16(_ab, frames, buf.data(), isBigEndian());
-		sf_writef_short(m_sf, static_cast<short*>(buf.data()), frames);
+		if (sf_writef_short(m_sf, buf.data(), frames) != frames) { recordWriteError(); }
 	}
 
 }
 
 
-void AudioFileFlac::finishEncoding()
+bool AudioFileFlac::finalizeOutput()
 {
 	if (m_sf)
 	{
 		sf_write_sync(m_sf);
-		sf_close(m_sf);
+		const int encodingError = sf_error(m_sf);
+		const int closeError = sf_close(m_sf);
+		if (encodingError || closeError) { recordWriteError(); }
+		m_sf = nullptr;
 	}
+	return AudioFileDevice::finalizeOutput();
 }
 
 } // namespace lmms

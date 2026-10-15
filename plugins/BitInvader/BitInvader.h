@@ -71,6 +71,13 @@ class BitInvader : public Instrument
 {
 	Q_OBJECT
 public:
+	std::vector<GraphResource> graphResources() override
+	{
+		return {
+			{"wave", tr("Oscillator waveform"), "amplitude", &m_graph}
+		};
+	}
+
 	BitInvader(InstrumentTrack * _instrument_track );
 	~BitInvader() override = default;
 

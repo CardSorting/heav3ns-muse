@@ -27,6 +27,8 @@
 
 #include <QStringList>
 #include <QMap>
+#include <vector>
+#include <memory>
 
 #include "JournallingObject.h"
 #include "Model.h"
@@ -38,6 +40,8 @@ namespace lmms
 {
 
 class AutomatableModel;
+class PluginHost;
+class graphModel;
 class PixmapLoader;
 
 namespace gui
@@ -277,6 +281,89 @@ public:
 	//! Can be called if a file matching supportedFileTypes should be
 	//! loaded/processed with the help of this plugin
 	virtual void loadFile( const QString & file );
+
+	//! File-backed native state, independent of an editor or file dialog.
+	struct FileResource
+	{
+		QString key;
+		QString name;
+		QString path;
+		QStringList fileTypes;
+		AutomatableModel* selector = nullptr;
+		float selectionValue = 0;
+		//! False when importing the file copies all sound state into native project models.
+		bool requiredForRestore = true;
+		//! Optional native backing identity, retained only by in-process callers.
+		std::shared_ptr<const void> identity = {};
+		//! Native editable state intentionally retains a reference without decoded content.
+		bool unresolved = false;
+	};
+	virtual std::vector<FileResource> fileResources() const { return {}; }
+	//! Named native sample/transfer curves that are saved by this plugin.
+	struct GraphResource
+	{
+		QString key;
+		QString name;
+		QString units;
+		graphModel* model;
+		bool writable = true;
+	};
+	virtual std::vector<GraphResource> graphResources() { return {}; }
+	//! Apply plugin-specific consequences after a checked native graph edit.
+	virtual void graphEdited(const QString&) {}
+	//! Native expression-backed sound state, independent of an editor.
+	struct ExpressionResource
+	{
+		QString key;
+		QString name;
+		QString source;
+		QString kind;
+		QStringList symbols;
+		QString semantics;
+		bool writable = true;
+	};
+	struct ExpressionResult
+	{
+		bool valid = false;
+		QString error;
+		std::vector<float> preview;
+		int sampleRate = 0;
+		int nonfiniteSamples = 0;
+	};
+	virtual std::vector<ExpressionResource> expressionResources() const { return {}; }
+	virtual ExpressionResult validateExpression(const QString& key, const QString& source);
+	virtual bool setExpression(const QString& key, const QString& source, ExpressionResult& result);
+	//! Indexed programs in native plugins (not MIDI bank/program pairs).
+	struct NativeProgram { int index; QString name; bool nameAvailable = false; };
+	struct NativeProgramPage
+	{
+		int total = 0;
+		int current = -1;
+		int offset = 0;
+		std::vector<NativeProgram> programs;
+	};
+	virtual bool supportsNativePrograms() const { return false; }
+	virtual NativeProgramPage nativePrograms(int, int) { return {}; }
+	virtual bool selectNativeProgram(int, QString& error)
+	{ error = "This plugin does not expose native indexed programs"; return false; }
+	//! Imported native plugin sound state; distinct from LMMS track presets (.xpf).
+	struct NativePresetInfo
+	{
+		QString format, encoding, name, pluginId, sha256;
+		quint32 pluginVersion = 0;
+		int formatVersion = 0, programCount = 0, parameterCount = -1, currentProgram = -1;
+		qint64 bytes = 0;
+	};
+	virtual bool supportsNativePresets() const { return false; }
+	virtual NativePresetInfo inspectNativePreset(const QString& path);
+	virtual NativePresetInfo loadNativePreset(const QString& path);
+	virtual NativePresetInfo saveNativePreset(const QString& path, bool bank);
+	//! Synchronize native host controls for inspection with processing suspended; no editor is required.
+	virtual void refreshParameterModels() {}
+	//! Management of plugins inside this plugin's existing native engine, when supported.
+	virtual PluginHost* pluginHost() { return nullptr; }
+	//! Empty path clears a resource. Failure must report a concrete native error.
+	virtual bool setFileResource(const QString& key, const QString& path, QString& error);
 
 	//! Overload if the argument passed to the plugin is a subPluginKey
 	//! If you can not pass the key and are aware that it's stored in Engine::pickDndPluginKey(), use this function, too

@@ -351,6 +351,8 @@ public:
 	//! Sanitizes all channels. @see sanitize
 	//! @returns true if sanitization occurred
 	auto sanitizeAll() -> bool;
+	//! Observe invalid samples even when optional mix sanitization is disabled.
+	bool hasNonfiniteAudio() const;
 
 	/**
 	 * @brief Updates the silence status of the given channels, up to the upperBound index.

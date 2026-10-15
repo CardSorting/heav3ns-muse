@@ -28,6 +28,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <QByteArray>
 
 #include "LmmsTypes.h"
 
@@ -39,6 +40,7 @@ class DrumSynth
 {
 public:
 	DrumSynth() = default;
+	// On failure or cancellation, returns zero and leaves wave unpublished.
 	int GetDSFileSamples(QString dsfile, int16_t*& wave, int channels, sample_rate_t Fs);
 
 private:
@@ -54,6 +56,18 @@ private:
 		std::size_t size, QString file);
 	int GetPrivateProfileInt(const char* sec, const char* key, int def, QString file);
 	float GetPrivateProfileFloat(const char* sec, const char* key, float def, QString file);
+
+	// A nested decode must not overwrite another instance's native working state.
+	float envpts[8][3][32]{};
+	float envData[8][6]{};
+	int chkOn[8]{}, sliLev[8]{};
+	float timestretch = 1.f;
+	short clippoint = 32700;
+	float DF[1200]{};
+	float phi[1200]{};
+	float mem_t = 1.f, mem_o = 1.f, mem_n = 1.f, mem_b = 1.f, mem_tune = 0.f, mem_time = 1.f;
+	QByteArray m_profile;
+	bool m_valid = true;
 };
 
 } // namespace lmms

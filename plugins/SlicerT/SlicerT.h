@@ -55,6 +55,12 @@ public:
 	void loadSettings(const QDomElement& element) override;
 
 	void loadFile(const QString& file) override;
+	std::vector<FileResource> fileResources() const override;
+	bool setFileResource(const QString& key, const QString& path, QString& error) override;
+	std::optional<SliceLayout> sliceLayout() const override;
+	bool analyzeSlices(bool estimateTempo, QString& error) override;
+	bool setSlicePoints(const std::vector<float>& points, QString& error) override;
+	bool sliceMidi(std::vector<Note>& notes, QString& error) const override;
 	void findSlices();
 	void findBPM();
 
@@ -77,6 +83,10 @@ private:
 	std::vector<float> m_slicePoints;
 
 	InstrumentTrack* m_parentTrack;
+	bool computeSlices(const Sample& sample, int originalBpm, std::vector<float>& points, QString& error) const;
+	bool validateSlicePoints(const Sample& sample, const std::vector<float>& points, QString& error) const;
+	static int estimateBpm(const Sample& sample);
+	double playbackRatio() const;
 
 	friend class gui::SlicerTView;
 	friend class gui::SlicerTWaveform;

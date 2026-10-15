@@ -50,7 +50,8 @@ class MidiController : public Controller, public MidiEventProcessor
 public:
 	static constexpr int NONE = -1;
 	MidiController( Model * _parent );
-	~MidiController() override = default;
+	~MidiController() override;
+	bool requiresNoteCleanup() const override { return false; }
 
 	void processInEvent( const MidiEvent & _me,
 					const TimePos & _time, f_cnt_t offset = 0 ) override;
@@ -67,6 +68,7 @@ public:
 
 	// Used by controllerConnectionDialog to copy
 	void subscribeReadablePorts( const MidiPort::Map & _map );
+	MidiPort* midiPort() { return &m_midiPort; }
 
 
 public slots:
@@ -87,6 +89,7 @@ protected:
 
 	friend class gui::ControllerConnectionDialog;
 	friend class AutoDetectMidiController;
+	friend class AutomatableModel;
 
 } ;
 

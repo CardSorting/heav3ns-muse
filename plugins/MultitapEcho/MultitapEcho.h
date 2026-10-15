@@ -38,6 +38,14 @@ namespace lmms
 class MultitapEchoEffect : public Effect
 {
 public:
+	std::vector<GraphResource> graphResources() override
+	{
+		return {
+			{"tap-gain", tr("Tap gains"), "dB", &m_controls.m_ampGraph},
+			{"tap-filter", tr("Tap lowpass frequencies"), "log10(Hz / 20)", &m_controls.m_lpGraph}
+		};
+	}
+
 	MultitapEchoEffect( Model* parent, const Descriptor::SubPluginFeatures::Key* key );
 	~MultitapEchoEffect() override;
 

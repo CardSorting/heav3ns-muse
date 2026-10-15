@@ -21,11 +21,11 @@
  * Boston, MA 02110-1301 USA.
  *
  */
- 
+
 #include "PatternClip.h"
- 
+
 #include <QDomElement>
- 
+
 #include "Engine.h"
 #include "PatternClipView.h"
 #include "PatternStore.h"
@@ -60,7 +60,7 @@ void PatternClip::saveSettings(QDomDocument& doc, QDomElement& element)
 	}
 	element.setAttribute( "len", length() );
 	element.setAttribute("off", startTimeOffset());
-	element.setAttribute( "muted", isMuted() );
+	saveControlSettings(doc, element);
 	element.setAttribute("autoresize", QString::number(getAutoResize()));
 	if (const auto& c = color())
 	{
@@ -81,11 +81,8 @@ void PatternClip::loadSettings(const QDomElement& element)
 	changeLength( element.attribute( "len" ).toInt() );
 	setAutoResize(element.attribute("autoresize", "1").toInt());
 	setStartTimeOffset(element.attribute("off").toInt());
-	if (static_cast<bool>(element.attribute("muted").toInt()) != isMuted())
-	{
-		toggleMute();
-	}
-	
+	loadControlSettings(element);
+
 	if (element.hasAttribute("color"))
 	{
 		if (!element.hasAttribute("usestyle"))

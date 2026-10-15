@@ -29,19 +29,27 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <limits>
+#include <stdexcept>
+#include <utility>
 
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
+#include <QJsonArray>
 #include <QDir>
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 
 #include "base64.h"
 #include "ConfigManager.h"
 #include "DeprecationHelper.h"
 #include "Effect.h"
+#include "FileResourceSnapshot.h"
+#include "FileResourceIO.h"
 #include "embed.h"
 #include "GuiApplication.h"
 #include "LocaleHelper.h"
@@ -52,6 +60,7 @@
 #include "TextFloat.h"
 #include "Track.h"
 #include "PathUtil.h"
+#include "StudioAssetStore.h"
 #include "UpgradeExtendedNoteRange.h"
 
 #include "lmmsversion.h"
@@ -61,13 +70,133 @@ namespace lmms
 
 
 static void findIds(const QDomElement& elem, QList<jo_id_t>& idList);
+static thread_local DataFile* resourceSourceDocument = nullptr;
+static thread_local bool resourceSourceRetainSamples = false;
+static thread_local const DataFile* resourceReadDocument = nullptr;
+
+QString DataFile::serializationError(const QDomDocument& document)
+{
+	for (auto node = document.firstChild(); !node.isNull(); node = node.nextSibling())
+	{
+		if (node.isProcessingInstruction() && node.nodeName() == "lmms-serialization-error")
+		{
+			return node.nodeValue().isEmpty() ? QObject::tr("Native serialization failed") : node.nodeValue();
+		}
+	}
+	return {};
+}
+
+void DataFile::recordSerializationError(QDomDocument& document, const QString& error)
+{
+	if (!serializationError(document).isEmpty()) { return; }
+	auto message = error.isEmpty() ? QObject::tr("Native serialization failed") : error;
+	message.replace("?>", "? >");
+	document.appendChild(document.createProcessingInstruction("lmms-serialization-error", message));
+}
+
+QString DataFile::toString(int indent) const
+{
+	if (!serializationError().isEmpty()) { return {}; }
+	return QDomDocument::toString(indent);
+}
 
 
 // QMap with the DOM elements that access file resources
 const DataFile::ResourcesMap DataFile::ELEMENTS_WITH_RESOURCES = {
 { "sampleclip", {"src"} },
 { "audiofileprocessor", {"src"} },
+{ "slicert", {"src"} },
+{ "sf2player", {"src"} },
+{ "gigplayer", {"src"} },
+{ "patman", {"src"} },
+{ "tripleoscillator", {"userwavefile0", "userwavefile1", "userwavefile2"} },
+{ "lfocontroller", {"userwavefile"} },
+{ "elvol", {"userwavefile"} },
+{ "elcut", {"userwavefile"} },
+{ "elres", {"userwavefile"} },
 };
+
+DataFile::ResourceSourceScope::ResourceSourceScope(DataFile& document, bool enabled, bool retainSamples)
+	: m_previous(resourceSourceDocument), m_previousRetainSamples(resourceSourceRetainSamples)
+{
+	resourceSourceDocument = enabled ? &document : nullptr;
+	resourceSourceRetainSamples = enabled && retainSamples;
+}
+
+DataFile::ResourceSourceScope::~ResourceSourceScope()
+{
+	resourceSourceDocument = m_previous;
+	resourceSourceRetainSamples = m_previousRetainSamples;
+}
+
+DataFile::ResourceReadScope::ResourceReadScope(const DataFile& document)
+	: m_previous(resourceReadDocument)
+{
+	resourceReadDocument = &document;
+}
+
+DataFile::ResourceReadScope::~ResourceReadScope()
+{
+	resourceReadDocument = m_previous;
+}
+
+DataFile::ResourceReferenceScope::ResourceReferenceScope(const QDomElement& element, const QString& attribute)
+{
+	const auto document = resourceReadDocument;
+	if (document && element.ownerDocument() == static_cast<const QDomDocument&>(*document))
+	{
+		for (const auto& binding : document->m_resourceSources)
+		{
+			if (binding.element != element || binding.attribute != attribute) { continue; }
+			if (element.attribute(attribute) != binding.declaredValue || !binding.snapshot)
+			{
+				throw std::runtime_error("Native resource reference changed after its settings were captured");
+			}
+			m_scope = std::make_unique<FileResourceSnapshot::ReadScope>(
+				PathUtil::toAbsolute(binding.declaredValue), binding.snapshot, binding.sample);
+			return;
+		}
+	}
+	m_scope = std::make_unique<FileResourceSnapshot::ReadScope>(QString{}, nullptr);
+}
+
+void DataFile::registerResourceSource(const QDomDocument& document, const QDomElement& element,
+	const QString& attribute, const QString& source)
+{
+	bindResourceSource(document, element, attribute, source, {});
+}
+
+void DataFile::registerResourceSnapshot(const QDomDocument& document, const QDomElement& element,
+	const QString& attribute, std::shared_ptr<const FileResourceSnapshot> snapshot,
+	std::shared_ptr<const SampleBuffer> sample)
+{
+	if (!snapshot) { return; }
+	const auto path = snapshot->path();
+	bindResourceSource(document, element, attribute, path, std::move(snapshot), std::move(sample));
+}
+
+void DataFile::bindResourceSource(const QDomDocument& document, const QDomElement& element,
+	const QString& attribute, const QString& source, std::shared_ptr<const FileResourceSnapshot> snapshot,
+	std::shared_ptr<const SampleBuffer> sample)
+{
+	auto target = resourceSourceDocument;
+	if (!target || document != static_cast<const QDomDocument&>(*target) || element.ownerDocument() != document
+		|| source.isEmpty()) { return; }
+	const auto known = ELEMENTS_WITH_RESOURCES.find(element.tagName());
+	if (known == ELEMENTS_WITH_RESOURCES.end()
+		|| std::find(known->second.begin(), known->second.end(), attribute) == known->second.end()) { return; }
+	if (!resourceSourceRetainSamples) { sample.reset(); }
+	for (auto& binding : target->m_resourceSources)
+	{
+		if (binding.element == element && binding.attribute == attribute)
+		{
+			binding.path = source; binding.declaredValue = element.attribute(attribute);
+			binding.snapshot = std::move(snapshot); binding.sample = std::move(sample); return;
+		}
+	}
+	target->m_resourceSources.push_back({element, attribute, source, element.attribute(attribute),
+		std::move(snapshot), std::move(sample)});
+}
 
 // Vector with all the upgrade methods
 const std::vector<DataFile::UpgradeMethod> DataFile::UPGRADE_METHODS = {
@@ -199,6 +328,7 @@ DataFile::DataFile( const QByteArray & _data ) :
 
 bool DataFile::validate( QString extension )
 {
+	if (!serializationError().isEmpty()) { return false; }
 	switch( m_type )
 	{
 	case Type::SongProject:
@@ -300,6 +430,7 @@ QString DataFile::nameWithExtension( const QString & _fn ) const
 
 void DataFile::write( QTextStream & _strm )
 {
+	if (!serializationError().isEmpty()) { _strm.setStatus(QTextStream::WriteFailed); return; }
 	if( type() == Type::SongProject || type() == Type::SongProjectTemplate
 					|| type() == Type::InstrumentTrackSettings )
 	{
@@ -313,6 +444,11 @@ void DataFile::write( QTextStream & _strm )
 
 
 bool DataFile::writeFile(const QString& filename, bool withResources)
+{
+	return writeFile(filename, withResources, {});
+}
+
+bool DataFile::writeFile(const QString& filename, bool withResources, const std::function<void()>& beforeCommit)
 {
 	// Small lambda function for displaying errors
 	auto showError = [](QString title, QString body){
@@ -343,12 +479,17 @@ bool DataFile::writeFile(const QString& filename, bool withResources)
 	const QString fullName = withResources
 		? nameWithExtension(bundleDir + "/" + fInfo.fileName())
 		: nameWithExtension(filename);
-	const QString fullNameTemp = fullName + ".new";
 	const QString fullNameBak = fullName + ".bak";
 
 	using gui::SongEditor;
 
 	// If we are saving with resources, setup the bundle folder first
+	if (const auto error = serializationError(); !error.isEmpty())
+	{
+		showError(SongEditor::tr("Could not save project data"), error); return false;
+	}
+	QString operationError;
+	if (!FileResourceIO::check(operationError)) { showError(SongEditor::tr("Could not save project data"), operationError); return false; }
 	if (withResources)
 	{
 		// First check if there's a bundle folder with the same name in
@@ -389,7 +530,7 @@ bool DataFile::writeFile(const QString& filename, bool withResources)
 		}
 	}
 
-	QSaveFile outfile(fullNameTemp);
+	QSaveFile outfile(fullName);
 
 	if (!outfile.open(QIODevice::WriteOnly | QIODevice::Truncate))
 	{
@@ -402,19 +543,56 @@ bool DataFile::writeFile(const QString& filename, bool withResources)
 	}
 
 	const QString extension = fullName.section('.', -1);
+	bool written = false;
 	if (extension == "mmpz" || extension == "xptz")
 	{
 		QString xml;
 		QTextStream ts( &xml );
 		write( ts );
-		outfile.write( qCompress( xml.toUtf8() ) );
+		ts.flush();
+		if (ts.status() == QTextStream::Ok && FileResourceIO::check(operationError))
+		{
+			const auto compressed = qCompress(xml.toUtf8());
+			written = !compressed.isEmpty() && outfile.write(compressed) == compressed.size();
+		}
 	}
 	else
 	{
 		QTextStream ts( &outfile );
 		write( ts );
+		ts.flush(); written = ts.status() == QTextStream::Ok;
+	}
+	if (!written || outfile.error() != QFileDevice::NoError || !FileResourceIO::check(operationError))
+	{
+		showError(SongEditor::tr("Could not write file"), SongEditor::tr("Project data could not be written completely. The original file was preserved."));
+		return false;
 	}
 
+	// Preserve the old file until the replacement commits atomically. Moving it
+	// away first could lose the authoritative file, and ignored rename failures
+	// previously allowed writeFile() to report success without publishing it.
+	if (beforeCommit) { beforeCommit(); }
+	if (!ConfigManager::inst()->value("app", "disablebackup").toInt() && QFile::exists(fullName))
+	{
+		QFile original(fullName);
+		QSaveFile backup(fullNameBak);
+		bool backedUp = original.open(QIODevice::ReadOnly) && backup.open(QIODevice::WriteOnly);
+		while (backedUp && !original.atEnd())
+		{
+			if (!FileResourceIO::check(operationError)) { backedUp = false; break; }
+			const auto block = original.read(65536);
+			backedUp = !block.isEmpty() && backup.write(block) == block.size();
+		}
+		if (!backedUp || original.error() != QFileDevice::NoError || !FileResourceIO::check(operationError) || !backup.commit())
+		{
+			showError(SongEditor::tr("Could not write file"),
+				SongEditor::tr("The previous project could not be backed up. The original file was preserved."));
+			return false;
+		}
+	}
+
+	if (!FileResourceIO::check(operationError)) { showError(SongEditor::tr("Could not write file"), operationError); return false; }
+	if (beforeCommit) { beforeCommit(); }
 	if (!outfile.commit())
 	{
 		showError(SongEditor::tr("Could not write file"),
@@ -422,106 +600,198 @@ bool DataFile::writeFile(const QString& filename, bool withResources)
 		return false;
 	}
 
-	if (ConfigManager::inst()->value("app", "disablebackup").toInt())
-	{
-		// remove current file
-		QFile::remove(fullName);
-	}
-	else
-	{
-		// remove old backup file
-		QFile::remove(fullNameBak);
-		// move current file to backup file
-		QFile::rename(fullName, fullNameBak);
-	}
-	// move temporary file to current file
-	QFile::rename(fullNameTemp, fullName);
-
 	return true;
 }
 
 
 
 
-bool DataFile::copyResources(const QString& resourcesDir)
+bool DataFile::makeLocalResourcePathsAbsolute()
 {
-	// List of filenames used so we can append a counter to any
-	// repeating filenames
-	std::list<QString> namesList;
-
-	auto it = ELEMENTS_WITH_RESOURCES.begin();
-
-	// Copy resources and manipulate the DataFile to have local paths to them
-	while (it != ELEMENTS_WITH_RESOURCES.end())
+	for (const auto& [elementName, attributes] : ELEMENTS_WITH_RESOURCES)
 	{
-		QDomNodeList list = elementsByTagName(it->first);
-
-		// Go through all elements with the tagname from our map
-		for (int i = 0; !list.item(i).isNull(); ++i)
+		const auto elements = elementsByTagName(elementName);
+		for (int i = 0; i < elements.size(); ++i)
 		{
-			QDomElement el = list.item(i).toElement();
-
-			auto res = it->second.begin();
-
-			// Search for attributes that point to resources
-			while (res != it->second.end())
+			auto element = elements.item(i).toElement();
+			for (const auto& attribute : attributes)
 			{
-				// If the element has that attribute
-				if (el.hasAttribute(*res))
-				{
-					// Get absolute path to resource
-					bool error;
-					QString resPath = PathUtil::toAbsolute(el.attribute(*res), &error);
-					// If we are running without the project loaded (from CLI), "local:" base
-					// prefixes aren't converted, so we need to convert it ourselves
-					if (error)
-					{
-						resPath = QFileInfo(m_fileName).path() + "/" + resPath.remove(0,
-							PathUtil::basePrefix(PathUtil::Base::LocalDir).length());
-					}
-
-					// Check if we need to add a counter to the filename
-					QString finalFileName = QFileInfo(resPath).fileName();
-					QString extension = resPath.section('.', -1);
-					int repeatedNames = 0;
-					for (QString name : namesList)
-					{
-						if (finalFileName == name)
-						{
-							++repeatedNames;
-						}
-					}
-					// Add the name to the list before modifying it
-					namesList.push_back(finalFileName);
-					if (repeatedNames)
-					{
-						// Remove the extension, add the counter and add the
-						// extension again to get the final file name
-						finalFileName.truncate(finalFileName.lastIndexOf('.'));
-						finalFileName = finalFileName + "-" + QString::number(repeatedNames) + "." + extension;
-					}
-
-					// Final path is our resources dir + the new file name
-					QString finalPath = resourcesDir + "/" + finalFileName;
-
-					// Copy resource file to the resources folder
-					if(!QFile::copy(resPath, finalPath))
-					{
-						qWarning("ERROR: Failed to copy resource");
-						return false;
-					}
-
-					// Update attribute path to point to the bundle file
-					QString newAtt = PathUtil::basePrefix(PathUtil::Base::LocalDir) + "resources/" + finalFileName;
-					el.setAttribute(*res, newAtt);
-				}
-				++res;
+				const auto path = element.attribute(attribute);
+				if (!path.startsWith(PathUtil::basePrefix(PathUtil::Base::LocalDir), Qt::CaseInsensitive)) { continue; }
+				bool error = false;
+				const auto absolute = PathUtil::toAbsolute(path, &error);
+				if (error) { return false; }
+				element.setAttribute(attribute, absolute);
 			}
 		}
-		++it;
 	}
-
 	return true;
+}
+
+bool DataFile::copyResources(const QString& resourcesDir, QJsonArray* checkpointAssets)
+{
+	if (checkpointAssets) { *checkpointAssets = {}; }
+	if (!serializationError().isEmpty()) { return false; }
+	QString operationError;
+	if (!FileResourceIO::check(operationError)) { qWarning() << operationError; return false; }
+	QSet<QString> usedNames;
+	QSet<QString> recordedAssets;
+	QJsonArray capturedAssets;
+	QHash<QString, QString> copiedSources;
+	struct Rewrite { QDomElement element; QString attribute; QString path; };
+	std::vector<Rewrite> rewrites;
+	const QDir destination(resourcesDir);
+	for (const auto& [elementName, attributes] : ELEMENTS_WITH_RESOURCES)
+	{
+		const auto elements = elementsByTagName(elementName);
+		for (int i = 0; i < elements.size(); ++i)
+		{
+			auto element = elements.item(i).toElement();
+			for (const auto& attribute : attributes)
+			{
+				const auto original = element.attribute(attribute);
+				const bool unresolvedSample = (elementName == "audiofileprocessor" || elementName == "sampleclip") && attribute == "src" && element.attribute("unresolved") == "1";
+				const bool unresolvedWave = elementName == "lfocontroller" && attribute == "userwavefile" && element.attribute("userwaveunresolved") == "1";
+				const bool unresolvedEnvelope = (elementName == "elvol" || elementName == "elcut" || elementName == "elres") && attribute == "userwavefile" && element.attribute("userwaveunresolved") == "1";
+				const bool unresolvedOscillator = elementName == "tripleoscillator" && (attribute == "userwavefile0" || attribute == "userwavefile1" || attribute == "userwavefile2") && element.attribute("userwaveunresolved" + attribute.right(1)) == "1";
+				const bool unresolvedBank = (elementName == "sf2player" || elementName == "gigplayer") && attribute == "src" && element.attribute("unresolved") == "1";
+				const bool unresolved = unresolvedSample || unresolvedWave || unresolvedOscillator || unresolvedEnvelope || unresolvedBank;
+				if ((unresolved && (original.isEmpty() || original.contains(QChar::Null))) || (unresolvedSample && !element.attribute(elementName == "sampleclip" ? "data" : "sampledata").isEmpty())) { return false; }
+				if (original.isEmpty()) { continue; }
+				bool error = false;
+				QString originalPath;
+				const auto prefix = PathUtil::basePrefix(PathUtil::Base::LocalDir);
+				if (!m_fileName.isEmpty() && original.startsWith(prefix, Qt::CaseInsensitive))
+				{
+					// A loaded DataFile owns its bundle base even when another Song
+					// is open in the engine.
+					const auto relative = original.mid(prefix.size());
+					if (QDir::isAbsolutePath(relative)) { return false; }
+					originalPath = QFileInfo(m_fileName).absoluteDir().absoluteFilePath(relative);
+				}
+				else { originalPath = PathUtil::toAbsolute(original, &error); }
+				if (error) { return false; }
+				auto sourcePath = originalPath;
+				bool bound = false;
+				std::shared_ptr<const FileResourceSnapshot> accepted;
+				for (const auto& binding : m_resourceSources)
+				{
+					if (binding.element == element && binding.attribute == attribute)
+					{
+						sourcePath = binding.path; accepted = binding.snapshot; bound = true; break;
+					}
+				}
+				if (unresolved)
+				{
+					// Native checkpoints preserve deliberate silent state, even if a
+					// different file later appears at the retained source path. Bundles
+					// still require every dependency and never claim portable completion.
+					if (!checkpointAssets || bound || !QDir::isAbsolutePath(originalPath)) { return false; }
+					rewrites.push_back({element, attribute, QDir::cleanPath(originalPath)}); continue;
+				}
+				if (elementName == "gigplayer" && !accepted)
+				{
+					accepted = FileResourceSnapshot::captureGig(sourcePath, operationError);
+					if (!accepted) { qWarning() << operationError; return false; }
+					sourcePath = accepted->path();
+				}
+				const QFileInfo source(sourcePath);
+				if (!source.exists() || !source.isFile()) { qWarning("ERROR: Resource source is unavailable"); return false; }
+				const auto canonical = source.canonicalFilePath();
+				const auto sourceKey = canonical.isEmpty() ? source.absoluteFilePath() : canonical;
+				QString finalName = copiedSources.value(sourceKey);
+				const bool reused = !finalName.isEmpty();
+				if (finalName.isEmpty())
+				{
+					const QFileInfo naming(originalPath);
+					if (checkpointAssets || (accepted && accepted->isGroup()))
+					{
+						QJsonObject reference; QString assetError;
+						if (!StudioAssetStore::preserve(sourcePath, resourcesDir, naming.suffix(), reference, assetError, accepted.get()))
+						{
+							qWarning() << assetError; return false;
+						}
+						const auto path = reference.value("path").toString();
+						finalName = path.mid(QString("assets/").size());
+						if (checkpointAssets && !recordedAssets.contains(path)) { capturedAssets.append(reference); recordedAssets.insert(path); }
+					}
+					else
+					{
+						finalName = naming.fileName();
+						if (finalName.isEmpty()) { return false; }
+						const auto suffix = naming.suffix();
+						const auto stem = suffix.isEmpty() ? finalName : naming.completeBaseName();
+						int counter = 0;
+						while (usedNames.contains(finalName) || QFileInfo::exists(destination.filePath(finalName)))
+						{
+							if (counter == std::numeric_limits<int>::max()) { return false; }
+							finalName = stem + "-" + QString::number(++counter) + (suffix.isEmpty() ? "" : "." + suffix);
+						}
+						if (!FileResourceIO::copyFile(sourcePath, destination.filePath(finalName), operationError))
+						{
+							qWarning() << operationError; return false;
+						}
+						QString copyError;
+						if (accepted && !accepted->verifyCopy(destination.filePath(finalName), copyError))
+						{
+							QFile::remove(destination.filePath(finalName));
+							qWarning() << copyError; return false;
+						}
+						usedNames.insert(finalName);
+					}
+					copiedSources.insert(sourceKey, finalName);
+				}
+				if (reused && accepted)
+				{
+					QString copyError;
+					if (!accepted->verifyCopy(destination.filePath(finalName), copyError)) { qWarning() << copyError; return false; }
+				}
+				rewrites.push_back({element, attribute,
+					PathUtil::basePrefix(PathUtil::Base::LocalDir) + (checkpointAssets ? "assets/" : "resources/") + finalName});
+			}
+		}
+	}
+	// A later failure must not leave a partially rebased native document.
+	if (!FileResourceIO::check(operationError)) { qWarning() << operationError; return false; }
+	for (auto& rewrite : rewrites) { rewrite.element.setAttribute(rewrite.attribute, rewrite.path); }
+	if (checkpointAssets) { *checkpointAssets = capturedAssets; }
+	return true;
+}
+
+bool DataFile::matchesAssetReferences(const QJsonArray& assets) const
+{
+	if (!StudioAssetStore::validReferences(assets)) { return false; }
+	QSet<QString> declared, used;
+	for (const auto& value : assets) { declared.insert(value.toObject().value("path").toString()); }
+	const auto prefix = PathUtil::basePrefix(PathUtil::Base::LocalDir);
+	for (const auto& [tag, attributes] : ELEMENTS_WITH_RESOURCES)
+	{
+		const auto elements = elementsByTagName(tag);
+		for (int i = 0; i < elements.size(); ++i)
+		{
+			const auto element = elements.item(i).toElement();
+			for (const auto& attribute : attributes)
+			{
+				const auto path = element.attribute(attribute);
+				const bool unresolvedSample = (tag == "audiofileprocessor" || tag == "sampleclip") && attribute == "src" && element.attribute("unresolved") == "1";
+				const bool unresolvedWave = tag == "lfocontroller" && attribute == "userwavefile" && element.attribute("userwaveunresolved") == "1";
+				const bool unresolvedEnvelope = (tag == "elvol" || tag == "elcut" || tag == "elres") && attribute == "userwavefile" && element.attribute("userwaveunresolved") == "1";
+				const bool unresolvedOscillator = tag == "tripleoscillator" && (attribute == "userwavefile0" || attribute == "userwavefile1" || attribute == "userwavefile2") && element.attribute("userwaveunresolved" + attribute.right(1)) == "1";
+				const bool unresolvedBank = (tag == "sf2player" || tag == "gigplayer") && attribute == "src" && element.attribute("unresolved") == "1";
+				if (unresolvedSample || unresolvedWave || unresolvedOscillator || unresolvedEnvelope || unresolvedBank)
+				{
+					if (!QDir::isAbsolutePath(path) || path.contains(QChar::Null) || (unresolvedSample && !element.attribute(tag == "sampleclip" ? "data" : "sampledata").isEmpty())) { return false; }
+					continue;
+				}
+				if (path.isEmpty()) { continue; }
+				if (!path.startsWith(prefix)) { return false; }
+				const auto relative = path.mid(prefix.size());
+				if (!declared.contains(relative)) { return false; }
+				used.insert(relative);
+			}
+		}
+	}
+	return used == declared;
 }
 
 
@@ -538,33 +808,15 @@ bool DataFile::hasLocalPlugins(QDomElement parent /* = QDomElement()*/, bool fir
 		QDomNode child = children.at(i);
 		QDomElement childElement = child.toElement();
 
-		bool skipNode = false;
-		// Skip the nodes allowed to have "local:" attributes, but
-		// still check its children
-		for (const auto& element : ELEMENTS_WITH_RESOURCES)
+		const auto resource = ELEMENTS_WITH_RESOURCES.find(childElement.tagName());
+		const auto attributes = childElement.attributes();
+		for (int j = 0; j < attributes.size(); ++j)
 		{
-			if (childElement.tagName() == element.first)
-			{
-				skipNode = true;
-				break;
-			}
-		}
-
-		// Check if they have "local:" attribute (unless they are allowed to
-		// and skipNode is true)
-		if (!skipNode)
-		{
-			auto attributes = childElement.attributes();
-			for (int i = 0; i < attributes.size(); ++i)
-			{
-				QDomNode attribute = attributes.item(i);
-				QDomAttr attr = attribute.toAttr();
-				if (attr.value().startsWith(PathUtil::basePrefix(PathUtil::Base::LocalDir),
-					Qt::CaseInsensitive))
-				{
-					return true;
-				}
-			}
+			const auto attribute = attributes.item(j).toAttr();
+			if (!attribute.value().startsWith(PathUtil::basePrefix(PathUtil::Base::LocalDir), Qt::CaseInsensitive)) { continue; }
+			const bool isAsset = resource != ELEMENTS_WITH_RESOURCES.end()
+				&& std::find(resource->second.begin(), resource->second.end(), attribute.name()) != resource->second.end();
+			if (!isAsset) { return true; }
 		}
 
 		// Now we check the children of this node (recursively)
@@ -2035,8 +2287,9 @@ void DataFile::findProblematicLadspaPlugins()
 
 	if (numberOfProblematicPlugins > 0)
 	{
-		QMessageBox::warning(nullptr, QObject::tr("LADSPA plugins"),
-			QObject::tr("The project contains %1 LADSPA plugin(s) which might have not been restored correctly! Please check the project.").arg(numberOfProblematicPlugins));
+		const auto message = QObject::tr("The project contains %1 LADSPA plugin(s) which might have not been restored correctly! Please check the project.").arg(numberOfProblematicPlugins);
+		if (gui::getGUI() != nullptr) { QMessageBox::warning(nullptr, QObject::tr("LADSPA plugins"), message); }
+		else { qWarning().noquote() << message; }
 	}
 }
 
@@ -2133,6 +2386,7 @@ void DataFile::loadData( const QByteArray & _data, const QString & _sourceFile )
 		}
 	}
 
+	if (const auto error = serializationError(); !error.isEmpty()) { qWarning() << error; return; }
 	QDomElement root = documentElement();
 	m_type = type( root.attribute( "type" ) );
 	m_head = root.elementsByTagName( "head" ).item( 0 ).toElement();

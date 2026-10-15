@@ -11,6 +11,8 @@
 include(CheckIncludeFiles)
 include(CheckIncludeFileCXX)
 include(CheckLibraryExists)
+include(CheckCXXSymbolExists)
+include(CMakePushCheckState)
 
 # Already done by toplevel
 find_library(SNDIO_LIBRARY sndio)
@@ -29,6 +31,11 @@ find_package_handle_standard_args(Sndio DEFAULT_MSG SNDIO_LIBRARY SNDIO_INCLUDE_
 if(SNDIO_FOUND)
     set(SNDIO_INCLUDE_DIRS "${SNDIO_INCLUDE_DIR}")
     set(SNDIO_LIBRARIES "${SNDIO_LIBRARY}")
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_INCLUDES "${SNDIO_INCLUDE_DIR}")
+    set(CMAKE_REQUIRED_LIBRARIES "${SNDIO_LIBRARY}")
+    check_cxx_symbol_exists(sio_flush "sndio.h" LMMS_HAVE_SIO_FLUSH)
+    cmake_pop_check_state()
 endif()
 
 mark_as_advanced(SNDIO_INCLUDE_DIR SNDIO_LIBRARY SNDIO_INCLUDE_DIRS SNDIO_LIBRARIES)

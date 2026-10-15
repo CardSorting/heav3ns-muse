@@ -25,6 +25,8 @@
  */
 
 #include "FloatModelEditorBase.h"
+#include "AudioEngine.h"
+#include "Engine.h"
 
 #include <QApplication>
 #include <QInputDialog>
@@ -42,6 +44,8 @@
 #include "ProjectJournal.h"
 #include "SimpleTextFloat.h"
 #include "StringPairDrag.h"
+#include "NativeControlLinkJournal.h"
+#include "Song.h"
 
 
 namespace lmms::gui {
@@ -186,10 +190,13 @@ void FloatModelEditorBase::dropEvent(QDropEvent * de)
 	}
 	else if (type == "automatable_model")
 	{
+		const auto changes = Engine::audioEngine()->requestChangesGuard();
 		auto mod = dynamic_cast<AutomatableModel*>(Engine::projectJournal()->journallingObject(val.toInt()));
 		if (mod != nullptr)
 		{
-			model()->linkToModel(mod);
+			QString error;
+			if (NativeControlLinkJournal::link(model(), mod, error)) { de->accept(); }
+			else { de->ignore(); Engine::getSong()->collectError(error); }
 		}
 	}
 }

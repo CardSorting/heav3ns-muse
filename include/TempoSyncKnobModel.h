@@ -105,6 +105,7 @@ protected slots:
 
 
 private:
+	void receiveCustomChange();
 	SyncMode m_tempoSyncMode;
 	SyncMode m_tempoLastSyncMode;
 	float m_scale;

@@ -25,7 +25,10 @@
 
 
 #include "AudioEngine.h"
+#include "Engine.h"
 #include "MidiController.h"
+#include "Song.h"
+#include "FileResourceIO.h"
 
 namespace lmms
 {
@@ -45,6 +48,12 @@ MidiController::MidiController( Model * _parent ) :
 
 
 
+
+MidiController::~MidiController()
+{
+	beginRetirement();
+	m_midiPort.detachInputProcessor();
+}
 
 void MidiController::updateValueBuffer()
 {
@@ -71,28 +80,18 @@ void MidiController::updateName()
 
 
 
-void MidiController::processInEvent(const MidiEvent& event, const TimePos& time, f_cnt_t offset)
+void MidiController::processInEvent(const MidiEvent& event, const TimePos&, f_cnt_t)
 {
-	switch(event.type())
-	{
-		case MidiControlChange:
-		{
-			unsigned char controllerNum = event.controllerNumber();
-
-			if (m_midiPort.inputController() == controllerNum &&
-				(m_midiPort.inputChannel() == event.channel() + 1 || m_midiPort.inputChannel() == 0))
-			{
-				unsigned char val = event.controllerValue();
-				m_previousValue = m_lastValue;
-				m_lastValue = static_cast<float>(val) / 127.0f;
-				emit valueChanged();
-			}
-			break;
-		}
-		default:
-			// Don't care - maybe add special cases for pitch and mod later
-			break;
-	}
+	if (isRetiring()) { return; }
+	if (!event.isValidControlChange()) { return; }
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	if (event.source() == MidiEvent::Source::External
+		&& (Engine::audioEngine()->hasStoredAudioDevice() || (Engine::getSong() && (Engine::getSong()->isExporting() || Engine::getSong()->hasPendingExportCleanup())))) { return; }
+	if (m_midiPort.inputController() != event.controllerNumber()
+		|| (m_midiPort.inputChannel() != 0 && m_midiPort.inputChannel() != event.channel() + 1)) { return; }
+	m_previousValue = m_lastValue;
+	m_lastValue = static_cast<float>(event.controllerValue()) / MidiMaxControllerValue;
+	notifyValueChange();
 }
 
 
@@ -112,8 +111,10 @@ void MidiController::subscribeReadablePorts( const MidiPort::Map & _map )
 
 void MidiController::saveSettings( QDomDocument & _doc, QDomElement & _this )
 {
-	Controller::saveSettings( _doc, _this );
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events; SettingsGuard changing(this);
+	saveBaseSettings(_doc, _this); changing.check();
 	m_midiPort.saveSettings( _doc, _this );
+	changing.check();
 
 }
 
@@ -122,11 +123,14 @@ void MidiController::saveSettings( QDomDocument & _doc, QDomElement & _this )
 
 void MidiController::loadSettings( const QDomElement & _this )
 {
-	Controller::loadSettings( _this );
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events; SettingsGuard changing(this);
+	loadBaseSettings(_this); changing.check();
 
 	m_midiPort.loadSettings( _this );
+	changing.check();
 
 	updateName();
+	changing.check();
 }
 
 

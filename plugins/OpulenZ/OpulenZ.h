@@ -25,6 +25,10 @@
 #ifndef OPULENZ_H
 #define OPULENZ_H
 
+#include <array>
+#include <memory>
+#include <vector>
+#include <QMutex>
 
 #include "AutomatableModel.h"
 #include "Instrument.h"
@@ -71,6 +75,12 @@ public:
 	void loadPatch(const unsigned char inst[14]);
 	void tuneEqual(int center, float Hz);
 	void loadFile( const QString& file ) override;
+	std::vector<FileResource> fileResources() const override;
+	bool setFileResource(const QString& key, const QString& path, QString& error) override;
+	const std::vector<Program>& programs() const override { return m_programs; }
+	bool selectProgram(int bank, int program, QString& error) override;
+	auto midiPatch() const -> std::optional<MidiPatch> override;
+	AutomatableModel* childModel(std::string_view name) override;
 
 	IntModel m_patchModel;
 
@@ -121,15 +131,21 @@ private slots:
 	void loadGMPatch();
 
 private:
-	Copl *theEmulator;
+	std::unique_ptr<Copl> theEmulator;
 	QString storedname;
+	QString m_patchSource;
+	QString m_importedPatchName;
+	std::vector<Program> m_programs;
+	int m_selectedProgram = -1;
+	bool m_loadingPatch = false;
+	std::array<float, 29> m_factoryPatchValues{};
 	f_cnt_t frameCount;
-	short *renderbuffer;
+	std::vector<short> renderbuffer;
 	int voiceNote[OPL2_VOICES];
 	// Least recently used voices
 	int voiceLRU[OPL2_VOICES];
 	// 0 - no note, >0 - note on velocity
-	int velocities[128];
+	int velocities[128]{};
 	// These include both octave and Fnumber
 	int fnums[128];
 	// in cents, range defaults to +/-100 cents (should this be changeable?)
@@ -142,6 +158,10 @@ private:
 	int Hz2fnum(float Hz);
 	static QMutex emulatorMutex;
 	void setVoiceVelocity(int voice, int vel);
+	std::array<AutomatableModel*, 29> patchControls();
+	std::array<unsigned char, 14> patchRegisters() const;
+	void applyPatchControls(const unsigned char inst[14], int program, const QString& source);
+	void writePatchRegisters();
 
 	// Pitch bend range comes through RPNs.
 	int RPNcoarse, RPNfine;

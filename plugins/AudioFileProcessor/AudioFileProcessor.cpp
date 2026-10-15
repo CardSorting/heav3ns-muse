@@ -24,6 +24,17 @@
 
 #include "AudioFileProcessor.h"
 #include "AudioFileProcessorView.h"
+#include <limits>
+#include <algorithm>
+#include <optional>
+#include <stdexcept>
+#include <cmath>
+#include <initializer_list>
+#include <QPointer>
+#include <QThread>
+#include "FileResourceIO.h"
+#include "AudioEngine.h"
+#include "DataFile.h"
 
 #include "InstrumentTrack.h"
 #include "PathUtil.h"
@@ -63,6 +74,61 @@ Plugin::Descriptor PLUGIN_EXPORT audiofileprocessor_plugin_descriptor =
 
 }
 
+class AudioFileProcessor::Context
+{
+public:
+	explicit Context(AudioFileProcessor* owner, bool strict = false)
+		: m_owner(owner), m_strict(strict)
+	{
+		if (strict && owner->thread() != QThread::currentThread()) { throw std::logic_error("AudioFileProcessor settings require the owner thread"); }
+		m_track = owner->instrumentTrack(); m_selected = m_track ? m_track->instrument() : nullptr;
+		m_selection = m_selected.data(); m_buffer = owner->m_sample.buffer();
+		if (strict)
+		{
+			m_song = Engine::getSong(); m_container = m_track ? m_track->trackContainer() : nullptr;
+			if (!m_song) { throw std::logic_error("AudioFileProcessor requires a native project"); }
+			m_generation = m_song->replacementGeneration();
+		}
+		check();
+	}
+	void check() const
+	{
+		if (!m_owner || !m_track || m_track->isRetiring() || !m_owner->isFromTrack(m_track.data())
+			|| m_selected.data() != m_selection || m_track->instrument() != m_selection || m_owner->m_sample.buffer() != m_buffer)
+		{ throw std::runtime_error("AudioFileProcessor owner, selection or sample changed during native work"); }
+		if (m_strict && (!m_song || Engine::getSong() != m_song.data() || m_song->replacementGeneration() != m_generation
+			|| !m_container || m_track->trackContainer() != m_container.data() || m_owner->thread() != QThread::currentThread()
+			|| m_track->thread() != QThread::currentThread() || std::find(m_container->tracks().begin(), m_container->tracks().end(), m_track.data()) == m_container->tracks().end()))
+		{ throw std::runtime_error("AudioFileProcessor project context changed during native work"); }
+	}
+	void adoptedSample() { if (!m_owner) { check(); } m_buffer = m_owner->m_sample.buffer(); check(); }
+protected:
+	QPointer<AudioFileProcessor> m_owner;
+private:
+	QPointer<InstrumentTrack> m_track;
+	QPointer<Instrument> m_selected;
+	Instrument* m_selection = nullptr;
+	std::shared_ptr<const SampleBuffer> m_buffer;
+	bool m_strict;
+	QPointer<Song> m_song;
+	QPointer<TrackContainer> m_container;
+	std::uint64_t m_generation = 0;
+};
+
+class AudioFileProcessor::SettingsGuard : public AudioFileProcessor::Context
+{
+public:
+	explicit SettingsGuard(AudioFileProcessor* owner) : Context(owner, true)
+	{
+		if (owner->m_changingState) { throw std::logic_error("AudioFileProcessor settings and file work cannot reenter"); }
+		m_changes.emplace(Engine::audioEngine()->requestChangesGuard()); owner->m_changingState = true;
+	}
+	~SettingsGuard() { if (m_owner) { m_owner->m_changingState = false; } }
+	void poll() const { check(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } check(); }
+private:
+	std::optional<AudioEngine::RequestChangesGuard> m_changes;
+	FileResourceIO::EventSuspension m_events;
+};
 
 
 
@@ -79,6 +145,8 @@ AudioFileProcessor::AudioFileProcessor( InstrumentTrack * _instrument_track ) :
 	m_nextPlayStartPoint( 0 ),
 	m_nextPlayBackwards( false )
 {
+	m_loopModel.setValueLabels({{static_cast<int>(Sample::Loop::Off), tr("Off")},
+		{static_cast<int>(Sample::Loop::On), tr("Loop")}, {static_cast<int>(Sample::Loop::PingPong), tr("Ping-pong")}});
 	connect( &m_reverseModel, SIGNAL( dataChanged() ),
 				this, SLOT( reverseModelChanged() ), Qt::DirectConnection );
 	connect( &m_ampModel, SIGNAL( dataChanged() ),
@@ -194,76 +262,85 @@ void AudioFileProcessor::deleteNotePluginData( NotePlayHandle * _n )
 
 void AudioFileProcessor::saveSettings(QDomDocument& doc, QDomElement& elem)
 {
-	elem.setAttribute("src", m_sample.sampleFile());
-	if (m_sample.sampleFile().isEmpty())
+	SettingsGuard work(this); work.poll(); const Sample source(m_sample); const QString unresolved(m_unresolvedFile);
+	std::vector<std::pair<QPointer<AutomatableModel>, std::shared_ptr<AutomatableModel::ControllerState>>> controls;
+	for (auto model : std::initializer_list<AutomatableModel*>{&m_reverseModel, &m_loopModel, &m_ampModel, &m_startPointModel, &m_endPointModel, &m_loopPointModel, &m_stutterModel, &m_interpolationModel}) { controls.push_back({model, model->captureControllerState()}); work.check(); }
+	const auto ready = [&] {
+		work.check();
+		if (m_unresolvedFile != unresolved || m_sample.startFrame() != source.startFrame() || m_sample.endFrame() != source.endFrame()
+			|| m_sample.loopStartFrame() != source.loopStartFrame() || m_sample.loopEndFrame() != source.loopEndFrame()
+			|| m_sample.amplification() != source.amplification() || m_sample.frequency() != source.frequency() || m_sample.reversed() != source.reversed())
+		{ throw std::runtime_error("AudioFileProcessor sample changed during serialization"); }
+		for (const auto& control : controls) { if (!control.first || !control.first->controllerStateMatches(*control.second, false, nullptr, false, false)) { throw std::runtime_error("AudioFileProcessor control changed during serialization"); } work.check(); }
+	};
+	ready(); const QString path = unresolved.isEmpty() ? source.sampleFile() : unresolved; elem.setAttribute("src", path);
+	if (!unresolved.isEmpty()) { elem.setAttribute("unresolved", 1); } else { elem.removeAttribute("unresolved"); }
+	if (unresolved.isEmpty()) { source.buffer()->registerResourceSource(doc, elem, "src", source.buffer()); ready(); }
+	if (path.isEmpty())
 	{
-		elem.setAttribute("sampledata", m_sample.toBase64());
+		const bool saved = source.buffer()->saveEmbeddedData(doc, elem, "sampledata"); ready();
+		if (!saved) { throw std::runtime_error("AudioFileProcessor embedded sample serialization failed"); } elem.setAttribute("sampleRate", source.sampleRate());
 	}
-	m_reverseModel.saveSettings(doc, elem, "reversed");
-	m_loopModel.saveSettings(doc, elem, "looped");
-	m_ampModel.saveSettings(doc, elem, "amp");
-	m_startPointModel.saveSettings(doc, elem, "sframe");
-	m_endPointModel.saveSettings(doc, elem, "eframe");
-	m_loopPointModel.saveSettings(doc, elem, "lframe");
-	m_stutterModel.saveSettings(doc, elem, "stutter");
-	m_interpolationModel.saveSettings(doc, elem, "interp");
+	const auto save = [&](auto& model, const char* key) { ready(); model.saveSettings(doc, elem, key); ready(); };
+	save(m_reverseModel, "reversed"); save(m_loopModel, "looped"); save(m_ampModel, "amp"); save(m_startPointModel, "sframe"); save(m_endPointModel, "eframe"); save(m_loopPointModel, "lframe"); save(m_stutterModel, "stutter"); save(m_interpolationModel, "interp"); ready();
 }
-
-
-
 
 void AudioFileProcessor::loadSettings(const QDomElement& elem)
 {
-	if (auto srcFile = elem.attribute("src"); !srcFile.isEmpty())
+	const QDomElement settings(elem); const QString srcFile = settings.attribute("src"), sampleData = settings.attribute("sampledata");
+	SettingsGuard work(this); work.poll(); DataFile::ResourceReferenceScope resource(settings, "src"); work.check();
+	if (settings.attribute("unresolved") == "1")
 	{
-		if (QFileInfo(PathUtil::toAbsolute(srcFile)).exists())
+		if (srcFile.isEmpty() || !sampleData.isEmpty()) { throw std::invalid_argument("Unresolved AudioFileProcessor settings require one filename and no embedded data"); }
+		bool error = false; const QString absolute = PathUtil::toAbsolute(srcFile, &error);
+		if (error || absolute.isEmpty()) { throw std::invalid_argument("Unresolved AudioFileProcessor filename is invalid"); }
+		if (FileResourceSnapshot::hasRetainedSource(absolute)) { throw std::invalid_argument("Unresolved AudioFileProcessor settings cannot discard an accepted resource"); }
+		m_unresolvedFile = absolute; m_sample = Sample(SampleBuffer::emptyBuffer()); work.adoptedSample();
+		Engine::getSong()->collectUnresolvedResource(m_unresolvedFile); work.check();
+	}
+	else if (!srcFile.isEmpty())
+	{
+		const QString absolute = PathUtil::toAbsolute(srcFile); const bool exists = QFileInfo(FileResourceSnapshot::readableSourcePath(absolute)).exists(); work.check();
+		if (exists) { QString error; if (!loadAudioFileImpl(srcFile, false, error, work)) { Engine::getSong()->collectError(error); work.check(); } }
+		else
 		{
-			setAudioFile(srcFile, false);
+			if (m_sample.buffer()->empty() && m_sample.sampleFile().isEmpty()) { m_unresolvedFile = absolute; }
+			if (!m_unresolvedFile.isEmpty()) { Engine::getSong()->collectUnresolvedResource(m_unresolvedFile); }
+			else { Engine::getSong()->collectError(QString("%1: %2").arg(tr("Sample not found"), srcFile)); } work.check();
 		}
-		else { Engine::getSong()->collectError(QString("%1: %2").arg(tr("Sample not found"), srcFile)); }
 	}
-	else if (auto sampleData = elem.attribute("sampledata"); !sampleData.isEmpty())
+	else if (!sampleData.isEmpty())
 	{
-		m_sample = Sample(SampleBuffer::fromBase64(sampleData));
+		QString error; bool rateOk = true;
+		const int rate = settings.hasAttribute("sampleRate") ? settings.attribute("sampleRate").toInt(&rateOk) : Engine::audioEngine()->outputSampleRate();
+		auto buffer = SampleBuffer::fromBase64(sampleData, rateOk ? rate : 0, error); work.check();
+		if (buffer) { m_unresolvedFile.clear(); m_sample = Sample(std::move(buffer)); work.adoptedSample(); }
+		else { Engine::getSong()->collectError(tr("Invalid embedded AudioFileProcessor sample: %1").arg(error)); work.check(); }
 	}
-
-	m_loopModel.loadSettings(elem, "looped");
-	m_ampModel.loadSettings(elem, "amp");
-	m_endPointModel.loadSettings(elem, "eframe");
-	m_startPointModel.loadSettings(elem, "sframe");
-
-	// compat code for not having a separate loopback point
-	if (elem.hasAttribute("lframe") || !elem.firstChildElement("lframe").isNull())
-	{
-		m_loopPointModel.loadSettings(elem, "lframe");
-	}
-	else
-	{
-		m_loopPointModel.loadSettings(elem, "sframe");
-	}
-
-	m_reverseModel.loadSettings(elem, "reversed");
-
-	m_stutterModel.loadSettings(elem, "stutter");
-	if (elem.hasAttribute("interp") || !elem.firstChildElement("interp").isNull())
-	{
-		m_interpolationModel.loadSettings(elem, "interp");
-	}
-	else
-	{
-		m_interpolationModel.setValue(1.0f); // linear by default
-	}
-
-	pointChanged();
-	emit sampleUpdated();
+	else { QString error; if (!loadAudioFileImpl({}, false, error, work)) { Engine::getSong()->collectError(error); work.check(); } }
+	const auto load = [&](auto& model, const char* key) { work.check(); model.loadSettings(settings, key); work.check(); };
+	load(m_loopModel, "looped"); load(m_ampModel, "amp"); load(m_endPointModel, "eframe"); load(m_startPointModel, "sframe");
+	load(m_loopPointModel, settings.hasAttribute("lframe") || !settings.firstChildElement("lframe").isNull() ? "lframe" : "sframe");
+	load(m_reverseModel, "reversed"); load(m_stutterModel, "stutter");
+	if (settings.hasAttribute("interp") || !settings.firstChildElement("interp").isNull()) { load(m_interpolationModel, "interp"); }
+	else { m_interpolationModel.setValue(1.0f); work.check(); }
+	pointChanged(); work.check(); emit sampleUpdated(); work.check();
 }
-
-
-
 
 void AudioFileProcessor::loadFile( const QString & _file )
 {
 	setAudioFile( _file );
+}
+
+std::vector<Plugin::FileResource> AudioFileProcessor::fileResources() const
+{
+	return {{"sample", tr("Sample"), m_unresolvedFile.isEmpty() ? m_sample.sampleFile() : m_unresolvedFile, QString(descriptor()->supportedFileTypes).split(','), nullptr, 0, true, m_sample.buffer(), !m_unresolvedFile.isEmpty()}};
+}
+
+bool AudioFileProcessor::setFileResource(const QString& key, const QString& path, QString& error)
+{
+	if (key != "sample") { error = tr("Unknown AudioFileProcessor resource: %1").arg(key); return false; }
+	return loadAudioFile(path, false, error);
 }
 
 
@@ -305,129 +382,91 @@ gui::PluginView* AudioFileProcessor::instantiateView( QWidget * _parent )
 	return new gui::AudioFileProcessorView( this, _parent );
 }
 
-void AudioFileProcessor::setAudioFile(const QString& _audio_file, bool _rename)
+void AudioFileProcessor::setAudioFile(const QString& path, bool rename)
 {
-	// is current channel-name equal to previous-filename??
-	if( _rename &&
-		( instrumentTrack()->name() ==
-			QFileInfo(m_sample.sampleFile()).fileName() ||
-				m_sample.sampleFile().isEmpty()))
-	{
-		// then set it to new one
-		instrumentTrack()->setName( PathUtil::cleanName( _audio_file ) );
-	}
-	// else we don't touch the track-name, because the user named it self
-
-	m_sample = Sample(SampleBuffer::fromFile(_audio_file));
-	loopPointChanged();
-	ampModelChanged();
-	reverseModelChanged();
-	emit sampleUpdated();
+	const QString requested(path); const QPointer<Song> owner(Engine::getSong()); QString error;
+	if (!loadAudioFile(requested, rename, error) && owner && Engine::getSong() == owner.data()) { owner->collectError(error); }
 }
 
+bool AudioFileProcessor::loadAudioFile(const QString& path, bool rename, QString& error)
+{
+	const QString requested(path);
+	try { SettingsGuard work(this); return loadAudioFileImpl(requested, rename, error, work); }
+	catch (const std::exception& failure) { error = QString::fromUtf8(failure.what()); }
+	catch (...) { error = "AudioFileProcessor file work failed with an unknown native exception"; }
+	return false;
+}
 
-
+bool AudioFileProcessor::loadAudioFileImpl(const QString& path, bool rename, QString& error, SettingsGuard& work)
+{
+	const QString requested(path); work.poll(); const auto buffer = SampleBuffer::fromFile(requested); work.check();
+	if (!requested.isEmpty() && (buffer->empty() || buffer->size() > static_cast<std::size_t>(std::numeric_limits<int>::max())))
+	{
+		if (m_sample.buffer()->empty() && m_sample.sampleFile().isEmpty()) { m_unresolvedFile = requested; }
+		error = tr("The instrument sample could not be decoded within native frame bounds: %1").arg(requested); return false;
+	}
+	if (rename && (instrumentTrack()->name() == QFileInfo(m_sample.sampleFile()).fileName() || m_sample.sampleFile().isEmpty()))
+	{ const QString name = PathUtil::cleanName(requested); instrumentTrack()->setName(name); work.check(); }
+	m_unresolvedFile.clear(); m_sample = Sample(buffer); work.adoptedSample();
+	loopPointChanged(); work.check(); ampModelChanged(); work.check(); reverseModelChanged(); work.check(); emit sampleUpdated(); work.check();
+	error.clear(); return true;
+}
 
 void AudioFileProcessor::reverseModelChanged()
 {
-	m_sample.setReversed(m_reverseModel.value());
-	m_nextPlayStartPoint = m_sample.startFrame();
-	m_nextPlayBackwards = false;
-	emit sampleUpdated();
+	Context context(this); const bool reversed = m_reverseModel.value(); context.check();
+	m_sample.setReversed(reversed); m_nextPlayStartPoint = m_sample.startFrame(); m_nextPlayBackwards = false;
+	emit sampleUpdated(); context.check();
 }
-
-
-
 
 void AudioFileProcessor::ampModelChanged()
 {
-	m_sample.setAmplification(m_ampModel.value() / 100.0f);
-	emit sampleUpdated();
+	Context context(this); const auto value = m_ampModel.value(); context.check();
+	if (!std::isfinite(value)) { throw std::out_of_range("AudioFileProcessor amplification is not finite"); }
+	m_sample.setAmplification(value / 100.0f); emit sampleUpdated(); context.check();
 }
-
 
 void AudioFileProcessor::stutterModelChanged()
 {
-	m_nextPlayStartPoint = m_sample.startFrame();
-	m_nextPlayBackwards = false;
+	Context context(this); m_nextPlayStartPoint = m_sample.startFrame(); m_nextPlayBackwards = false;
 }
-
 
 void AudioFileProcessor::startPointChanged()
 {
-	// check if start is over end and swap values if so
-	if( m_startPointModel.value() > m_endPointModel.value() )
-	{
-		float tmp = m_endPointModel.value();
-		m_endPointModel.setValue( m_startPointModel.value() );
-		m_startPointModel.setValue( tmp );
-	}
-
-	// nudge loop point with end
-	if( m_loopPointModel.value() >= m_endPointModel.value() )
-	{
-		m_loopPointModel.setValue( qMax( m_endPointModel.value() - 0.001f, 0.0f ) );
-	}
-
-	// nudge loop point with start
-	if( m_loopPointModel.value() < m_startPointModel.value() )
-	{
-		m_loopPointModel.setValue( m_startPointModel.value() );
-	}
-
-	// check if start & end overlap and nudge end up if so
-	if( m_startPointModel.value() == m_endPointModel.value() )
-	{
-		m_endPointModel.setValue( qMin( m_endPointModel.value() + 0.001f, 1.0f ) );
-	}
-
-	pointChanged();
-
+	Context context(this); const auto value = [&](const auto& model) { context.check(); const auto result = model.value(); context.check(); return result; };
+	if (value(m_startPointModel) > value(m_endPointModel))
+	{ const auto start = value(m_startPointModel), end = value(m_endPointModel); m_endPointModel.setValue(start); context.check(); m_startPointModel.setValue(end); context.check(); }
+	if (value(m_loopPointModel) >= value(m_endPointModel)) { const auto end = value(m_endPointModel); m_loopPointModel.setValue(qMax(end - .001f, 0.f)); context.check(); }
+	if (value(m_loopPointModel) < value(m_startPointModel)) { const auto start = value(m_startPointModel); m_loopPointModel.setValue(start); context.check(); }
+	if (value(m_startPointModel) == value(m_endPointModel)) { const auto end = value(m_endPointModel); m_endPointModel.setValue(qMin(end + .001f, 1.f)); context.check(); }
+	pointChanged(); context.check();
 }
 
-void AudioFileProcessor::endPointChanged()
-{
-	// same as start, for now
-	startPointChanged();
-
-}
+void AudioFileProcessor::endPointChanged() { startPointChanged(); }
 
 void AudioFileProcessor::loopPointChanged()
 {
-
-	// check that loop point is between start-end points and not overlapping with endpoint
-	// ...and move start/end points ahead if loop point is moved over them
-	if( m_loopPointModel.value() >= m_endPointModel.value() )
+	Context context(this); const auto value = [&](const auto& model) { context.check(); const auto result = model.value(); context.check(); return result; };
+	if (value(m_loopPointModel) >= value(m_endPointModel))
 	{
-		m_endPointModel.setValue( m_loopPointModel.value() + 0.001f );
-		if( m_endPointModel.value() == 1.0f )
-		{
-			m_loopPointModel.setValue( 1.0f - 0.001f );
-		}
+		const auto loop = value(m_loopPointModel); m_endPointModel.setValue(loop + .001f); context.check();
+		if (value(m_endPointModel) == 1.f) { m_loopPointModel.setValue(1.f - .001f); context.check(); }
 	}
-
-	// nudge start point with loop
-	if( m_loopPointModel.value() < m_startPointModel.value() )
-	{
-		m_startPointModel.setValue( m_loopPointModel.value() );
-	}
-
-	pointChanged();
+	if (value(m_loopPointModel) < value(m_startPointModel)) { const auto loop = value(m_loopPointModel); m_startPointModel.setValue(loop); context.check(); }
+	pointChanged(); context.check();
 }
 
 void AudioFileProcessor::pointChanged()
 {
-	const auto f_start = static_cast<f_cnt_t>(m_startPointModel.value() * m_sample.sampleSize());
-	const auto f_end = static_cast<f_cnt_t>(m_endPointModel.value() * m_sample.sampleSize());
-	const auto f_loop = static_cast<f_cnt_t>(m_loopPointModel.value() * m_sample.sampleSize());
-
-	m_nextPlayStartPoint = f_start;
-	m_nextPlayBackwards = false;
-
-	m_sample.setAllPointFrames(f_start, f_end, f_loop, f_end);
-	emit dataChanged();
+	Context context(this); const auto frames = m_sample.sampleSize();
+	const auto start = m_startPointModel.value(); context.check(); const auto end = m_endPointModel.value(); context.check(); const auto loop = m_loopPointModel.value(); context.check();
+	if (frames > static_cast<std::size_t>(std::numeric_limits<int>::max()) || !std::isfinite(start) || !std::isfinite(end) || !std::isfinite(loop)
+		|| start < 0 || start > 1 || end < 0 || end > 1 || loop < 0 || loop > 1)
+	{ throw std::out_of_range("AudioFileProcessor sample points exceed native frame bounds"); }
+	const auto f_start = static_cast<f_cnt_t>(static_cast<double>(start) * frames), f_end = static_cast<f_cnt_t>(static_cast<double>(end) * frames), f_loop = static_cast<f_cnt_t>(static_cast<double>(loop) * frames);
+	m_nextPlayStartPoint = f_start; m_nextPlayBackwards = false; m_sample.setAllPointFrames(f_start, f_end, f_loop, f_end);
+	emit dataChanged(); context.check();
 }
-
 
 extern "C"
 {

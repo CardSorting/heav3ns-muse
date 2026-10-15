@@ -375,6 +375,7 @@ void MidiClipView::clearNotesOutOfBounds()
 	m_clip->getTrack()->saveJournallingState(false);
 
 	auto newClip = m_clip->clone();
+	if (!newClip) { m_clip->getTrack()->restoreJournallingState(); return; }
 	newClip->clearNotes();
 
 	TimePos startBound = -m_clip->startTimeOffset();
@@ -440,7 +441,7 @@ void MidiClipView::mousePressEvent( QMouseEvent * _me )
 //	debugging to ensure we get the correct step...
 //		qDebug( "Step (%f) %d", tmp, step );
 
-		if( step >= m_clip->m_steps )
+		if( step < 0 || step >= m_clip->m_steps )
 		{
 			qDebug( "Something went wrong in clip.cpp: step %d doesn't exist in clip!", step );
 			return;
@@ -448,15 +449,8 @@ void MidiClipView::mousePressEvent( QMouseEvent * _me )
 
 		Note * n = m_clip->noteAtStep( step );
 
-		if( n == nullptr )
-		{
-			m_clip->addStepNote( step );
-		}
-		else // note at step found
-		{
-			m_clip->addJournalCheckPoint();
-			m_clip->setStep( step, false );
-		}
+		MidiClip::StepSetResult result; QString error;
+		if (!m_clip->setStep(step, n == nullptr, result, error)) { qWarning("Native step click refused: %s", qPrintable(error)); return; }
 
 		Engine::getSong()->setModified();
 		update();
@@ -507,7 +501,7 @@ void MidiClipView::wheelEvent(QWheelEvent * we)
 
 		int step = int( tmp );
 
-		if( step >= m_clip->m_steps )
+		if( step < 0 || step >= m_clip->m_steps )
 		{
 			return;
 		}
@@ -516,7 +510,9 @@ void MidiClipView::wheelEvent(QWheelEvent * we)
 		const int direction = (we->angleDelta().y() > 0 ? 1 : -1) * (we->inverted() ? -1 : 1);
 		if(!n && direction > 0)
 		{
-			n = m_clip->addStepNote( step );
+			MidiClip::StepSetResult result; QString error;
+			if (!m_clip->setStep(step, true, result, error)) { qWarning("Native wheel step creation refused: %s", qPrintable(error)); we->accept(); return; }
+			n = result.note;
 			n->setVolume( 0 );
 		}
 		if( n != nullptr )
@@ -859,7 +855,7 @@ void MidiClipView::paintEvent( QPaintEvent * )
 		p.drawPixmap( spacing, height() - ( size + spacing ),
 			embed::getIconPixmap( "muted", size, size ) );
 	}
-	
+
 	if (m_marker)
 	{
 		p.setPen(markerColor());
@@ -884,8 +880,10 @@ bool MidiClipView::destructiveSplitClip(const TimePos pos)
 	m_clip->getTrack()->saveJournallingState(false);
 
 	auto leftClip = m_clip->clone();
+	if (!leftClip) { m_clip->getTrack()->restoreJournallingState(); return false; }
 	leftClip->clearNotes();
 	auto rightClip =  m_clip->clone();
+	if (!rightClip) { delete leftClip; m_clip->getTrack()->restoreJournallingState(); return false; }
 	rightClip->clearNotes();
 
 	for (Note const* note : m_clip->m_notes)

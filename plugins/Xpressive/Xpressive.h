@@ -63,6 +63,21 @@ class Xpressive : public Instrument
 {
 	Q_OBJECT
 public:
+	std::vector<GraphResource> graphResources() override
+	{
+		return {
+			{"w1", tr("W1 sample waveform"), "amplitude", &m_rawgraphW1},
+			{"w2", tr("W2 sample waveform"), "amplitude", &m_rawgraphW2},
+			{"w3", tr("W3 sample waveform"), "amplitude", &m_rawgraphW3}
+		};
+	}
+	void graphEdited(const QString& key) override;
+	void refreshWave(int index);
+	std::vector<ExpressionResource> expressionResources() const override;
+	ExpressionResult validateExpression(const QString& key, const QString& source) override;
+	bool setExpression(const QString& key, const QString& source, ExpressionResult& result) override;
+	ExpressionResult refreshExpressionPreview(int index);
+
 	Xpressive(InstrumentTrack* instrument_track );
 
 	void playNote(NotePlayHandle* nph,
@@ -87,8 +102,8 @@ public:
 	graphModel& rawgraphW2() { return m_rawgraphW2; }
 	graphModel& rawgraphW3() { return m_rawgraphW3; }
 	IntModel& selectedGraph() { return m_selectedGraph; }
-	QByteArray& wavesExpression(int i) { return m_wavesExpression[i]; }
-	QByteArray& outputExpression(int i) { return m_outputExpression[i]; }
+	const QByteArray& wavesExpression(int i) const { return m_wavesExpression[i]; }
+	const QByteArray& outputExpression(int i) const { return m_outputExpression[i]; }
 
 	FloatModel& parameterA1() { return m_parameterA1; }
 	FloatModel& parameterA2() { return m_parameterA2; }
@@ -107,12 +122,16 @@ public:
 	WaveSample& W3() { return m_W3; }
 	BoolModel& exprValid() { return m_exprValid; }
 	static void smooth(float smoothness,const graphModel* in,graphModel* out);
+signals:
+	void expressionSourceChanged(const QString& key);
 protected:
 	
 protected slots:
 
 
 private:
+	XpressiveExpressionContext expressionContext(int index, bool consumeRandom = false) const;
+	bool m_expressionChanging = false;
 	graphModel  m_graphO1;
 	graphModel  m_graphO2;
 	graphModel  m_graphW1;
@@ -170,6 +189,7 @@ protected slots:
 	void usrWaveClicked();
 	void helpClicked();
 	void expressionChanged();
+	void nativeExpressionChanged(const QString& key);
 	void smoothChanged();
 	void graphDrawn();
 

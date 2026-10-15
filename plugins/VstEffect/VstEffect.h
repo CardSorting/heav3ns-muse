@@ -46,6 +46,14 @@ public:
 	~VstEffect() override = default;
 
 	ProcessStatus processImpl(SampleFrame* buf, const f_cnt_t frames) override;
+	void refreshParameterModels() override { m_vstControls.refreshParameterModels(); }
+	bool supportsNativePrograms() const override { return m_plugin != nullptr; }
+	NativeProgramPage nativePrograms(int offset, int limit) override { return m_vstControls.nativePrograms(offset, limit); }
+	bool selectNativeProgram(int index, QString& error) override { return m_vstControls.selectNativeProgram(index, error); }
+	bool supportsNativePresets() const override { return m_plugin != nullptr; }
+	NativePresetInfo inspectNativePreset(const QString& path) override { return m_vstControls.inspectNativePreset(path); }
+	NativePresetInfo loadNativePreset(const QString& path) override { return m_vstControls.loadNativePreset(path); }
+	NativePresetInfo saveNativePreset(const QString& path, bool bank) override { return m_vstControls.saveNativePreset(path, bank); }
 
 	EffectControls * controls() override
 	{

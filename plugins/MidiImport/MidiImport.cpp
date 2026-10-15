@@ -24,13 +24,30 @@
 
 
 #include <QDir>
-#include <QApplication>
 #include <QFile>
+#include <QDebug>
 #include <QMessageBox>
 #include <QProgressDialog>
 
 #include <sstream>
-#include <unordered_map>
+#include <memory>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <stdexcept>
+#include <tuple>
+#include <vector>
+#include <functional>
+#include <string_view>
+#include <utility>
+#include <QPointer>
+#include <QScopeGuard>
+#include <QThread>
+
+#include "AudioEngine.h"
+#include "FileResourceIO.h"
+#include "MidiImportData.h"
 
 #include "MidiImport.h"
 #include "TrackContainer.h"
@@ -45,15 +62,12 @@
 #include "MainWindow.h"
 #include "TimePos.h"
 #include "Song.h"
+#include "PatternStore.h"
+#include "PatternTrack.h"
 
 #include "plugin_export.h"
 
 #include "portsmf/include/allegro.h"
-
-namespace
-{
-	constexpr std::int32_t makeID(const char c[4]) { return c[0] | (c[1] << 8) | (c[2] << 16) | (c[3] << 24); }
-}
 
 namespace lmms
 {
@@ -88,97 +102,246 @@ MidiImport::MidiImport(const QString& file) :
 {}
 
 
-bool MidiImport::tryImport(TrackContainer* tc)
+namespace
 {
-	if (!openFile()) { return false; }
-
-#ifdef LMMS_HAVE_FLUIDSYNTH
-	if (gui::getGUI() != nullptr && ConfigManager::inst()->sf2File().isEmpty())
-	{
-		QMessageBox::information(gui::getGUI()->mainWindow(),
-			tr("Setup incomplete"),
-			tr("You have not set up a default soundfont in "
-				"the settings dialog (Edit->Settings). "
-				"Therefore no sound will be played back after "
-				"importing this MIDI file. You should download "
-				"a General MIDI soundfont, specify it in "
-				"settings dialog and try again."));
-	}
-#else
-	if (gui::getGUI() != nullptr)
-	{
-		QMessageBox::information(gui::getGUI()->mainWindow(),
-			tr("Setup incomplete"),
-			tr("You did not compile LMMS with support for "
-				"SoundFont2 player, which is used to add default "
-				"sound to imported MIDI files. "
-				"Therefore no sound will be played back after "
-				"importing this MIDI file."));
-	}
-#endif
-
-	switch (read32LE()) // Read ID
-	{
-		case makeID("MThd"):
-			// printf("MidiImport::tryImport(): found MThd\n");
-			return readSMF(tc);
-
-		case makeID("RIFF"):
-			// printf("MidiImport::tryImport(): found RIFF\n");
-			return readRIFF(tc);
-
-		default:
-			printf("MidiImport::tryImport(): not a Standard MIDI file\n");
-			return false;
-	}
+tick_t importTick(double beats, std::int64_t columnStart = 0)
+{
+	const double ticks = std::round(beats * TicksPerQuarterNote);
+	// Native clip/automation lengths round up to bars and can add a trailing
+	// bar. Keep that arithmetic representable as well as the event itself.
+	const auto maximum = std::numeric_limits<tick_t>::max() - 2 * std::int64_t(TimePos::ticksPerBar()) - columnStart;
+	if (!std::isfinite(ticks) || beats < 0 || ticks > maximum)
+	{ throw std::out_of_range("MIDI time exceeds the native arrangement range"); }
+	return static_cast<tick_t>(ticks);
 }
 
+float importValue(double value)
+{
+	if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
+	{ throw std::out_of_range("MIDI automation value is not finite or representable"); }
+	return static_cast<float>(value);
+}
+}
+
+// Only the tracks created through this state belong to import rollback. Callback
+// additions and tracks adopted elsewhere remain owned by their native callers.
+class MidiImportState
+{
+public:
+	MidiImportState(std::function<void()> context, std::function<void()> poll, int pattern)
+		: m_context(std::move(context)), m_poll(std::move(poll)), m_song(Engine::getSong()), m_generation(m_song->replacementGeneration()), m_pattern(pattern),
+		  m_emptyColumn(pattern >= 0 && Engine::patternStore()->numOfPatterns() == 0), m_column(pattern >= 0 && !m_emptyColumn ? PatternTrack::findPatternTrack(pattern) : nullptr) { }
+	~MidiImportState()
+	{
+		if (m_committed) { return; }
+		const FileResourceIO::Suspension recovery; const FileResourceIO::EventSuspension events;
+		for (auto it = m_tracks.rbegin(); it != m_tracks.rend(); ++it)
+		{
+			if (!m_song || Engine::getSong() != m_song.data() || m_song->replacementGeneration() != m_generation) { break; }
+			if (it->track && it->owner && it->track->parent() == it->owner.data() && it->track->trackContainer() == it->owner.data()
+				&& std::find(it->owner->tracks().begin(), it->owner->tracks().end(), it->track.data()) != it->owner->tracks().end()) { delete it->track.data(); }
+		}
+	}
+	void context() const
+	{
+		m_context();
+		if (m_pattern >= 0)
+		{
+			if (m_emptyColumn && !m_buildingColumn && Engine::patternStore()->numOfPatterns() != 0) { throw std::runtime_error("MIDI empty pattern destination changed before native column creation"); }
+			if (!m_emptyColumn && (!m_column || PatternTrack::findPatternTrack(m_pattern) != m_column.data())) { throw std::runtime_error("MIDI selected pattern column changed"); }
+		}
+		for (const auto& entry : m_tracks)
+		{
+			if (!entry.track || !entry.owner || entry.track->parent() != entry.owner.data() || entry.track->trackContainer() != entry.owner.data()
+				|| std::find(entry.owner->tracks().begin(), entry.owner->tracks().end(), entry.track.data()) == entry.owner->tracks().end())
+			{ throw std::runtime_error("MIDI import created track retired or detached"); }
+		}
+		for (const auto& entry : m_clips)
+		{
+			if (!entry.clip || !entry.track || entry.clip->getTrack() != entry.track.data()
+				|| std::find(entry.track->getClips().begin(), entry.track->getClips().end(), entry.clip.data()) == entry.track->getClips().end())
+			{ throw std::runtime_error("MIDI import clip retired or detached"); }
+		}
+		for (const auto& entry : m_instruments)
+		{ if (!entry.track || !entry.instrument || entry.track->instrument() != entry.instrument.data()) { throw std::runtime_error("MIDI import selected instrument changed"); } }
+		for (const auto& model : m_models) { if (!model) { throw std::runtime_error("MIDI import target model retired"); } }
+	}
+	void poll() const { context(); m_poll(); context(); }
+	template<class Function> void apply(Function&& function) const { context(); function(); context(); }
+	void commit() { poll(); m_committed = true; }
+	Track* track(Track::Type type, TrackContainer* owner)
+	{
+		context();
+		if (owner == Engine::patternStore() && Engine::patternStore()->numOfPatterns() == 0)
+		{
+			m_buildingColumn = true; const QPointer<PatternTrack> created(dynamic_cast<PatternTrack*>(track(Track::Type::Pattern, Engine::getSong())));
+			if (!created || Engine::patternStore()->numOfPatterns() != 1 || PatternTrack::findPatternTrack(0) != created.data()) { throw std::runtime_error("MIDI native initial pattern column changed during construction"); }
+			m_column = created; m_emptyColumn = false; m_buildingColumn = false; context();
+		}
+		const QPointer<TrackContainer> container(owner); const QPointer<Track> candidate(Track::create(type, owner)); bool registered = false;
+		const auto cleanup = qScopeGuard([&] { if (!registered && candidate && container && candidate->trackContainer() == container.data()) { delete candidate.data(); } });
+		if (!candidate) { throw std::runtime_error("MIDI import track could not be created"); }
+		m_tracks.push_back({candidate, container}); registered = true; context();
+		for (auto clip : candidate->getClips()) { watch(clip); } context(); return candidate.data();
+	}
+	Clip* watch(Clip* clip)
+	{
+		if (!clip) { throw std::runtime_error("MIDI import clip could not be created"); }
+		if (std::none_of(m_clips.begin(), m_clips.end(), [clip](const auto& entry) { return entry.clip.data() == clip; })) { m_clips.push_back({clip, clip->getTrack()}); }
+		context(); return clip;
+	}
+	Clip* clip(Track* track, TimePos position) { context(); return watch(track->createClip(position)); }
+	Clip* cell(Track* track, int pattern)
+	{
+		context(); if (!track || pattern < 0 || pattern >= track->numOfClips()) { throw std::runtime_error("MIDI import pattern cell is unavailable"); }
+		return watch(track->getClips().at(pattern));
+	}
+	void forget(Clip* clip) { m_clips.erase(std::remove_if(m_clips.begin(), m_clips.end(), [clip](const auto& entry) { return entry.clip.data() == clip; }), m_clips.end()); }
+	Instrument* instrument(InstrumentTrack* track, const QString& name)
+	{
+		context(); m_instruments.erase(std::remove_if(m_instruments.begin(), m_instruments.end(), [track](const auto& entry) { return entry.track.data() == track; }), m_instruments.end());
+		const QPointer<Instrument> result(track->loadInstrument(name)); context();
+		if (!result || track->instrument() != result.data()) { throw std::runtime_error("MIDI import instrument did not survive loading"); }
+		m_instruments.push_back({track, result}); context(); return result.data();
+	}
+	AutomatableModel* model(AutomatableModel* model)
+	{
+		if (!model) { throw std::runtime_error("MIDI import target model is unavailable"); }
+		if (std::none_of(m_models.begin(), m_models.end(), [model](const auto& entry) { return entry.data() == model; })) { m_models.emplace_back(model); }
+		context(); return model;
+	}
+	AutomatableModel* model(Instrument* instrument, std::string_view name)
+	{ context(); const QPointer<AutomatableModel> result(instrument->childModel(name)); context(); return model(result.data()); }
+private:
+	struct TrackEntry { QPointer<Track> track; QPointer<TrackContainer> owner; };
+	struct ClipEntry { QPointer<Clip> clip; QPointer<Track> track; };
+	struct InstrumentEntry { QPointer<InstrumentTrack> track; QPointer<Instrument> instrument; };
+	std::function<void()> m_context, m_poll;
+	QPointer<Song> m_song;
+	std::uint64_t m_generation;
+	std::vector<TrackEntry> m_tracks;
+	std::vector<ClipEntry> m_clips;
+	std::vector<InstrumentEntry> m_instruments;
+	std::vector<QPointer<AutomatableModel>> m_models;
+	bool m_committed = false;
+	int m_pattern;
+	bool m_emptyColumn, m_buildingColumn = false;
+	QPointer<PatternTrack> m_column;
+};
+
+bool MidiImport::tryImport(TrackContainer* tc)
+{ return tryImport(tc, -1); }
+
+bool MidiImport::tryImport(TrackContainer* tc, int pattern)
+{
+	if (!tc || !Engine::getSong() || !Engine::audioEngine()
+		|| QThread::currentThread() != Engine::getSong()->thread() || tc->thread() != Engine::getSong()->thread()) { return false; }
+	const bool inPattern = tc == Engine::patternStore();
+	if (inPattern)
+	{
+		const auto count = Engine::patternStore()->numOfPatterns();
+		if (pattern == -1) { pattern = count ? Engine::patternStore()->currentPattern() : 0; }
+		if (pattern < 0 || pattern >= std::max(1, count)) { return false; }
+	}
+	else if (pattern != -1) { return false; }
+	const QString requested(file().fileName()); const QPointer<Song> owner(Engine::getSong());
+	try
+	{
+		WorkScope work(this, tc, pattern); MidiImportState state([&] { work.checkContext(); }, [&] { work.check(); }, pattern);
+		const FileResourceIO::EventSuspension noReentry;
+		state.poll(); QFile input(requested); if (!openFile(input)) { return false; } state.context();
+		const auto bytes = readMidiImportData(input); state.context();
+		if (bytes.isEmpty()) { return false; }
+#ifdef LMMS_HAVE_FLUIDSYNTH
+		if (gui::getGUI() != nullptr && ConfigManager::inst()->sf2File().isEmpty())
+		{
+			QMessageBox::information(gui::getGUI()->mainWindow(),
+				tr("Setup incomplete"),
+				tr("You have not set up a default soundfont in "
+					"the settings dialog (Edit->Settings). "
+					"Therefore no sound will be played back after "
+					"importing this MIDI file. You should download "
+					"a General MIDI soundfont, specify it in "
+					"settings dialog and try again."));
+		}
+#else
+		if (gui::getGUI() != nullptr)
+		{
+			QMessageBox::information(gui::getGUI()->mainWindow(),
+				tr("Setup incomplete"),
+				tr("You did not compile LMMS with support for "
+					"SoundFont2 player, which is used to add default "
+					"sound to imported MIDI files. "
+					"Therefore no sound will be played back after "
+					"importing this MIDI file."));
+		}
+#endif
+
+		state.context();
+		if (inPattern)
+		{
+			std::vector<QPointer<Track>> rows; for (auto row : tc->tracks()) { rows.emplace_back(row); }
+			for (const auto& row : rows)
+			{
+				state.poll();
+				if (!row || row->numOfClips() != Engine::patternStore()->numOfPatterns())
+				{ throw std::runtime_error("MIDI import requires complete native pattern columns"); }
+			}
+		}
+		if (!readSMF(tc, bytes, pattern, state)) { return false; }
+		state.commit(); return true;
+	}
+	catch (const std::exception& error)
+	{
+		const auto message = tr("MIDI import failed: %1").arg(QString::fromUtf8(error.what()));
+		if (owner && Engine::getSong() == owner.data()) { owner->collectError(message); } qWarning().noquote() << message;
+	}
+	catch (...) { if (owner && Engine::getSong() == owner.data()) { owner->collectError(tr("MIDI import failed with an unknown native exception")); } }
+	return false;
+}
 
 
 class smfMidiCC
 {
 
 public:
-	AutomationTrack* at = nullptr;
-	AutomationClip* ap = nullptr;
+	QPointer<AutomationTrack> at;
+	QPointer<AutomationClip> ap;
 	TimePos lastPos = 0;
+	bool inPattern = false;
 
-	smfMidiCC& create(TrackContainer* tc, QString tn)
+	smfMidiCC& create(TrackContainer* tc, QString tn, int pattern, MidiImportState& state)
 	{
 		if (!at)
 		{
-			// Keep LMMS responsive, for now the import runs
-			// in the main thread. This should probably be
-			// removed if that ever changes.
-			qApp->processEvents();
-			at = dynamic_cast<AutomationTrack*>(Track::create(Track::Type::Automation, tc));
+			state.poll();
+			at = dynamic_cast<AutomationTrack*>(state.track(Track::Type::Automation, tc));
+			inPattern = pattern >= 0;
+			if (inPattern) { ap = dynamic_cast<AutomationClip*>(state.cell(at.data(), pattern)); }
 		}
-		if (tn != "") { at->setName(tn); }
+		if (!at) { throw std::runtime_error("MIDI automation track is unavailable"); }
+		if (tn != "") { state.apply([&] { at->setName(tn); }); }
 		return *this;
 	}
 
 
-	void clear()
+	smfMidiCC& putValue(TimePos time, AutomatableModel* objModel, float value, MidiImportState& state)
 	{
-		at = nullptr;
-		ap = nullptr;
-		lastPos = 0;
-	}
-
-
-	smfMidiCC& putValue(TimePos time, AutomatableModel* objModel, float value)
-	{
-		if (!ap || time > lastPos + DefaultTicksPerBar)
+		state.context(); const QPointer<AutomatableModel> target(state.model(objModel));
+		if (!inPattern && (!ap || time > lastPos + DefaultTicksPerBar))
 		{
 			TimePos pPos = TimePos(time.getBar(), 0);
-			ap = dynamic_cast<AutomationClip*>(at->createClip(pPos));
-			ap->addObject(objModel);
+			ap = dynamic_cast<AutomationClip*>(state.clip(at.data(), pPos));
+			if (!ap) { throw std::runtime_error("MIDI automation clip is unavailable"); }
+			state.apply([&] { ap->addObject(target.data()); });
 		}
+		else if (inPattern && ap && ap->objects().empty()) { state.apply([&] { ap->addObject(target.data()); }); }
+		if (!ap) { throw std::runtime_error("MIDI automation clip is unavailable"); }
 
 		lastPos = time;
-		time = time - ap->startPosition();
-		ap->putValue(time, value, false);
-		ap->changeLength(TimePos(time.getBar() + 1, 0));
+		if (!inPattern) { time = time - ap->startPosition(); }
+		state.apply([&] { ap->putValue(time, value, false); });
+		state.apply([&] { ap->changeLength(TimePos(time.getBar() + 1, 0)); });
 		return *this;
 	}
 };
@@ -189,186 +352,216 @@ class smfMidiChannel
 {
 
 public:
-	InstrumentTrack* it = nullptr;
-	MidiClip* p = nullptr;
-	Instrument* it_inst = nullptr;
+	QPointer<InstrumentTrack> it;
+	QPointer<MidiClip> p;
+	QPointer<Instrument> it_inst;
 	bool isSF2 = false;
 	bool hasNotes = false;
+	bool hasGenericCC = false;
 	QString trackName;
 	MidiPatch currentPatch;
 
-	smfMidiChannel* create(TrackContainer* tc, QString tn)
+	smfMidiChannel* create(TrackContainer* tc, QString tn, int pattern, MidiImportState& state)
 	{
 		if (!it) {
-			// Keep LMMS responsive
-			qApp->processEvents();
-			it = dynamic_cast<InstrumentTrack*>(Track::create(Track::Type::Instrument, tc));
+			state.poll();
+			it = dynamic_cast<InstrumentTrack*>(state.track(Track::Type::Instrument, tc));
+			if (!it) { throw std::runtime_error("MIDI instrument track is unavailable"); }
 
 #ifdef LMMS_HAVE_FLUIDSYNTH
-			it_inst = it->loadInstrument("sf2player");
+			it_inst = state.instrument(it.data(), "sf2player");
 
-			if (it_inst)
+			if (it_inst && QString::fromUtf8(it_inst->descriptor()->name) == "sf2player"
+				&& it_inst->childModel("bank") && it_inst->childModel("patch"))
 			{
 				isSF2 = true;
-				it_inst->loadFile(ConfigManager::inst()->sf2File());
+				state.apply([&] { it_inst->loadFile(ConfigManager::inst()->sf2File()); });
 
-				auto bank = it_inst->childModel("bank");
-				assert(bank != nullptr);
-				bank->setValue(0);
+				const QPointer<AutomatableModel> bank(state.model(it_inst.data(), "bank"));
+				state.apply([&] { bank->setValue(0); });
 				currentPatch.bank = 0;
 
-				auto patch = it_inst->childModel("patch");
-				assert(patch != nullptr);
-				patch->setValue(0);
+				const QPointer<AutomatableModel> patch(state.model(it_inst.data(), "patch"));
+				state.apply([&] { patch->setValue(0); });
 				currentPatch.program = 0;
 			}
-			else { it_inst = it->loadInstrument("patman"); }
+			else { it_inst = state.instrument(it.data(), "patman"); }
 #else
-			it_inst = it->loadInstrument("patman");
+			it_inst = state.instrument(it.data(), "patman");
 #endif
 			trackName = tn;
-			if (trackName != "") { it->setName(tn); }
+			if (trackName != "") { state.apply([&] { it->setName(tn); }); }
 			// General MIDI default
-			it->pitchRangeModel()->setInitValue(2);
-			// Create a default pattern
-			p = dynamic_cast<MidiClip*>(it->createClip(0));
+			state.apply([&] { it->pitchRangeModel()->setInitValue(2); });
+			// Match the native SoundFont controller defaults before a later curve
+			// takes over. In particular, expression must not start by muting notes.
+			state.apply([&] { it->initializeMidiCC(8, 64); });
+			for (const int controller : {11, 43, 98, 99, 100, 101}) { state.apply([&] { it->initializeMidiCC(controller, 127); }); }
+			for (int controller = 70; controller <= 79; ++controller) { state.apply([&] { it->initializeMidiCC(controller, 64); }); }
+			// Native PatternStore construction already creates every column cell.
+			p = dynamic_cast<MidiClip*>(pattern >= 0 ? state.cell(it.data(), pattern) : state.clip(it.data(), 0));
+			if (!p) { throw std::runtime_error("MIDI note clip is unavailable"); }
+			if (pattern >= 0) { state.apply([&] { p->clearNotes(); }); p->setAutoResize(false); state.apply([&] { p->setType(MidiClip::Type::MelodyClip); }); }
 		}
 		return this;
 	}
 
 
-	void addNote(Note& n)
+	void addNote(Note& n, MidiImportState& state)
 	{
-		if (!p) { p = dynamic_cast<MidiClip*>(it->createClip(0)); }
-		p->addNote(n, false);
+		state.context(); if (!p) { p = dynamic_cast<MidiClip*>(state.clip(it.data(), 0)); }
+		if (!p) { throw std::runtime_error("MIDI note clip is unavailable"); }
+		state.apply([&] { p->addNote(n, false); });
 		hasNotes = true;
 	}
 
 
-	void splitMidiClips()
+	void splitMidiClips(MidiImportState& state)
 	{
-		MidiClip* newMidiClip = nullptr;
+		QPointer<MidiClip> newMidiClip;
 		TimePos lastEnd(0);
-
-		p->rearrangeAllNotes();
-		for (auto n : p->notes())
-		{
-			if (!newMidiClip || n->pos() > lastEnd + DefaultTicksPerBar)
+		state.apply([&] { p->rearrangeAllNotes(); });
+		std::vector<Note> notes; std::vector<Note*> identities; std::vector<std::shared_ptr<const void>> lifetimes;
+		for (auto note : p->notes()) { notes.emplace_back(*note); identities.push_back(note); lifetimes.push_back(note->selectionIdentity()); }
+		const auto validateSource = [&] {
+			state.context(); if (p->notes().size() != identities.size()) { throw std::runtime_error("MIDI split source notes changed"); }
+			for (std::size_t index = 0; index < identities.size(); ++index)
 			{
-				TimePos pPos = TimePos(n->pos().getBar(), 0);
-				newMidiClip = dynamic_cast<MidiClip*>(it->createClip(pPos));
+				const auto current = p->notes()[index]; const auto& expected = notes[index];
+				if (current != identities[index] || current->selectionIdentity() != lifetimes[index] || current->pos() != expected.pos() || current->length() != expected.length()
+					|| current->key() != expected.key() || current->getVolume() != expected.getVolume() || current->getPanning() != expected.getPanning() || current->type() != expected.type() || current->detuning() != expected.detuning())
+				{ throw std::runtime_error("MIDI split source note identity or value changed"); }
 			}
-			lastEnd = n->pos() + n->length();
+		};
+		std::size_t count = 0;
+		for (const auto& n : notes)
+		{
+			if ((count++ % 256) == 0) { state.poll(); validateSource(); }
+			if (!newMidiClip || n.pos() > lastEnd + DefaultTicksPerBar)
+			{
+				TimePos pPos = TimePos(n.pos().getBar(), 0);
+				newMidiClip = dynamic_cast<MidiClip*>(state.clip(it.data(), pPos)); validateSource();
+			}
+			if (!newMidiClip) { throw std::runtime_error("MIDI split destination clip is unavailable"); }
+			lastEnd = std::max(lastEnd, n.endPos());
 
-			Note newNote(*n);
-			newNote.setPos(n->pos(newMidiClip->startPosition()));
-			newMidiClip->addNote(newNote, false);
+			Note newNote(n);
+			newNote.setPos(n.pos(newMidiClip->startPosition()));
+			state.apply([&] { newMidiClip->addNote(newNote, false); });
 		}
 
-		delete p;
-		p = nullptr;
+		validateSource(); const QPointer<MidiClip> source(p); state.forget(source.data()); p = nullptr;
+		delete source.data(); state.context();
 	}
 };
 
 
-bool MidiImport::readSMF(TrackContainer* tc)
+bool MidiImport::readSMF(TrackContainer* tc, const QByteArray& bytes, int pattern, MidiImportState& state)
 {
-	constexpr int MIDI_CC_COUNT = 128 + 1; // 0-127 (128) + pitch bend
+	const auto tick = [pattern](double beats)
+	{ return importTick(beats, pattern >= 0 ? std::int64_t(pattern) * TimePos::ticksPerBar() : 0); };
 	constexpr int preTrackSteps = 2;
-	QProgressDialog pd(TrackContainer::tr("Importing MIDI-file..."),
-	TrackContainer::tr("Cancel"), 0, preTrackSteps, gui::getGUI()->mainWindow());
-	pd.setWindowTitle(TrackContainer::tr("Please wait..."));
-	pd.setWindowModality(Qt::WindowModal);
-	pd.setMinimumDuration(0);
+	QPointer<QProgressDialog> pd;
+	const auto closeProgress = qScopeGuard([&] { delete pd.data(); });
+	if (gui::getGUI() != nullptr)
+	{
+		pd = new QProgressDialog(TrackContainer::tr("Importing MIDI-file..."),
+			TrackContainer::tr("Cancel"), 0, preTrackSteps, gui::getGUI()->mainWindow());
+		state.apply([&] { if (pd) { pd->setWindowTitle(TrackContainer::tr("Please wait...")); } });
+		// A modal setValue() pumps events inside partially built native models.
+		state.apply([&] { if (pd) { pd->setWindowModality(Qt::NonModal); } });
+		state.apply([&] { if (pd) { pd->setMinimumDuration(0); } });
+		state.apply([&] { if (pd) { pd->setValue(0); } });
+	}
 
-	pd.setValue(0);
+	state.poll();
+	std::istringstream stream(bytes.toStdString());
+	auto seq = std::make_unique<Alg_seq>(stream, true);
+	if (seq->get_read_error()) { throw std::runtime_error("PortSMF rejected the MIDI event stream"); }
+	seq->convert_to_beats(); state.poll();
+	// PortSMF's sequence duration includes end-of-track trailing silence.
+	tick_t patternEnd = pattern >= 0 ? tick(seq->get_dur()) : 0;
 
-	std::istringstream stream(readAllData().toStdString());
-	auto seq = new Alg_seq(stream, true);
-	seq->convert_to_beats();
+	state.apply([&] { if (pd) { pd->setMaximum(seq->tracks() + preTrackSteps); } });
+	state.apply([&] { if (pd) { pd->setValue(1); } });
 
-	pd.setMaximum(seq->tracks() + preTrackSteps);
-	pd.setValue(1);
-
-	// 128 CC + Pitch Bend
-	auto ccs = std::array<smfMidiCC, MIDI_CC_COUNT>{};
-
-	// channel to CC object for program changes
-	std::unordered_map<long, smfMidiCC> pcs;
-
-	// channels can be set out of 256 range
-	// using unordered_map should fix most invalid loads and crashes while loading
-	std::unordered_map<long, smfMidiChannel> chs;
-	// NOTE: unordered_map::operator[] creates a new element if none exists
+	// Native tracks are split by source track AND logical channel (including
+	// MIDI port prefixes). Each target has its own automation curve.
+	std::map<std::pair<int, long>, smfMidiChannel> chs;
+	std::map<std::tuple<int, long, int>, smfMidiCC> automation;
 
 	MeterModel & timeSigMM = Engine::getSong()->getTimeSigModel();
-	auto nt = dynamic_cast<AutomationTrack*>(Track::create(Track::Type::Automation, Engine::getSong()));
-	nt->setName(tr("MIDI Time Signature Numerator"));
-	auto dt = dynamic_cast<AutomationTrack*>(Track::create(Track::Type::Automation, Engine::getSong()));
-	dt->setName(tr("MIDI Time Signature Denominator"));
-	auto timeSigNumeratorPat = new AutomationClip(nt);
-	timeSigNumeratorPat->setDisplayName(tr("Numerator"));
-	timeSigNumeratorPat->addObject(&timeSigMM.numeratorModel());
-	auto timeSigDenominatorPat = new AutomationClip(dt);
-	timeSigDenominatorPat->setDisplayName(tr("Denominator"));
-	timeSigDenominatorPat->addObject(&timeSigMM.denominatorModel());
+	auto automationContainer = pattern >= 0 ? tc : static_cast<TrackContainer*>(Engine::getSong());
+	const auto automationCell = [pattern, &state](AutomationTrack* track)
+	{
+		auto clip = dynamic_cast<AutomationClip*>(pattern >= 0 ? state.cell(track, pattern) : state.clip(track, 0));
+		if (!clip) { throw std::runtime_error("MIDI metadata automation clip is unavailable"); } return clip;
+	};
+	const QPointer<AutomationTrack> nt(dynamic_cast<AutomationTrack*>(state.track(Track::Type::Automation, automationContainer)));
+	state.apply([&] { nt->setName(tr("MIDI Time Signature Numerator")); });
+	const QPointer<AutomationTrack> dt(dynamic_cast<AutomationTrack*>(state.track(Track::Type::Automation, automationContainer)));
+	state.apply([&] { dt->setName(tr("MIDI Time Signature Denominator")); });
+	const QPointer<AutomationClip> timeSigNumeratorPat(automationCell(nt.data()));
+	state.apply([&] { timeSigNumeratorPat->setDisplayName(tr("Numerator")); });
+	state.apply([&] { timeSigNumeratorPat->addObject(state.model(&timeSigMM.numeratorModel())); });
+	const QPointer<AutomationClip> timeSigDenominatorPat(automationCell(dt.data()));
+	state.apply([&] { timeSigDenominatorPat->setDisplayName(tr("Denominator")); });
+	state.apply([&] { timeSigDenominatorPat->addObject(state.model(&timeSigMM.denominatorModel())); });
 
-	// TODO: adjust these to Time.Sig changes
-	double beatsPerBar = 4;
-	double ticksPerBeat = DefaultTicksPerBar / beatsPerBar;
 
 	// Time-sig changes
 	Alg_time_sigs* timeSigs = &seq->time_sig;
 	for (int s = 0; s < timeSigs->length(); ++s)
 	{
-		Alg_time_sig timeSig = (*timeSigs)[s];
-		timeSigNumeratorPat->putValue(timeSig.beat * ticksPerBeat, timeSig.num);
-		timeSigDenominatorPat->putValue(timeSig.beat * ticksPerBeat, timeSig.den);
+		state.poll(); const Alg_time_sig timeSig = (*timeSigs)[s];
+		if (pattern >= 0) { patternEnd = std::max(patternEnd, tick(timeSig.beat) + 1); }
+		state.apply([&] { timeSigNumeratorPat->putValue(tick(timeSig.beat), importValue(timeSig.num), false); });
+		state.apply([&] { timeSigDenominatorPat->putValue(tick(timeSig.beat), importValue(timeSig.den), false); });
 	}
 	// manually call otherwise the pattern shows being 1 bar
-	timeSigNumeratorPat->updateLength();
-	timeSigDenominatorPat->updateLength();
+	state.apply([&] { timeSigNumeratorPat->updateLength(); });
+	state.apply([&] { timeSigDenominatorPat->updateLength(); });
 
-	pd.setValue(2);
+	state.apply([&] { if (pd) { pd->setValue(2); } });
 
 	// Tempo stuff
-	auto tt = dynamic_cast<AutomationTrack*>(Track::create(Track::Type::Automation, Engine::getSong()));
-	tt->setName(tr("Tempo"));
-	auto tap = new AutomationClip(tt);
-	tap->setDisplayName(tr("Tempo"));
-	tap->addObject(&Engine::getSong()->tempoModel());
+	const QPointer<AutomationTrack> tt(dynamic_cast<AutomationTrack*>(state.track(Track::Type::Automation, automationContainer)));
+	state.apply([&] { tt->setName(tr("Tempo")); });
+	const QPointer<AutomationClip> tap(automationCell(tt.data()));
+	state.apply([&] { tap->setDisplayName(tr("Tempo")); });
+	state.apply([&] { tap->addObject(state.model(&Engine::getSong()->tempoModel())); });
 	if (tap)
 	{
-		tap->clear();
+		state.apply([&] { tap->clear(); });
 		Alg_time_map* timeMap = seq->get_time_map();
 		Alg_beats& beats = timeMap->beats;
 		for (int i = 0; i < beats.len - 1; ++i)
 		{
 			Alg_beat* b = &(beats[i]);
+			if (pattern >= 0) { patternEnd = std::max(patternEnd, tick(b->beat) + 1); }
 			double tempo = (beats[i + 1].beat - b->beat) / (beats[i + 1].time - beats[i].time);
-			tap->putValue(b->beat * ticksPerBeat, tempo * 60.0);
+			state.poll(); state.apply([&] { tap->putValue(tick(b->beat), importValue(tempo * 60.0), false); });
 		}
 		if (timeMap->last_tempo_flag)
 		{
+			if (beats.len <= 0) { throw std::runtime_error("MIDI tempo map is empty"); }
 			Alg_beat* b = &beats[beats.len - 1];
-			tap->putValue(b->beat * ticksPerBeat, timeMap->last_tempo * 60.0);
+			if (pattern >= 0) { patternEnd = std::max(patternEnd, tick(b->beat) + 1); }
+			state.poll(); state.apply([&] { tap->putValue(tick(b->beat), importValue(timeMap->last_tempo * 60.0), false); });
 		}
 	}
 
 	// Update the tempo to avoid crash when playing a project imported
 	// via the command line
-	Engine::updateFramesPerTick();
+	state.apply([&] { Engine::updateFramesPerTick(); });
 
+	std::size_t unhandledEvents = 0;
 	// Song events
 	for (int e = 0; e < seq->length(); ++e)
 	{
+		if ((e % 256) == 0) { state.poll(); }
 		Alg_event* evt = (*seq)[e];
-
-		if (evt->is_update())
-		{
-			printf("Unhandled SONG update: %d %f %s\n",
-				evt->get_type_code(), evt->time, evt->get_attribute());
-		}
+		if (evt->is_update()) { ++unhandledEvents; }
 	}
 
 	// Tracks
@@ -376,14 +569,17 @@ bool MidiImport::readSMF(TrackContainer* tc)
 	{
 		QString trackName = QString(tr("Track") + " %1").arg(t);
 		Alg_track* trk = seq->track(t);
-		pd.setValue(t + preTrackSteps);
+		state.apply([&] { if (pd) { pd->setValue(t + preTrackSteps); } });
 
-		for (auto& cc : ccs) { cc.clear(); }
+		state.poll();
+		if (pd && pd->wasCanceled()) { throw std::runtime_error("MIDI import cancelled"); }
 
 		// Now look at events
 		for (int e = 0; e < trk->length(); ++e)
 		{
+			if ((e % 256) == 0) { state.poll(); }
 			Alg_event* evt = (*trk)[e];
+			if (pattern >= 0) { patternEnd = std::max(patternEnd, tick(evt->time) + 1); }
 
 			if (evt->chan == -1)
 			{
@@ -399,62 +595,52 @@ bool MidiImport::readSMF(TrackContainer* tc)
 						handled = true;
 					}
 				}
-				if (!handled) {
-					// Write debug output
-					printf("MISSING GLOBAL HANDLER\n");
-					printf("\tChn: %ld, Type Code: %d, Time: %f", evt->chan, evt->get_type_code(), evt->time);
-					if (evt->is_update())
-					{
-						printf(", Update Type: %s", evt->get_attribute());
-						if (evt->get_update_type() == 'a') {
-							printf(", Atom: %s", evt->get_atom_value());
-						}
-					}
-					printf("\n");
-				}
+				if (!handled) { ++unhandledEvents; }
 			}
 			else if (evt->is_note())
 			{
 				// LMMS does not currently support specifying the channel of a single note
 				// To be safe, put the notes from different channels on separate tracks so that no information is lost
-				smfMidiChannel* ch = chs[evt->chan + 16 * t].create(tc, trackName);
+				smfMidiChannel* ch = chs[{t, evt->chan}].create(tc, trackName, pattern, state);
 				auto noteEvt = static_cast<Alg_note*>(evt);
-				tick_t ticks = noteEvt->get_duration() * ticksPerBeat;
-				Note n(
-					ticks < 1 ? 1 : ticks,
-					noteEvt->get_start_time() * ticksPerBeat,
-					noteEvt->get_identifier(),
-					// Map from MIDI velocity to LMMS volume
-					noteEvt->get_loud() * (200.f / 127.f)
-				);
-				ch->addNote(n);
+				const auto start = tick(noteEvt->get_start_time());
+				const auto end = tick(noteEvt->get_start_time() + noteEvt->get_duration());
+				if (noteEvt->get_duration() < 0 || noteEvt->get_identifier() < 0 || noteEvt->get_identifier() > 127)
+				{ throw std::out_of_range("Invalid MIDI note key or duration"); }
+				if (!std::isfinite(noteEvt->get_loud()) || noteEvt->get_loud() < 0 || noteEvt->get_loud() > 127)
+				{ throw std::out_of_range("Invalid MIDI note velocity"); }
+				const auto volume = noteEvt->get_loud() * (200. / 127.);
+				Note n(std::max<tick_t>(1, end - start), start, noteEvt->get_identifier(), static_cast<volume_t>(std::lround(volume)));
+				ch->addNote(n, state);
+				if (pattern >= 0) { patternEnd = std::max(patternEnd, n.endPos().getTicks()); }
 			}
 			else if (evt->is_update())
 			{
-				smfMidiChannel* ch = chs[evt->chan + 16 * t].create(tc, trackName);
+				smfMidiChannel* ch = chs[{t, evt->chan}].create(tc, trackName, pattern, state);
 
-				double time = evt->time*ticksPerBeat;
+				const auto time = tick(evt->time);
 				QString update(evt->get_attribute());
 
 				if (update == "programi")
 				{
 					const auto prog = evt->get_integer_value();
+					if (prog < 0 || prog > 127) { throw std::out_of_range("Invalid MIDI program"); }
 					if (ch->isSF2)
 					{
-						auto& pc = pcs[evt->chan];
-						AutomatableModel* objModel = ch->it_inst->childModel("patch");
+						auto& pc = automation[{t, evt->chan, 129}];
+						const QPointer<AutomatableModel> objModel(state.model(ch->it_inst.data(), "patch"));
 						assert(objModel != nullptr);
 						if (time == 0)
 						{
-							objModel->setInitValue(prog);
+							state.apply([&] { objModel->setInitValue(prog); });
 						}
-						else
+						if (time != 0 || pattern >= 0)
 						{
 							if (!pc.at)
 							{
-								pc.create(tc, trackName + " > " + objModel->displayName());
+								pc.create(tc, trackName + " > " + objModel->displayName(), pattern, state);
 							}
-							pc.putValue(time, objModel, prog);
+							pc.putValue(time, objModel.data(), prog, state);
 						}
 					}
 					else
@@ -467,7 +653,7 @@ bool MidiImport::readSMF(TrackContainer* tc)
 						entryList(QStringList(filter));
 						if (ch->it_inst && !files.empty())
 						{
-							ch->it_inst->loadFile(dir + files.front());
+							state.apply([&] { ch->it_inst->loadFile(dir + files.front()); });
 						}
 					}
 				}
@@ -475,10 +661,10 @@ bool MidiImport::readSMF(TrackContainer* tc)
 				{
 					int ccid = update.mid(7, update.length() - 8).toInt();
 					if (update == "bendr") { ccid = 128; }
-					if (ccid <= 128)
+					if (ccid >= 0 && ccid <= 128)
 					{
-						double cc = evt->get_real_value();
-						AutomatableModel* modelObject = nullptr;
+						double cc = importValue(evt->get_real_value());
+						QPointer<AutomatableModel> modelObject;
 						// Some CC knobs correspond to specific things like pitch and volume, so in that case, set the lmms pitch/volume/etc knobs.
 						// Otherwise, set the knob in the instrument track CC rack
 						switch (ccid)
@@ -486,10 +672,9 @@ bool MidiImport::readSMF(TrackContainer* tc)
 							case 0:
 								if (ch->isSF2 && ch->it_inst)
 								{
-									modelObject = ch->it_inst->childModel("bank");
+									modelObject = state.model(ch->it_inst.data(), "bank");
 									assert(modelObject != nullptr);
-									printf("BANK SELECT (MSB) %f %d\n", cc, static_cast<int>(cc * 127));
-									ch->currentPatch.setBankMSB(static_cast<std::uint8_t>(cc * 127));
+									ch->currentPatch.setBankMSB(static_cast<std::uint8_t>(std::clamp(std::lround(cc * 127), 0l, 127l)));
 									cc = static_cast<double>(ch->currentPatch.bank);
 								}
 								break;
@@ -507,23 +692,23 @@ bool MidiImport::readSMF(TrackContainer* tc)
 							case 32:
 								if (ch->isSF2 && ch->it_inst)
 								{
-									modelObject = ch->it_inst->childModel("bank");
+									modelObject = state.model(ch->it_inst.data(), "bank");
 									assert(modelObject != nullptr);
-									printf("BANK SELECT (LSB) %f %d\n", cc, static_cast<int>(cc * 127));
-									ch->currentPatch.setBankLSB(static_cast<std::uint8_t>(cc * 127));
+									ch->currentPatch.setBankLSB(static_cast<std::uint8_t>(std::clamp(std::lround(cc * 127), 0l, 127l)));
 									cc = static_cast<double>(ch->currentPatch.bank);
 								}
 								break;
 
 							case 128:
 								modelObject = ch->it->pitchModel();
-								cc = cc * 100.0f;
+								cc *= 100.0 * ch->it->pitchRangeModel()->value();
 								break;
 
 							default:
 								if (ccid >= 0 && ccid < 128)
 								{
 									modelObject = ch->it->midiCCModel(ccid);
+									state.apply([&] { ch->it->activateMidiCC(ccid); }); ch->hasGenericCC = true;
 									cc = cc * 127.0f;
 								}
 								break;
@@ -531,103 +716,81 @@ bool MidiImport::readSMF(TrackContainer* tc)
 
 						if (modelObject)
 						{
+							state.model(modelObject.data());
+							cc = importValue(cc);
 							if (time == 0)
 							{
-								modelObject->setInitValue(cc);
+								state.apply([&] { modelObject->setInitValue(cc); });
 							}
-							else
+							if (time != 0 || pattern >= 0)
 							{
-								if (ccs[ccid].at == nullptr)
-								{
-									ccs[ccid].create(tc, trackName + " > " + modelObject->displayName());
-								}
-								ccs[ccid].putValue(time, modelObject, cc);
+								// Bank MSB and LSB both automate one combined native bank model.
+								auto& ccTrack = automation[{t, evt->chan, ccid == 32 ? 0 : ccid}];
+								ccTrack.create(tc, trackName + " > " + modelObject->displayName(), pattern, state);
+								ccTrack.putValue(time, modelObject.data(), cc, state);
 							}
 						}
 					}
 				}
-				else {
-					printf("Unhandled update: %ld %d %f %s\n",
-						evt->chan, evt->get_type_code(), evt->time, evt->get_attribute());
-				}
+				else { ++unhandledEvents; }
 			}
 		}
 	}
 
-	delete seq;
+	seq.reset();
 
 	for (auto& c: chs)
 	{
-		if (c.second.hasNotes)
+		state.poll();
+		if (pattern >= 0)
 		{
-			c.second.splitMidiClips();
+			state.apply([&] { c.second.p->rearrangeAllNotes(); });
+			state.apply([&] { c.second.p->changeLength(TimePos(std::max(1, patternEnd)).nextFullBar() * TimePos::ticksPerBar()); });
+			state.apply([&] { Engine::patternStore()->updatePatternTrack(c.second.p.data()); });
 		}
-		else if (c.second.it)
+		else if (c.second.hasNotes)
 		{
-			printf(" Should remove empty track\n");
-			// must delete trackView first - but where is it?
-			//tc->removeTrack(chs[c].it);
-			//it->deleteLater();
+			c.second.splitMidiClips(state);
 		}
+
 		// Set channel 10 to drums as per General MIDI's orders
-		if (c.first % 16l == 9 /* channel 10 */
+		if (c.first.second % 16l == 9 /* channel 10 */
 			&& c.second.hasNotes && c.second.it_inst && c.second.isSF2)
 		{
-			auto bank = c.second.it_inst->childModel("bank");
+			const QPointer<AutomatableModel> bank(state.model(c.second.it_inst.data(), "bank"));
 			assert(bank != nullptr);
-			bank->setValue(128);
+			state.apply([&] { bank->setValue(128); });
 			c.second.currentPatch.bank = 128;
 
-			auto patch = c.second.it_inst->childModel("patch");
+			const QPointer<AutomatableModel> patch(state.model(c.second.it_inst.data(), "patch"));
 			assert(patch != nullptr);
-			patch->setValue(0);
+			state.apply([&] { patch->setValue(0); });
 			c.second.currentPatch.program = 0;
 		}
+		if (c.second.hasGenericCC) { state.apply([&] { c.second.it->midiCCEnabledModel()->setInitValue(true); }); }
 	}
-
-	return true;
-}
-
-
-bool MidiImport::readRIFF(TrackContainer* tc)
-{
-	// skip file length
-	skip(4);
-
-	// check file type ("RMID" = RIFF MIDI)
-	if (read32LE() != makeID("RMID"))
+	if (pattern >= 0 && chs.empty())
 	{
-invalid_format:
-		qWarning("MidiImport::readRIFF(): invalid file format");
-		return false;
+		// PatternStore loop length is carried by instrument cells. A silent,
+		// editable row preserves metadata-only imports without changing old rows.
+		state.poll(); const QPointer<InstrumentTrack> row(static_cast<InstrumentTrack*>(state.track(Track::Type::Instrument, tc)));
+		state.apply([&] { row->setName(tr("MIDI sequence length")); });
+		const QPointer<MidiClip> cell(static_cast<MidiClip*>(state.cell(row.data(), pattern))); state.apply([&] { cell->clearNotes(); });
+		state.apply([&] { cell->setType(MidiClip::Type::MelodyClip); }); cell->setAutoResize(false);
+		state.apply([&] { cell->changeLength(TimePos(std::max(1, patternEnd)).nextFullBar() * TimePos::ticksPerBar()); });
+		state.apply([&] { Engine::patternStore()->updatePatternTrack(cell.data()); });
 	}
-
-	// search for "data" chunk
-	while (true)
+	if (pattern >= 0)
 	{
-		const std::int32_t id = read32LE();
-		const std::int32_t len = read32LE();
-		if (file().atEnd())
-		{
-data_not_found:
-			qWarning("MidiImport::readRIFF(): data chunk not found");
-			return false;
-		}
-		if (id == makeID("data")) { break; }
-		if (len < 0) { goto data_not_found; }
-		skip((len + 1) & ~1);
+		// Automation geometry follows the final shared period, including any
+		// longer existing instrument row. Only new imported cells are resized.
+		state.apply([&] { timeSigNumeratorPat->updateLength(); }); state.apply([&] { timeSigDenominatorPat->updateLength(); }); state.apply([&] { tap->updateLength(); });
+		for (auto& item : automation) { state.poll(); if (item.second.ap) { state.apply([&] { item.second.ap->updateLength(); }); } }
 	}
 
-	// the "data" chunk must contain data in SMF format
-	if (read32LE() != makeID("MThd")) { goto invalid_format; }
-	return readSMF(tc);
-}
+	if (unhandledEvents) { qWarning() << "MIDI import retained supported content; unmapped events:" << unhandledEvents; }
 
-
-void MidiImport::error()
-{
-	printf("MidiImport::readTrack(): invalid MIDI data (offset %#x)\n",
-		static_cast<unsigned int>(file().pos()));
+	state.context(); return true;
 }
 
 

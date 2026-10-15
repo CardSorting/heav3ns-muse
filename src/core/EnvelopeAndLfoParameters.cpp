@@ -23,12 +23,27 @@
  */
 
 #include "EnvelopeAndLfoParameters.h"
+#include <QPointer>
+#include <QCoreApplication>
+#include <QThread>
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <stdexcept>
+#include <vector>
 
 #include <QDomElement>
 #include <QFileInfo>
 
 #include "AudioEngine.h"
 #include "Engine.h"
+#include "DataFile.h"
+#include "FileResourceIO.h"
+#include "FileResourceSnapshot.h"
+#include "InstrumentTrack.h"
+#include "Mixer.h"
+#include "TrackContainer.h"
 #include "Oscillator.h"
 #include "PathUtil.h"
 #include "Song.h"
@@ -335,68 +350,123 @@ void EnvelopeAndLfoParameters::fillLevel( float * _buf, f_cnt_t _frame,
 
 
 
-void EnvelopeAndLfoParameters::saveSettings( QDomDocument & _doc,
-							QDomElement & _parent )
+class EnvelopeAndLfoParameters::ResourceGuard
 {
-	m_predelayModel.saveSettings( _doc, _parent, "pdel" );
-	m_attackModel.saveSettings( _doc, _parent, "att" );
-	m_holdModel.saveSettings( _doc, _parent, "hold" );
-	m_decayModel.saveSettings( _doc, _parent, "dec" );
-	m_sustainModel.saveSettings( _doc, _parent, "sustain" );
-	m_releaseModel.saveSettings( _doc, _parent, "rel" );
-	m_amountModel.saveSettings( _doc, _parent, "amt" );
-	m_lfoWaveModel.saveSettings( _doc, _parent, "lshp" );
-	m_lfoPredelayModel.saveSettings( _doc, _parent, "lpdel" );
-	m_lfoAttackModel.saveSettings( _doc, _parent, "latt" );
-	m_lfoSpeedModel.saveSettings( _doc, _parent, "lspd" );
-	m_lfoAmountModel.saveSettings( _doc, _parent, "lamt" );
-	m_x100Model.saveSettings( _doc, _parent, "x100" );
-	m_controlEnvAmountModel.saveSettings( _doc, _parent, "ctlenvamt" );
-	_parent.setAttribute("userwavefile", m_userWave->audioFile());
+public:
+	explicit ResourceGuard(EnvelopeAndLfoParameters* owner, bool freeze = true) : m_owner(owner), m_freeze(freeze)
+	{
+		if (!QCoreApplication::instance() || QThread::currentThread() != QCoreApplication::instance()->thread() || !owner || owner->thread() != QThread::currentThread()
+			|| !Engine::audioEngine() || !Engine::getSong() || !Engine::mixer()) { throw std::logic_error("Envelope/LFO resource work requires the native application thread"); }
+		if (owner->m_changingResource) { throw std::logic_error("Envelope/LFO settings and resource work cannot reenter"); }
+		m_engine = Engine::audioEngine(); m_song = Engine::getSong(); m_mixer = Engine::mixer(); m_project = m_song->replacementGeneration(); m_routing = m_mixer->replacementGeneration(); m_filename = m_song->projectFileName();
+		for (auto parent = owner->parent(); parent; parent = parent->parent()) { m_parents.emplace_back(parent); if (auto track = qobject_cast<InstrumentTrack*>(parent)) { m_track = track; } }
+		m_container = m_track ? m_track->trackContainer() : nullptr; m_values = values(owner); adopted();
+		m_changes.emplace(m_engine->requestChangesGuard()); owner->m_changingResource = true;
+	}
+	~ResourceGuard() { if (m_owner) { m_owner->m_changingResource = false; } }
+	void actors() const
+	{
+		if (!m_owner || m_owner->thread() != QThread::currentThread() || !m_engine || Engine::audioEngine() != m_engine.data() || !m_song || Engine::getSong() != m_song.data()
+			|| !m_mixer || Engine::mixer() != m_mixer.data() || m_song->replacementGeneration() != m_project || m_mixer->replacementGeneration() != m_routing || m_song->projectFileName() != m_filename)
+		{ throw std::runtime_error("Native envelope/LFO resource context changed"); }
+		QObject* child = m_owner.data();
+		for (const auto& parent : m_parents) { if (!parent || child->parent() != parent.data()) { throw std::runtime_error("Native envelope/LFO parent changed"); } child = parent.data(); }
+		if (child->parent() || (m_track && (m_track->isRetiring() || !m_container || m_track->trackContainer() != m_container.data()
+			|| std::find(m_container->tracks().begin(), m_container->tracks().end(), m_track.data()) == m_container->tracks().end()))) { throw std::runtime_error("Native envelope/LFO track changed"); }
+	}
+	void check() const
+	{ actors(); if (m_owner->m_userWave != m_buffer || m_owner->m_unresolvedWave != m_missing || (m_freeze && values(m_owner.data()) != m_values)) { throw std::runtime_error("Native envelope/LFO resource or controls changed"); } }
+	void poll() const { check(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } check(); }
+	void adopted()
+	{ actors(); const auto buffer = m_owner->m_userWave; const QString missing = m_owner->m_unresolvedWave; m_buffer = buffer; m_missing = missing; check(); }
+	void freezeControls() { check(); m_values = values(m_owner.data()); m_freeze = true; }
+	void selectUserWave() { check(); m_values[7] = static_cast<int>(LfoShape::UserDefinedWave); m_owner->m_lfoWaveModel.setValue(static_cast<int>(LfoShape::UserDefinedWave)); check(); }
+private:
+	static std::array<float, 14> values(const EnvelopeAndLfoParameters* p)
+	{ return {p->m_predelayModel.storedValue(), p->m_attackModel.storedValue(), p->m_holdModel.storedValue(), p->m_decayModel.storedValue(), p->m_sustainModel.storedValue(), p->m_releaseModel.storedValue(), p->m_amountModel.storedValue(), p->m_lfoWaveModel.storedValue(), p->m_lfoPredelayModel.storedValue(), p->m_lfoAttackModel.storedValue(), p->m_lfoSpeedModel.storedValue(), p->m_lfoAmountModel.storedValue(), p->m_x100Model.storedValue(), p->m_controlEnvAmountModel.storedValue()}; }
+	QPointer<EnvelopeAndLfoParameters> m_owner; std::vector<QPointer<QObject>> m_parents; QPointer<InstrumentTrack> m_track; QPointer<TrackContainer> m_container;
+	QPointer<AudioEngine> m_engine; QPointer<Song> m_song; QPointer<Mixer> m_mixer; std::uint64_t m_project = 0, m_routing = 0; QString m_filename, m_missing;
+	std::shared_ptr<const SampleBuffer> m_buffer; std::array<float, 14> m_values; bool m_freeze;
+	std::optional<AudioEngine::RequestChangesGuard> m_changes; FileResourceIO::EventSuspension m_events;
+};
+
+bool EnvelopeAndLfoParameters::setLfoUserWave(const QString& path, QString& error, bool select)
+{
+	const QString requested(path); ResourceGuard work(this);
+	if (!setLfoUserWaveImpl(requested, error, select, work)) { return false; }
+	Engine::getSong()->setModified(); work.check(); return true;
 }
 
-
-
-
-void EnvelopeAndLfoParameters::loadSettings( const QDomElement & _this )
+bool EnvelopeAndLfoParameters::setLfoUserWaveImpl(const QString& path, QString& error, bool select, ResourceGuard& work)
 {
-	m_predelayModel.loadSettings( _this, "pdel" );
-	m_attackModel.loadSettings( _this, "att" );
-	m_holdModel.loadSettings( _this, "hold" );
-	m_decayModel.loadSettings( _this, "dec" );
-	m_sustainModel.loadSettings( _this, "sustain" );
-	m_releaseModel.loadSettings( _this, "rel" );
-	m_amountModel.loadSettings( _this, "amt" );
-	m_lfoWaveModel.loadSettings( _this, "lshp" );
-	m_lfoPredelayModel.loadSettings( _this, "lpdel" );
-	m_lfoAttackModel.loadSettings( _this, "latt" );
-	m_lfoSpeedModel.loadSettings( _this, "lspd" );
-	m_lfoAmountModel.loadSettings( _this, "lamt" );
-	m_x100Model.loadSettings( _this, "x100" );
-	m_controlEnvAmountModel.loadSettings( _this, "ctlenvamt" );
-
-/*	 ### TODO:
-	Old reversed sustain kept for backward compatibility
-	with 4.15 file format*/
-	if( _this.hasAttribute( "sus" ) )
-	{
-		m_sustainModel.loadSettings( _this, "sus" );
-		m_sustainModel.setValue( 1.0 - m_sustainModel.value() );
-	}
-
-	if (const auto userWaveFile = _this.attribute("userwavefile"); !userWaveFile.isEmpty())
-	{
-		if (QFileInfo(PathUtil::toAbsolute(userWaveFile)).exists())
-		{
-			m_userWave = SampleBuffer::fromFile(_this.attribute("userwavefile"));
-		}
-		else { Engine::getSong()->collectError(QString("%1: %2").arg(tr("Sample not found"), userWaveFile)); }  
-	}
-
-	updateSampleVars();
+	const QString requested(path); if (requested.contains(QChar::Null)) { error = tr("Envelope/LFO waveform filename contains a null character"); return false; }
+	work.poll(); const auto wave = SampleBuffer::fromFile(requested); work.check();
+	if (!wave || (!requested.isEmpty() && wave->empty())) { error = tr("Envelope/LFO waveform could not be decoded: %1").arg(requested); return false; }
+	m_userWave = wave; m_unresolvedWave.clear(); m_bad_lfoShapeData = true; work.adopted();
+	if (select) { work.selectUserWave(); }
+	error.clear(); emit dataChanged(); work.check(); return true;
 }
 
+void EnvelopeAndLfoParameters::saveSettings(QDomDocument& document, QDomElement& element)
+{
+	ResourceGuard work(this); const auto wave = m_userWave; const QString missing = m_unresolvedWave;
+	m_predelayModel.saveSettings(document, element, "pdel"); work.check();
+	m_attackModel.saveSettings(document, element, "att"); work.check();
+	m_holdModel.saveSettings(document, element, "hold"); work.check();
+	m_decayModel.saveSettings(document, element, "dec"); work.check();
+	m_sustainModel.saveSettings(document, element, "sustain"); work.check();
+	m_releaseModel.saveSettings(document, element, "rel"); work.check();
+	m_amountModel.saveSettings(document, element, "amt"); work.check();
+	m_lfoWaveModel.saveSettings(document, element, "lshp"); work.check();
+	m_lfoPredelayModel.saveSettings(document, element, "lpdel"); work.check();
+	m_lfoAttackModel.saveSettings(document, element, "latt"); work.check();
+	m_lfoSpeedModel.saveSettings(document, element, "lspd"); work.check();
+	m_lfoAmountModel.saveSettings(document, element, "lamt"); work.check();
+	m_x100Model.saveSettings(document, element, "x100"); work.check();
+	m_controlEnvAmountModel.saveSettings(document, element, "ctlenvamt"); work.check();
+	element.setAttribute("userwavefile", missing.isEmpty() ? wave->audioFile() : missing);
+	if (!missing.isEmpty()) { element.setAttribute("userwaveunresolved", 1); }
+	else { element.removeAttribute("userwaveunresolved"); wave->registerResourceSource(document, element, "userwavefile", wave); work.check(); }
+}
 
+void EnvelopeAndLfoParameters::loadSettings(const QDomElement& element)
+{
+	const QDomElement settings(element); const QString filename = settings.attribute("userwavefile"); const bool pending = settings.attribute("userwaveunresolved") == "1";
+	ResourceGuard work(this, false); work.poll(); DataFile::ResourceReferenceScope resource(settings, "userwavefile"); work.check();
+	if (filename.contains(QChar::Null) || (pending && filename.isEmpty())) { throw std::invalid_argument("An unresolved envelope/LFO waveform requires one valid filename"); }
+	QString absolute; bool absent = false;
+	if (!filename.isEmpty())
+	{
+		bool pathError = false; absolute = PathUtil::toAbsolute(filename, &pathError);
+		if (pathError || absolute.isEmpty()) { throw std::invalid_argument("Invalid envelope/LFO waveform source path"); }
+		if (pending && FileResourceSnapshot::hasRetainedSource(absolute)) { throw std::invalid_argument("An unresolved envelope/LFO waveform cannot discard an accepted source"); }
+		absent = !pending && !QFileInfo(FileResourceSnapshot::readableSourcePath(absolute)).exists(); work.check();
+	}
+	m_predelayModel.loadSettings(settings, "pdel"); work.check();
+	m_attackModel.loadSettings(settings, "att"); work.check();
+	m_holdModel.loadSettings(settings, "hold"); work.check();
+	m_decayModel.loadSettings(settings, "dec"); work.check();
+	m_sustainModel.loadSettings(settings, "sustain"); work.check();
+	m_releaseModel.loadSettings(settings, "rel"); work.check();
+	m_amountModel.loadSettings(settings, "amt"); work.check();
+	m_lfoWaveModel.loadSettings(settings, "lshp"); work.check();
+	m_lfoPredelayModel.loadSettings(settings, "lpdel"); work.check();
+	m_lfoAttackModel.loadSettings(settings, "latt"); work.check();
+	m_lfoSpeedModel.loadSettings(settings, "lspd"); work.check();
+	m_lfoAmountModel.loadSettings(settings, "lamt"); work.check();
+	m_x100Model.loadSettings(settings, "x100"); work.check();
+	m_controlEnvAmountModel.loadSettings(settings, "ctlenvamt"); work.check();
+	// Native 4.15 projects used reversed sustain.
+	if (settings.hasAttribute("sus")) { m_sustainModel.loadSettings(settings, "sus"); work.check(); m_sustainModel.setValue(1.0 - m_sustainModel.value()); work.check(); }
+	work.freezeControls();
+	if (pending || absent)
+	{
+		m_userWave = SampleBuffer::emptyBuffer(); m_unresolvedWave = absolute; m_bad_lfoShapeData = true; work.adopted();
+		Engine::getSong()->collectUnresolvedResource(absolute); work.check();
+	}
+	else { QString error; if (!setLfoUserWaveImpl(filename, error, false, work)) { Engine::getSong()->collectError(error); work.check(); } }
+	updateSampleVars(); work.check();
+}
 
 
 void EnvelopeAndLfoParameters::updateSampleVars()
@@ -533,6 +603,7 @@ void EnvelopeAndLfoParameters::updateSampleVars()
 
 	m_bad_lfoShapeData = true;
 
+	m.unlock();
 	emit dataChanged();
 
 }

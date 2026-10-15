@@ -23,6 +23,7 @@
  */
 
 #include "ExportProjectDialog.h"
+#include <QMessageBox>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -243,6 +244,8 @@ void ExportProjectDialog::onFileFormatChanged(int index)
 
 void ExportProjectDialog::onStartButtonClicked()
 {
+	m_deferredReject.stop();
+	m_cancelRequested = false;
 	const auto sampleRate = static_cast<sample_rate_t>(m_sampleRateComboBox->currentData().toInt());
 	const auto bitRate = static_cast<bitrate_t>(m_bitRateComboBox->currentData().toInt());
 	const auto bitDepth = static_cast<OutputSettings::BitDepth>(m_bitDepthComboBox->currentData().toInt());
@@ -262,7 +265,13 @@ void ExportProjectDialog::onStartButtonClicked()
 
 	connect(m_renderManager.get(), &RenderManager::progressChanged, m_progressBar, &QProgressBar::setValue);
 	connect(m_renderManager.get(), &RenderManager::progressChanged, this, &ExportProjectDialog::updateTitleBar);
-	connect(m_renderManager.get(), &RenderManager::finished, this, &QDialog::accept);
+	connect(m_renderManager.get(), &RenderManager::finished, this, [this]
+	{
+		const auto error = m_renderManager->errorString();
+		if (m_cancelRequested) { reject(); }
+		else if (!error.isEmpty()) { QMessageBox::warning(this, tr("Export failed"), error); reject(); }
+		else { accept(); }
+	});
 
 	switch (m_mode)
 	{
@@ -277,12 +286,29 @@ void ExportProjectDialog::onStartButtonClicked()
 
 void ExportProjectDialog::accept()
 {
+	if (m_renderManager && m_renderManager->isStarting()) { return; }
+	m_deferredReject.stop();
 	m_renderManager.reset(nullptr);
 	QDialog::accept();
 }
 
 void ExportProjectDialog::reject()
 {
+	m_cancelRequested = true;
+	if (m_renderManager && m_renderManager->isStarting())
+	{
+		m_renderManager->abortProcessing();
+		// Device setup may be inside a nested RPC event loop. Retain its owner
+		// until that call unwinds before destroying the manager or renderer.
+		m_deferredReject.setSingleShot(true);
+		if (!m_deferredReject.isActive())
+		{
+			connect(&m_deferredReject, &QTimer::timeout, this, &ExportProjectDialog::reject, Qt::UniqueConnection);
+			m_deferredReject.start(25);
+		}
+		return;
+	}
+	m_deferredReject.stop();
 	if (m_renderManager) { m_renderManager->abortProcessing(); }
 	m_renderManager.reset(nullptr);
 	QDialog::reject();

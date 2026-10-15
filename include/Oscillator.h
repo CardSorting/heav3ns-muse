@@ -31,6 +31,8 @@
 #include <memory>
 #include <cstdlib>
 #include <cmath>
+#include <QMap>
+#include <QString>
 
 #include "Engine.h"
 #include "lmms_math.h"
@@ -76,6 +78,8 @@ public:
 		Count
 	} ;
 	constexpr static auto NumModulationAlgos = static_cast<std::size_t>(ModulationAlgo::Count);
+	static QMap<int, QString> waveShapeLabels();
+	static QMap<int, QString> modulationAlgoLabels();
 
 	Oscillator( const IntModel *wave_shape_model,
 			const IntModel *mod_algo_model,

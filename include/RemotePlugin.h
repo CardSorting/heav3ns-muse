@@ -28,6 +28,7 @@
 #include <QThread>
 #include <QProcess>
 #include <QRecursiveMutex>
+#include <cstdint>
 
 #include "RemotePluginBase.h"
 #include "SharedMemory.h"
@@ -62,7 +63,8 @@ private:
 	void run() override;
 
 	RemotePlugin * m_plugin;
-	volatile bool m_quit;
+	std::atomic_bool m_quit;
+	friend class RemotePlugin;
 
 } ;
 
@@ -79,21 +81,34 @@ public:
 #ifdef DEBUG_REMOTE_PLUGIN
 		return true;
 #else
-		return m_process.state() != QProcess::NotRunning;
+		return m_running;
 #endif // DEBUG_REMOTE_PLUGIN
 	}
 
 	bool init( const QString &pluginExecutable, bool waitForInitDoneMsg, QStringList extraArgs = {} );
 
+	int sendMessage(const message& message) override;
+	message waitForMessage(const message& message, bool busyWaiting = false) override;
+	void fetchAndProcessAllMessages();
+	static std::uint64_t failureCount();
+	//! One native Song/AudioEngine export owns this process-wide context.
+	static std::uint64_t beginRenderContext(int timeoutMs = 0);
+	static void cancelRenderContext(std::uint64_t context);
+	//! Keep the export reservation, but stop assigning new RPCs to its execution.
+	static void finishRenderExecution(std::uint64_t context);
+	static void endRenderContext(std::uint64_t context);
+	static bool renderContextCancelled(std::uint64_t context);
+	static bool hasActiveRenderContext();
+	static bool hasRunningRenderExecution();
+
 	inline void waitForHostInfoGotten()
 	{
-		m_failed = waitForMessage( IdHostInfoGotten ).id
-							!= IdHostInfoGotten;
+		waitForMessage(IdHostInfoGotten);
 	}
 
 	inline void waitForInitDone( bool _busyWaiting = true )
 	{
-		m_failed = waitForMessage( IdInitDone, _busyWaiting ).id != IdInitDone;
+		waitForMessage(IdInitDone, _busyWaiting);
 	}
 
 	bool processMessage( const message & _m ) override;
@@ -122,8 +137,8 @@ public:
 	{
 		lock();
 		sendMessage( IdIsUIVisible );
-		unlock();
 		message m = waitForMessage( IdIsUIVisible );
+		unlock();
 		return m.id != IdIsUIVisible ? -1 : m.getInt() ? 1 : 0;
 	}
 
@@ -153,9 +168,17 @@ protected:
 	}
 
 
-	bool m_failed;
+	std::atomic_bool m_failed;
 private:
 	void resizeSharedProcessingMemory();
+	void recordFailure();
+	void retireProcess();
+	bool requestCancelled();
+	class RequestDeadline;
+	std::atomic<std::int64_t> m_requestDeadline{0};
+	std::atomic<std::uint64_t> m_requestRenderContext{0};
+	std::atomic_bool m_running{false};
+	int m_timeoutMs{120000};
 
 
 	QProcess m_process;

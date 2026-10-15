@@ -29,8 +29,21 @@
  */
 
 #include "GigPlayer.h"
+#include "GigPcm.h"
 
+#include <algorithm>
 #include <cstring>
+#include <memory>
+#include <iterator>
+#include <QFileInfo>
+#include <QCoreApplication>
+#include <QDir>
+#include <QPointer>
+#include <QThread>
+#include <QScopeGuard>
+#include <array>
+#include <optional>
+#include <stdexcept>
 #include <QDebug>
 #include <QLayout>
 #include <QLabel>
@@ -38,8 +51,11 @@
 
 #include "AudioEngine.h"
 #include "ConfigManager.h"
-#include "endian_handling.h"
+#include "DataFile.h"
 #include "Engine.h"
+#include "FileResourceIO.h"
+#include "Mixer.h"
+#include "TrackContainer.h"
 #include "FileDialog.h"
 #include "InstrumentTrack.h"
 #include "InstrumentPlayHandle.h"
@@ -78,12 +94,65 @@ Plugin::Descriptor PLUGIN_EXPORT gigplayer_plugin_descriptor =
 
 }
 
+// QObject members may be retired by returned native model work.
+class GigModelSignals
+{
+public:
+	GigModelSignals(QObject* bank, QObject* patch) : m_bank(bank), m_patch(patch), m_bankBlocked(bank->blockSignals(true)), m_patchBlocked(patch->blockSignals(true)) { }
+	~GigModelSignals() { if (m_bank) { m_bank->blockSignals(m_bankBlocked); } if (m_patch) { m_patch->blockSignals(m_patchBlocked); } }
+private:
+	QPointer<QObject> m_bank, m_patch; bool m_bankBlocked, m_patchBlocked;
+};
+
+class GigInstrument::ResourceGuard
+{
+public:
+	explicit ResourceGuard(GigInstrument* owner, bool freeze = true, bool admit = true) : m_owner(owner), m_freeze(freeze), m_admit(admit)
+	{
+		if (!QCoreApplication::instance() || QThread::currentThread() != QCoreApplication::instance()->thread() || !owner || owner->thread() != QThread::currentThread()
+			|| !Engine::audioEngine() || !Engine::getSong() || !Engine::mixer()) { throw std::logic_error("GIG resource work requires the native application thread"); }
+		if (admit && owner->m_changingResources) { throw std::logic_error("GIG settings/resources cannot reenter"); }
+		m_track = owner->instrumentTrack(); m_selected = m_track ? m_track->instrument() : nullptr; m_selection = m_selected.data(); m_container = m_track ? m_track->trackContainer() : nullptr;
+		m_engine = Engine::audioEngine(); m_song = Engine::getSong(); m_mixer = Engine::mixer(); m_project = m_song->replacementGeneration(); m_routing = m_mixer->replacementGeneration(); m_filename = m_song->projectFileName(); m_rate = m_engine->outputSampleRate();
+		m_values = values(owner); adopted(); m_changes.emplace(m_engine->requestChangesGuard()); if (admit) { owner->m_changingResources = true; }
+	}
+	~ResourceGuard() { if (m_admit && m_owner) { m_owner->m_changingResources = false; } }
+	void actors() const
+	{
+		if (!m_owner || m_owner->thread() != QThread::currentThread() || !m_track || m_track->isRetiring() || !m_owner->isFromTrack(m_track.data()) || m_track->thread() != QThread::currentThread()
+			|| m_selected.data() != m_selection || m_track->instrument() != m_selection || !m_container || m_track->trackContainer() != m_container.data()
+			|| std::find(m_container->tracks().begin(), m_container->tracks().end(), m_track.data()) == m_container->tracks().end()
+			|| !m_engine || Engine::audioEngine() != m_engine.data() || m_engine->outputSampleRate() != m_rate || !m_song || Engine::getSong() != m_song.data()
+			|| !m_mixer || Engine::mixer() != m_mixer.data() || m_song->replacementGeneration() != m_project || m_mixer->replacementGeneration() != m_routing || m_song->projectFileName() != m_filename)
+		{ throw std::runtime_error("Native GIG resource context changed"); }
+	}
+	void check() const
+	{ actors(); if (m_owner->m_instance != m_instance || m_owner->m_filename != m_file || m_owner->m_unresolvedBank != m_unresolved || (m_owner->m_instance ? m_owner->m_instance->snapshot() : nullptr) != m_snapshot
+		|| (m_freeze && values(m_owner.data()) != m_values)) { throw std::runtime_error("Native GIG instance/resource/controls changed"); } }
+	void poll() const { check(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } check(); }
+	void adopted()
+	{
+		actors(); const auto instance = m_owner->m_instance; const auto snapshot = instance ? instance->snapshot() : nullptr; const QString file = m_owner->m_filename; const bool unresolved = m_owner->m_unresolvedBank;
+		m_instance = instance; m_file = file; m_unresolved = unresolved; m_snapshot = snapshot; check();
+	}
+	void freezeControls() { check(); m_values = values(m_owner.data()); m_freeze = true; }
+	void thawControls() { check(); m_freeze = false; }
+	void selectModels(int bank, int patch)
+	{ check(); m_values[0] = bank; m_owner->m_bankNum.setValue(bank); check(); m_values[1] = patch; m_owner->m_patchNum.setValue(patch); check(); }
+private:
+	static std::array<float, 3> values(const GigInstrument* p) { return {p->m_bankNum.storedValue(), p->m_patchNum.storedValue(), p->m_gain.storedValue()}; }
+	QPointer<GigInstrument> m_owner; QPointer<InstrumentTrack> m_track; QPointer<Instrument> m_selected; Instrument* m_selection = nullptr; QPointer<TrackContainer> m_container;
+	QPointer<AudioEngine> m_engine; QPointer<Song> m_song; QPointer<Mixer> m_mixer; std::uint64_t m_project = 0, m_routing = 0; sample_rate_t m_rate = 0;
+	GigInstance* m_instance = nullptr; QString m_filename, m_file; std::shared_ptr<FileResourceSnapshot> m_snapshot; std::array<float, 3> m_values{};
+	bool m_unresolved = false; bool m_freeze, m_admit; std::optional<AudioEngine::RequestChangesGuard> m_changes; FileResourceIO::EventSuspension m_events;
+};
+
 GigInstrument::GigInstrument(InstrumentTrack* _instrument_track)
 	: Instrument(_instrument_track, &gigplayer_plugin_descriptor, nullptr, Flag::IsSingleStreamed | Flag::IsNotBendable)
 	, m_instance(nullptr)
 	, m_instrument(nullptr)
 	, m_filename("")
-	, m_bankNum(0, 0, 999, this, tr("Bank"))
+	, m_bankNum(0, 0, 16383, this, tr("Bank"))
 	, m_patchNum(0, 0, 127, this, tr("Patch"))
 	, m_gain(1.0f, 0.0f, 5.0f, 0.01f, this, tr("Gain"))
 	, m_RandomSeed(0)
@@ -113,44 +182,79 @@ GigInstrument::~GigInstrument()
 
 
 
-void GigInstrument::saveSettings( QDomDocument & _doc, QDomElement & _this )
+void GigInstrument::saveSettings(QDomDocument& document, QDomElement& element)
 {
-	_this.setAttribute( "src", m_filename );
-	m_patchNum.saveSettings( _doc, _this, "patch" );
-	m_bankNum.saveSettings( _doc, _this, "bank" );
-
-	m_gain.saveSettings( _doc, _this, "gain" );
+	ResourceGuard work(this); const QString filename = m_filename; const auto snapshot = m_instance ? m_instance->snapshot() : nullptr;
+	element.setAttribute("src", filename);
+	if (m_unresolvedBank) { element.setAttribute("unresolved", 1); } else { element.removeAttribute("unresolved"); }
+	if (snapshot) { DataFile::registerResourceSnapshot(document, element, "src", snapshot); work.check(); }
+	m_patchNum.saveSettings(document, element, "patch"); work.check();
+	m_bankNum.saveSettings(document, element, "bank"); work.check();
+	m_gain.saveSettings(document, element, "gain"); work.check();
 }
 
-
-
-
-void GigInstrument::loadSettings( const QDomElement & _this )
+void GigInstrument::loadSettings(const QDomElement& element)
 {
-	openFile( _this.attribute( "src" ), false );
-	m_patchNum.loadSettings( _this, "patch" );
-	m_bankNum.loadSettings( _this, "bank" );
-
-	m_gain.loadSettings( _this, "gain" );
-
-	updatePatch();
-}
-
-
-
-
-void GigInstrument::loadFile( const QString & _file )
-{
-	if( !_file.isEmpty() && QFileInfo( _file ).exists() )
+	const QDomElement settings(element); const QString path = settings.attribute("src"); const bool pending = settings.attribute("unresolved") == "1"; ResourceGuard work(this, false);
+	work.poll(); DataFile::ResourceReferenceScope resource(settings, "src"); work.check();
+	if (path.contains(QChar::Null) || (pending && path.isEmpty())) { throw std::invalid_argument("An unresolved GIG bank requires one valid filename"); }
+	QString absolute; bool absent = false;
+	if (!path.isEmpty())
 	{
-		openFile( _file, false );
-		updatePatch();
-		updateSampleRate();
+		bool invalid = false; absolute = PathUtil::toAbsolute(path, &invalid);
+		if (invalid || absolute.isEmpty()) { throw std::invalid_argument("Invalid native GIG source path"); }
+		if (pending && FileResourceSnapshot::hasRetainedSource(absolute)) { throw std::invalid_argument("An unresolved GIG bank cannot discard an accepted resource"); }
+		if (!pending) { const QFileInfo sourceFile(FileResourceSnapshot::readableSourcePath(absolute)); absent = !sourceFile.exists() && !sourceFile.isSymLink(); } work.check();
 	}
+	work.freezeControls(); emit fileLoading(); work.check(); QString error;
+	const bool loaded = loadBank(pending || absent ? absolute : path, false, error, work, pending || absent ? BankLoad::Unresolved : BankLoad::Settings); work.check();
+	if (!loaded) { collectErrorForUI(error); work.check(); }
+	else if (m_unresolvedBank) { const QString missing = m_filename; Engine::getSong()->collectUnresolvedResource(missing); work.check(); }
+	emit fileChanged(); work.check(); work.thawControls();
+	{
+		GigModelSignals blocked(&m_bankNum, &m_patchNum);
+		m_bankNum.loadSettings(settings, "bank"); work.check(); m_patchNum.loadSettings(settings, "patch"); work.check();
+	}
+	emit m_bankNum.dataChanged(); work.check(); emit m_patchNum.dataChanged(); work.check();
+	m_gain.loadSettings(settings, "gain"); work.check(); updatePatch(); work.check();
 }
 
+void GigInstrument::loadFile(const QString& path)
+{
+	QString error;
+	if (!setFileResource("bank", path, error)) { collectErrorForUI(error); }
+}
 
+std::vector<Plugin::FileResource> GigInstrument::fileResources() const
+{
+	return {{"bank", tr("GIG bank"), m_filename, {"gig"}, nullptr, 0, true, m_instance ? m_instance->snapshot() : nullptr, m_unresolvedBank}};
+}
 
+bool GigInstrument::setFileResource(const QString& key, const QString& path, QString& error)
+{
+	const QString requestedKey(key), requested(path); ResourceGuard work(this);
+	if (requestedKey != "bank") { error = tr("Unknown GIG resource"); return false; }
+	emit fileLoading(); work.check(); const bool loaded = loadBank(requested, true, error, work); work.check(); emit fileChanged(); work.check(); return loaded;
+}
+
+bool GigInstrument::selectProgram(int bank, int program, QString& error)
+{
+	ResourceGuard work(this); const auto available = m_programs;
+	const auto found = std::find_if(available.begin(), available.end(), [=](const Program& item) { return item.bank == bank && item.program == program; });
+	if (found == available.end()) { error = tr("The loaded GIG bank has no bank %1 program %2").arg(bank).arg(program); return false; }
+	{ GigModelSignals blocked(&m_bankNum, &m_patchNum); work.selectModels(bank, program); }
+	updatePatch(); work.check(); emit m_bankNum.dataChanged(); work.check(); emit m_patchNum.dataChanged(); work.check(); emit patchChanged(); work.check(); error.clear(); return true;
+}
+
+std::vector<Instrument::Program> GigInstrument::programSnapshot()
+{ QMutexLocker lock(&m_synthMutex); return m_programs; }
+
+void GigInstrument::updateProgramLabels(ResourceGuard& work)
+{
+	work.check(); const auto available = m_programs; const auto bank = m_bankNum.value(); work.check(); QMap<int, QString> banks, patches;
+	for (const auto& item : available) { banks.insert(item.bank, tr("Bank %1").arg(item.bank)); if (item.bank == bank) { patches.insert(item.program, item.name); } }
+	m_bankNum.setValueLabels(std::move(banks)); work.check(); m_patchNum.setValueLabels(std::move(patches)); work.check();
+}
 
 auto GigInstrument::midiPatch() const -> std::optional<MidiPatch>
 {
@@ -211,90 +315,122 @@ void GigInstrument::freeInstance()
 
 
 
-void GigInstrument::openFile( const QString & _gigFile, bool updateTrackName )
+bool GigInstrument::loadBank(const QString& path, bool selectFirst, QString& error, ResourceGuard& work, BankLoad mode)
 {
-	emit fileLoading();
-
-	// Remove the current instrument if one is selected
-	freeInstance();
-
+	bool unresolved = mode == BankLoad::Unresolved;
+	const QString requested(path); if (requested.contains(QChar::Null)) { error = tr("GIG filename contains a null character"); return false; }
+	work.poll(); QString relativePath; QString retainedPath(requested);
+	if (unresolved && (requested.isEmpty() || !QDir::isAbsolutePath(requested))) { error = tr("An unresolved GIG bank requires an absolute filename"); return false; }
+	std::unique_ptr<GigInstance> candidate;
+	std::vector<Program> available;
+	gig::Instrument* selectedInstrument = nullptr;
+	const bool repairing = mode == BankLoad::File && m_unresolvedBank && !requested.isEmpty();
+	const int bank = repairing ? m_bankNum.storedValue() : m_bankNum.value(); work.check(); const int patch = repairing ? m_patchNum.storedValue() : m_patchNum.value(); work.check(); Program selected{bank, patch, {}};
+	if (!requested.isEmpty() && !unresolved)
 	{
-		QMutexLocker locker( &m_synthMutex );
-
-		try
+		bool invalid = false;
+		const auto absolute = PathUtil::toAbsolute(requested, &invalid);
+		const QFileInfo file(FileResourceSnapshot::readableSourcePath(absolute)); work.check();
+		if (invalid || !file.isFile() || !file.isReadable()) { error = tr("GIG path is not a readable file: %1").arg(path); return false; }
+		relativePath = PathUtil::toShortestRelative(absolute);
+		// Cooperative file work must return outside instance mutexes and the libgig catch boundary.
+		FileResourceSnapshot::GigCaptureFailure failure;
+		auto accepted = FileResourceSnapshot::captureGig(absolute, error, failure); work.check();
+		if (!accepted)
 		{
-			m_instance = new GigInstance( PathUtil::toAbsolute( _gigFile ) );
-			m_filename = PathUtil::toShortestRelative( _gigFile );
+			if (mode != BankLoad::Settings || failure != FileResourceSnapshot::GigCaptureFailure::MissingCompanion) { return false; }
+			unresolved = true; retainedPath = absolute;
 		}
-		catch( ... )
+		if (accepted)
 		{
-			m_instance = nullptr;
-			m_filename = "";
+			try
+			{
+				candidate = std::make_unique<GigInstance>(std::move(accepted));
+				// Resolve extension IDs and sample associations before publication. The
+				// native reader can still stream sample PCM later from its owned group.
+				(void)candidate->gig.GetFirstSample();
+				for (auto instrument = candidate->gig.GetFirstInstrument(); instrument; instrument = candidate->gig.GetNextInstrument())
+				{
+					const int bank = instrument->MIDIBank, program = instrument->MIDIProgram;
+					if (bank < 0 || bank > m_bankNum.maxValue() || program < 0 || program > m_patchNum.maxValue()) { continue; }
+					const auto name = instrument->pInfo ? QString::fromStdString(instrument->pInfo->Name) : tr("Unnamed program");
+					for (auto region = instrument->GetFirstRegion(); region; region = instrument->GetNextRegion())
+					{
+						if (region->DimensionRegions > std::size(region->pDimensionRegions)) { error = tr("GIG dimension-region count is invalid"); return false; }
+						for (unsigned index = 0; index < region->DimensionRegions; ++index)
+						{
+							const auto dimension = region->pDimensionRegions[index];
+							if (!dimension || !dimension->pSample) { continue; }
+							const auto sample = dimension->pSample;
+							if (sample->SamplesTotal && ((sample->Channels != 1 && sample->Channels != 2)
+								|| (sample->BitDepth != 16 && sample->BitDepth != 24)
+								|| sample->FrameSize != sample->Channels * (sample->BitDepth / 8) || !sample->SamplesPerSecond))
+							{
+								error = tr("GIG sample metadata is unsupported or invalid; native playback requires mono/stereo 16/24-bit PCM and a nonzero sample rate"); return false;
+							}
+							if (!dimension->SampleLoops) { continue; }
+							if (!dimension->pSampleLoops) { error = tr("GIG sample loop declaration is missing"); return false; }
+							const auto& loop = dimension->pSampleLoops[0];
+							const auto length = dimension->pSample->SamplesTotal;
+							if (!loop.LoopLength || loop.LoopStart >= length || loop.LoopLength > length - loop.LoopStart)
+							{
+								error = tr("GIG sample loop is empty or exceeds its sample"); return false;
+							}
+						}
+					}
+					available.push_back({bank, program, name});
+					if (!selectedInstrument || ((repairing || !selectFirst) && bank == selected.bank && program == selected.program)) { selectedInstrument = instrument; }
+				}
+				if (available.empty()) { error = tr("GIG file contains no native MIDI programs"); return false; }
+				std::stable_sort(available.begin(), available.end(), [](const Program& a, const Program& b) {
+					return a.bank < b.bank || (a.bank == b.bank && a.program < b.program);
+				});
+				if (repairing && std::none_of(available.begin(), available.end(), [bank, patch](const Program& item) { return item.bank == bank && item.program == patch; }))
+				{
+					error = tr("The replacement GIG bank has no saved bank %1 program %2").arg(bank).arg(patch); return false;
+				}
+				selected = {static_cast<int>(selectedInstrument->MIDIBank), static_cast<int>(selectedInstrument->MIDIProgram), {}};
+			}
+			catch (...) { work.check(); error = tr("libgig rejected GIG bank: %1").arg(requested); return false; }
 		}
 	}
-
-	emit fileChanged();
-
-	if( updateTrackName == true )
+	work.poll();
 	{
-		instrumentTrack()->setName(PathUtil::cleanName( _gigFile ) );
-		updatePatch();
+		QMutexLocker synth(&m_synthMutex), notes(&m_notesMutex);
+		// Sample pointers belong to the old instance. Retire its note state before deleting it.
+		m_notes.clear();
+		std::unique_ptr<GigInstance> previous(m_instance);
+		m_instance = candidate.release(); m_instrument = selectedInstrument;
+		m_filename = unresolved ? retainedPath : relativePath; m_unresolvedBank = unresolved; m_programs = std::move(available);
 	}
+	work.adopted();
+	if (!requested.isEmpty() && !unresolved) { GigModelSignals blocked(&m_bankNum, &m_patchNum); work.selectModels(selected.bank, selected.program); }
+	updateProgramLabels(work); work.check();
+	emit m_bankNum.dataChanged(); work.check(); emit m_patchNum.dataChanged(); work.check(); emit patchChanged(); work.check();
+	error.clear(); return true;
 }
 
-
-
+void GigInstrument::openFile(const QString& path, bool updateTrackName)
+{
+	const QString requested(path); ResourceGuard work(this); const QPointer<InstrumentTrack> track(instrumentTrack());
+	emit fileLoading(); work.check(); QString error;
+	if (loadBank(requested, false, error, work))
+	{ if (updateTrackName && !requested.isEmpty()) { track->setName(PathUtil::cleanName(requested)); work.check(); } }
+	else { collectErrorForUI(error); work.check(); }
+	emit fileChanged(); work.check();
+}
 
 void GigInstrument::updatePatch()
 {
-	if( m_bankNum.value() >= 0 && m_patchNum.value() >= 0 )
-	{
-		getInstrument();
-	}
+	ResourceGuard work(this, true, false); updateProgramLabels(work); work.check(); const int bank = m_bankNum.value(); work.check(); const int patch = m_patchNum.value(); work.check();
+	if (bank >= 0 && patch >= 0) { getInstrument(bank, patch); work.check(); }
 }
-
-
-
 
 QString GigInstrument::getCurrentPatchName()
 {
-	QMutexLocker locker( &m_synthMutex );
-
-	if( m_instance == nullptr )
-	{
-		return "";
-	}
-
-	int iBankSelected = m_bankNum.value();
-	int iProgSelected = m_patchNum.value();
-
-	gig::Instrument * pInstrument = m_instance->gig.GetFirstInstrument();
-
-	while( pInstrument != nullptr )
-	{
-		int iBank = pInstrument->MIDIBank;
-		int iProg = pInstrument->MIDIProgram;
-
-		if( iBank == iBankSelected && iProg == iProgSelected )
-		{
-			QString name = QString::fromStdString( pInstrument->pInfo->Name );
-
-			if( name == "" )
-			{
-				name = "<no name>";
-			}
-
-			return name;
-		}
-
-		pInstrument = m_instance->gig.GetNextInstrument();
-	}
-
-	return "";
+	ResourceGuard work(this, true, false); const auto available = m_programs; const int bank = m_bankNum.value(); work.check(); const int patch = m_patchNum.value(); work.check();
+	for (const auto& item : available) { if (item.bank == bank && item.program == patch) { return item.name; } } return {};
 }
-
-
-
 
 // A key has been pressed
 void GigInstrument::playNote( NotePlayHandle * _n, SampleFrame* )
@@ -336,13 +472,11 @@ void GigInstrument::play( SampleFrame* _working_buffer )
 	// Initialize to zeros
 	std::memset( &_working_buffer[0][0], 0, DEFAULT_CHANNELS * frames * sizeof( float ) );
 
-	m_synthMutex.lock();
-	m_notesMutex.lock();
+	QMutexLocker synth(&m_synthMutex), notes(&m_notesMutex);
 
-	if( m_instance == nullptr || m_instrument == nullptr )
+	if (m_unresolvedBank || m_instance == nullptr || m_instrument == nullptr)
 	{
-		m_synthMutex.unlock();
-		m_notesMutex.unlock();
+		if (m_unresolvedBank) { m_notes.clear(); }
 		return;
 	}
 
@@ -471,7 +605,8 @@ void GigInstrument::play( SampleFrame* _working_buffer )
 
 				if (inputFramesUsed == 0 && outputFramesGenerated == 0)
 				{
-					std::fill_n(&_working_buffer[framesMixed], frames - framesMixed, SampleFrame{});
+					// A stalled voice contributes nothing further. Earlier voices
+					// already mixed into this period retain their contribution.
 					break;
 				}
 
@@ -488,8 +623,7 @@ void GigInstrument::play( SampleFrame* _working_buffer )
 		}
 	}
 
-	m_notesMutex.unlock();
-	m_synthMutex.unlock();
+	notes.unlock(); synth.unlock();
 
 	// Set gain properly based on volume control
 	for( f_cnt_t i = 0; i < frames; ++i )
@@ -502,136 +636,56 @@ void GigInstrument::play( SampleFrame* _working_buffer )
 
 
 
-void GigInstrument::loadSample( GigSample& sample, SampleFrame* sampleData, f_cnt_t samples )
+void GigInstrument::loadSample(GigSample& sample, SampleFrame* sampleData, f_cnt_t samples)
 {
-	if( sampleData == nullptr || samples < 1 )
-	{
-		return;
-	}
+	if (!sampleData || !samples || samples > DEFAULT_BUFFER_SIZE) { return; }
+	const auto output = std::span<SampleFrame>(sampleData, static_cast<std::size_t>(samples));
+	std::fill(output.begin(), output.end(), SampleFrame{});
+	const auto native = sample.sample;
+	if (!native || !sample.region || (native->Channels != 1 && native->Channels != 2)
+		|| (native->BitDepth != 16 && native->BitDepth != 24)
+		|| native->FrameSize != native->Channels * (native->BitDepth / 8)) { return; }
 
-	// Determine if we need to loop part of this sample
 	bool loop = false;
 	gig::loop_type_t loopType = gig::loop_type_normal;
-	f_cnt_t loopStart = 0;
-	f_cnt_t loopLength = 0;
-
-	if( sample.region->pSampleLoops != nullptr )
+	f_cnt_t loopStart = 0, loopLength = 0;
+	if (sample.region->SampleLoops && sample.region->pSampleLoops)
 	{
-		for( uint32_t i = 0; i < sample.region->SampleLoops; ++i )
-		{
-			loop = true;
-			loopType = static_cast<gig::loop_type_t>( sample.region->pSampleLoops[i].LoopType );
-			loopStart = sample.region->pSampleLoops[i].LoopStart;
-			loopLength = sample.region->pSampleLoops[i].LoopLength;
-
-			// Currently only support at max one loop
-			break;
-		}
+		const auto& definition = sample.region->pSampleLoops[0];
+		loopStart = definition.LoopStart; loopLength = definition.LoopLength;
+		loopType = static_cast<gig::loop_type_t>(definition.LoopType);
+		loop = loopLength && loopStart < native->SamplesTotal && loopLength <= native->SamplesTotal - loopStart;
 	}
 
-	unsigned long allocationsize = samples * sample.sample->FrameSize;
-	int8_t buffer[allocationsize];
-
-	// Load the sample in different ways depending on if we're looping or not
-	if( loop == true && ( sample.pos >= loopStart || sample.pos + samples > loopStart ) )
+	// A fixed, initialized block covers the native mono/stereo 16/24-bit shapes.
+	// EOF and short loop reads leave deterministic silence, never stack bytes.
+	alignas(std::int16_t) std::array<std::uint8_t, DEFAULT_BUFFER_SIZE * 6> buffer{};
+	if (loop && (sample.pos >= loopStart || samples > loopStart - sample.pos))
 	{
-		// Calculate the new position based on the type of loop
-		if( loopType == gig::loop_type_bidirectional )
+		const auto end = loopStart + loopLength;
+		sample.pos = loopType == gig::loop_type_bidirectional
+			? getPingPongIndex(sample.pos, loopStart, end)
+			: getLoopedIndex(sample.pos, loopStart, end);
+		native->SetPos(sample.pos);
+		f_cnt_t total = 0;
+		while (total < samples)
 		{
-			sample.pos = getPingPongIndex( sample.pos, loopStart, loopStart + loopLength );
+			auto position = native->GetPos();
+			if (position >= end) { native->SetPos(loopStart); position = loopStart; }
+			const auto requested = std::min<f_cnt_t>(samples - total, end - position);
+			if (!requested) { break; }
+			const auto read = native->Read(buffer.data() + total * native->FrameSize, requested, m_instance->decompressionBuffer());
+			if (!read || read > requested) { break; }
+			total += read;
 		}
-		else
-		{
-			sample.pos = getLoopedIndex( sample.pos, loopStart, loopStart + loopLength );
-			// TODO: also implement loop_type_backward support
-		}
-
-		sample.sample->SetPos( sample.pos );
-
-		// Load the samples (based on gig::Sample::ReadAndLoop) even around the end
-		// of a loop boundary wrapping to the beginning of the loop region
-		long samplestoread = samples;
-		long samplestoloopend = 0;
-		long readsamples = 0;
-		long totalreadsamples = 0;
-		long loopEnd = loopStart + loopLength;
-
-		do
-		{
-			samplestoloopend = loopEnd - sample.sample->GetPos();
-			readsamples = sample.sample->Read( &buffer[totalreadsamples * sample.sample->FrameSize],
-					std::min( samplestoread, samplestoloopend ) );
-			samplestoread -= readsamples;
-			totalreadsamples += readsamples;
-
-			if( readsamples >= samplestoloopend )
-			{
-				sample.sample->SetPos( loopStart );
-			}
-		}
-		while( samplestoread > 0 && readsamples > 0 );
 	}
 	else
 	{
-		sample.sample->SetPos( sample.pos );
-
-		unsigned long size = sample.sample->Read( &buffer, samples ) * sample.sample->FrameSize;
-		std::memset( (int8_t*) &buffer + size, 0, allocationsize - size );
+		native->SetPos(sample.pos);
+		(void)native->Read(buffer.data(), samples, m_instance->decompressionBuffer());
 	}
-
-	// Convert from 16 or 24 bit into 32-bit float
-	if( sample.sample->BitDepth == 24 ) // 24 bit
-	{
-		auto pInt = reinterpret_cast<uint8_t*>(&buffer);
-
-		for( f_cnt_t i = 0; i < samples; ++i )
-		{
-			// libgig gives 24-bit data as little endian, so we must
-			// convert if on a big endian system
-			int32_t valueLeft = byteswapIfBE<int32_t>(
-						( pInt[ 3 * sample.sample->Channels * i ] << 8 ) |
-						( pInt[ 3 * sample.sample->Channels * i + 1 ] << 16 ) |
-						( pInt[ 3 * sample.sample->Channels * i + 2 ] << 24 ) );
-
-			// Store the notes to this buffer before saving to output
-			// so we can fade them out as needed
-			sampleData[i][0] = 1.0 / 0x100000000 * sample.attenuation * valueLeft;
-
-			if( sample.sample->Channels == 1 )
-			{
-				sampleData[i][1] = sampleData[i][0];
-			}
-			else
-			{
-				int32_t valueRight = byteswapIfBE<int32_t>(
-							( pInt[ 3 * sample.sample->Channels * i + 3 ] << 8 ) |
-							( pInt[ 3 * sample.sample->Channels * i + 4 ] << 16 ) |
-							( pInt[ 3 * sample.sample->Channels * i + 5 ] << 24 ) );
-
-				sampleData[i][1] = 1.0 / 0x100000000 * sample.attenuation * valueRight;
-			}
-		}
-	}
-	else // 16 bit
-	{
-		auto pInt = reinterpret_cast<int16_t*>(&buffer);
-
-		for( f_cnt_t i = 0; i < samples; ++i )
-		{
-			sampleData[i][0] = 1.0 / 0x10000 *
-				pInt[ sample.sample->Channels * i ] * sample.attenuation;
-
-			if( sample.sample->Channels == 1 )
-			{
-				sampleData[i][1] = sampleData[i][0];
-			}
-			else
-			{
-				sampleData[i][1] = 1.0 / 0x10000 *
-					pInt[ sample.sample->Channels * i + 1 ] * sample.attenuation;
-			}
-		}
-	}
+	const auto bytes = std::span<const std::uint8_t>(buffer.data(), static_cast<std::size_t>(samples * native->FrameSize));
+	(void)gigPcm::decode(bytes, native->BitDepth, native->Channels, sample.attenuation, output);
 }
 
 
@@ -728,7 +782,7 @@ void GigInstrument::addSamples( GigNote & gignote, bool wantReleaseSample )
 	{
 		Dimension dim = getDimensions( pRegion, gignote.velocity, wantReleaseSample );
 		gig::DimensionRegion * pDimRegion = pRegion->GetDimensionRegionByValue( dim.DimValues );
-		gig::Sample * pSample = pDimRegion->pSample;
+		gig::Sample * pSample = pDimRegion ? pDimRegion->pSample : nullptr;
 
 		// If this is a release sample, the note won't ever be
 		// released, so we handle it differently
@@ -855,11 +909,9 @@ Dimension GigInstrument::getDimensions( gig::Region * pRegion, int velocity, boo
 
 // Get the selected instrument from the GIG file we opened if we haven't gotten
 // it already. This is based on the bank and patch numbers.
-void GigInstrument::getInstrument()
+void GigInstrument::getInstrument(int iBankSelected, int iProgSelected)
 {
-	// Find instrument
-	int iBankSelected = m_bankNum.value();
-	int iProgSelected = m_patchNum.value();
+	// The guarded caller owns the effective model values before locking.
 
 	QMutexLocker locker( &m_synthMutex );
 
@@ -947,8 +999,8 @@ GigInstrumentView::GigInstrumentView( Instrument * _instrument, QWidget * _paren
 	m_patchDialogButton->setToolTip(tr("Choose patch"));
 
 	// LCDs
-	m_bankNumLcd = new LcdSpinBox( 3, "21pink", this );
-	m_bankNumLcd->move( 111, 150 );
+	m_bankNumLcd = new LcdSpinBox(5, "11green", this);
+	m_bankNumLcd->move(111, 155);
 
 	m_patchNumLcd = new LcdSpinBox( 3, "21pink", this );
 	m_patchNumLcd->move( 161, 150 );
@@ -1001,7 +1053,7 @@ void GigInstrumentView::updateFilename()
 			i->m_filename;
 	m_filenameLabel->setText( fm.elidedText( file, Qt::ElideLeft, m_filenameLabel->width() ) );
 
-	m_patchDialogButton->setEnabled( !i->m_filename.isEmpty() );
+	m_patchDialogButton->setEnabled(!i->m_unresolvedBank && !i->m_programs.empty());
 
 	updatePatchName();
 	update();
@@ -1033,51 +1085,34 @@ void GigInstrumentView::invalidateFile()
 
 void GigInstrumentView::showFileDialog()
 {
-	auto k = castModel<GigInstrument>();
-
-	FileDialog ofd( nullptr, tr( "Open GIG file" ) );
-	ofd.setFileMode( FileDialog::ExistingFiles );
-
-	QStringList types;
-	types << tr( "GIG Files (*.gig)" );
-	ofd.setNameFilters( types );
-
-	if( k->m_filename != "" )
-	{
-		QString f = PathUtil::toAbsolute( k->m_filename );
-		ofd.setDirectory( QFileInfo( f ).absolutePath() );
-		ofd.selectFile( QFileInfo( f ).fileName() );
-	}
-	else
-	{
-		ofd.setDirectory( ConfigManager::inst()->gigDir() );
-	}
-
-	m_fileDialogButton->setEnabled( false );
-
-	if( ofd.exec() == QDialog::Accepted && !ofd.selectedFiles().isEmpty() )
-	{
-		QString f = ofd.selectedFiles()[0];
-
-		if( f != "" )
-		{
-			k->openFile( f );
-			Engine::getSong()->setModified();
-		}
-	}
-
-	m_fileDialogButton->setEnabled( true );
+	const QPointer<GigInstrumentView> owner(this); const QPointer<GigInstrument> native(castModel<GigInstrument>()); const QPointer<PixmapButton> button(m_fileDialogButton);
+	const QPointer<InstrumentTrack> track(native ? native->instrumentTrack() : nullptr); const QPointer<Song> song(Engine::getSong()); const auto generation = song ? song->replacementGeneration() : 0;
+	if (!native || !button) { return; } const QString filename = native->m_filename;
+	const auto current = [&] { return owner && native && button && owner->model() == native.data() && owner->m_fileDialogButton == button.data() && track && !track->isRetiring()
+		&& track->instrument() == native.data() && song && Engine::getSong() == song.data() && song->replacementGeneration() == generation; };
+	FileDialog dialog(nullptr, tr("Open GIG file")); dialog.setFileMode(FileDialog::ExistingFiles); dialog.setNameFilters({tr("GIG Files (*.gig)")});
+	if (!filename.isEmpty()) { const auto absolute = PathUtil::toAbsolute(filename); dialog.setDirectory(QFileInfo(absolute).absolutePath()); dialog.selectFile(QFileInfo(absolute).fileName()); }
+	else { dialog.setDirectory(ConfigManager::inst()->gigDir()); }
+	if (!current()) { return; } button->setEnabled(false); const auto restore = qScopeGuard([&] { if (button) { button->setEnabled(true); } });
+	if (!current()) { return; }
+	const auto accepted = dialog.exec() == QDialog::Accepted; if (!current() || !accepted || dialog.selectedFiles().isEmpty()) { return; }
+	const QString path = dialog.selectedFiles()[0]; if (path.isEmpty()) { return; }
+	try { native->openFile(path); if (current()) { song->setModified(); } }
+	catch (const std::exception& error) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError(QString::fromUtf8(error.what())); } }
+	catch (...) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError("Native GIG loading failed"); } }
 }
-
-
 
 
 void GigInstrumentView::showPatchDialog()
 {
-	auto k = castModel<GigInstrument>();
-	PatchesDialog pd( this );
-	pd.setup( k->m_instance, 1, k->instrumentTrack()->name(), &k->m_bankNum, &k->m_patchNum, m_patchLabel );
-	pd.exec();
+	const QPointer<GigInstrumentView> owner(this); const QPointer<GigInstrument> native(castModel<GigInstrument>());
+	const QPointer<InstrumentTrack> track(native ? native->instrumentTrack() : nullptr); const QPointer<Song> song(Engine::getSong()); const auto generation = song ? song->replacementGeneration() : 0;
+	const auto current = [&] { return owner && native && owner->model() == native.data() && track && !track->isRetiring() && track->instrument() == native.data()
+		&& song && Engine::getSong() == song.data() && song->replacementGeneration() == generation; };
+	if (!current()) { return; } const QString& reported = track->name(); if (!current()) { return; } const QString caption(reported);
+	const QPointer<PatchesDialog> dialog(new PatchesDialog(this)); const auto cleanup = qScopeGuard([dialog] { if (dialog) { delete dialog.data(); } });
+	if (!current() || !dialog || !dialog->setup(native.data(), caption)) { return; }
+	if (current() && dialog) { dialog->exec(); }
 }
 
 

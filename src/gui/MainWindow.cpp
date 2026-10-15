@@ -23,6 +23,8 @@
  */
 
 #include "MainWindow.h"
+#include <QPointer>
+#include <exception>
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -734,9 +736,12 @@ void MainWindow::emptySlot()
 
 void MainWindow::createNewProject()
 {
-	if( mayChangeProject(true) )
+	const QPointer<MainWindow> owner(this); const QPointer<Song> song(Engine::getSong());
+	if (mayChangeProject(true) && owner && song && Engine::getSong() == song.data())
 	{
-		Engine::getSong()->createNewProject();
+		try { song->createNewProject(); }
+		catch (const std::exception& error) { if (song) { song->collectError(QString::fromUtf8(error.what())); } }
+		catch (...) { if (song) { song->collectError("Native project creation failed"); } }
 	}
 }
 
@@ -1588,7 +1593,7 @@ void MainWindow::onExportProjectTracks()
 
 void MainWindow::onImportProject()
 {
-	Song * song = Engine::getSong();
+	const QPointer<MainWindow> owner(this); const QPointer<Song> song(Engine::getSong());
 
 	if (song)
 	{
@@ -1602,12 +1607,12 @@ void MainWindow::onImportProject()
 				" (*.*)");
 
 		ofd.setFileMode( FileDialog::ExistingFiles );
-		if( ofd.exec () == QDialog::Accepted && !ofd.selectedFiles().isEmpty() )
+		if( ofd.exec () == QDialog::Accepted && owner && song && Engine::getSong() == song.data() && !ofd.selectedFiles().isEmpty() )
 		{
 			ImportFilter::import( ofd.selectedFiles()[0], song );
 		}
 
-		song->setLoadOnLaunch(false);
+		if (owner && song && Engine::getSong() == song.data()) { song->setLoadOnLaunch(false); }
 	}
 }
 

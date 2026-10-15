@@ -24,6 +24,11 @@
  */
 
 #include "NotePlayHandle.h"
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <mutex>
+#include <stdexcept>
 
 #include "AudioEngine.h"
 #include "DetuningHelper.h"
@@ -107,6 +112,11 @@ NotePlayHandle::NotePlayHandle( InstrumentTrack* instrumentTrack,
 	if( m_origin == Origin::MidiInput )
 	{
 		m_instrumentTrack->midiNoteOn( *this );
+		if (m_instrumentTrack->isNoteRecording())
+		{
+			Note onset(*this); onset.setLength(0);
+			m_instrumentTrack->midiNotePitch(onset, m_instrumentTrack->pitchModel()->value());
+		}
 	}
 
 	if (m_instrumentTrack->instrument() && m_instrumentTrack->instrument()->isSingleStreamed())
@@ -197,7 +207,7 @@ void NotePlayHandle::play( SampleFrame* _working_buffer )
 		return;
 	}
 
-	lock();
+	const auto processing = std::lock_guard{*this};
 
 	// Don't play the note if it falls outside of the user defined key range
 	// TODO: handle the range check by Microtuner, and if the key becomes "not mapped", save the current frequency
@@ -210,7 +220,6 @@ void NotePlayHandle::play( SampleFrame* _working_buffer )
 		// Exit if the note did not start playing before going out of range (i.e. there is no need to play release)
 		if (m_totalFramesPlayed == 0)
 		{
-			unlock();
 			return;
 		}
 	}
@@ -219,7 +228,10 @@ void NotePlayHandle::play( SampleFrame* _working_buffer )
 	 * which results in a note-on message being sent without a subsequent note-off message.
 	 * Therefore, we check here whether the note has already been released before sending
 	 * the note-on message. */
-	if( !m_released
+	if (m_frequencyNeedsUpdate) { updateFrequency(); }
+	const bool validFrequency = std::isfinite(m_frequency) && m_frequency > 0;
+	if (!validFrequency && m_hasMidiNote) { noteOff(0); }
+	if( validFrequency && !m_released
 		&& m_totalFramesPlayed == 0 && !m_hasMidiNote
 		&& ( hasParent() || ! m_instrumentTrack->isArpeggioEnabled() ) )
 	{
@@ -232,11 +244,6 @@ void NotePlayHandle::play( SampleFrame* _working_buffer )
 			MidiEvent( MidiNoteOn, midiChannel(), midiKey(), midiVelocity( baseVelocity ) ),
 			TimePos::fromFrames( offset(), Engine::framesPerTick() ),
 			offset() );
-	}
-
-	if( m_frequencyNeedsUpdate )
-	{
-		updateFrequency();
 	}
 
 	// number of frames that can be played this period
@@ -257,7 +264,7 @@ void NotePlayHandle::play( SampleFrame* _working_buffer )
 	// under some circumstances we're called even if there's nothing to play
 	// therefore do an additional check which fixes crash e.g. when
 	// decreasing release of an instrument-track while the note is active
-	if( framesLeft() > 0 )
+	if( validFrequency && framesLeft() > 0 )
 	{
 		// play note!
 		m_instrumentTrack->playNote( this, _working_buffer );
@@ -319,8 +326,24 @@ void NotePlayHandle::play( SampleFrame* _working_buffer )
 	}
 
 	// update internal data
+	if (m_origin == Origin::MidiInput)
+	{
+		const double framesPerTick = Engine::framesPerTick();
+		if (!std::isfinite(framesPerTick) || framesPerTick <= 0) { throw std::runtime_error("Invalid native MIDI recording clock"); }
+		m_recordedMidiTicks += framesThisPeriod / framesPerTick;
+	}
 	m_totalFramesPlayed += framesThisPeriod;
-	unlock();
+}
+
+TimePos NotePlayHandle::recordedMidiLength(f_cnt_t releaseOffset) const
+{
+	const auto frames = m_totalFramesPlayed == 0
+		? (releaseOffset > offset() ? releaseOffset - offset() : 0) : releaseOffset;
+	const double framesPerTick = Engine::framesPerTick();
+	// Also called while a handle is being destroyed: preserve accumulated time
+	// if a failed engine clock is being retired instead of throwing in cleanup.
+	const double ticks = m_recordedMidiTicks + (std::isfinite(framesPerTick) && framesPerTick > 0 ? frames / framesPerTick : 0);
+	return TimePos(static_cast<int>(std::clamp(ticks, 0.0, double(std::numeric_limits<int>::max()))));
 }
 
 
@@ -402,7 +425,7 @@ void NotePlayHandle::noteOff( const f_cnt_t _s )
 	{
 		if( m_origin == Origin::MidiInput )
 		{
-			setLength( TimePos( static_cast<f_cnt_t>( totalFramesPlayed() / Engine::framesPerTick() ) ) );
+			setLength(recordedMidiLength(_s));
 			m_instrumentTrack->midiNoteOff( *this );
 		}
 	}
@@ -424,7 +447,8 @@ void NotePlayHandle::setFrames( const f_cnt_t _frames )
 	m_frames = _frames;
 	if( m_frames == 0 )
 	{
-		m_frames = m_instrumentTrack->beatLen( this );
+		m_frames = std::isfinite(m_frequency) && m_frequency > 0
+			? m_instrumentTrack->beatLen(this) : Engine::audioEngine()->framesPerPeriod();
 	}
 	m_origFrames = m_frames;
 }
@@ -520,7 +544,6 @@ bool NotePlayHandle::operator==( const NotePlayHandle & _nph ) const
 void NotePlayHandle::updateFrequency()
 {
 	int masterPitch = m_instrumentTrack->m_useMasterPitchModel.value() ? Engine::getSong()->masterPitch() : 0;
-	int baseNote = m_instrumentTrack->baseNoteModel()->value();
 	float detune = m_baseDetuning->value();
 	float instrumentPitch = m_instrumentTrack->pitchModel()->value();
 
@@ -531,7 +554,7 @@ void NotePlayHandle::updateFrequency()
 
 		if (m_instrumentTrack->isKeyMapped(transposedKey))
 		{
-			const auto frequency = m_instrumentTrack->m_microtuner.keyToFreq(transposedKey, baseNote);
+			const auto frequency = m_instrumentTrack->nominalFrequency(transposedKey);
 			m_frequency = frequency * std::exp2((detune + instrumentPitch / 100) / 12.f);
 			m_unpitchedFrequency = frequency * std::exp2(detune / 12.f);
 		}
@@ -543,9 +566,9 @@ void NotePlayHandle::updateFrequency()
 	else
 	{
 		// default key mapping and 12-TET frequency computation with default 440 Hz base note frequency
-		const float pitch = (key() - baseNote + masterPitch + detune) / 12.0f;
-		m_frequency = DefaultBaseFreq * std::exp2(pitch + instrumentPitch / (100 * 12.0f));
-		m_unpitchedFrequency = DefaultBaseFreq * std::exp2(pitch);
+		const auto frequency = m_instrumentTrack->nominalFrequency(key() + masterPitch);
+		m_frequency = frequency * std::exp2((detune + instrumentPitch / 100) / 12.f);
+		m_unpitchedFrequency = frequency * std::exp2(detune / 12.f);
 	}
 
 	for (auto it : m_subNotes)
@@ -557,22 +580,14 @@ void NotePlayHandle::updateFrequency()
 
 
 
-void NotePlayHandle::processTimePos(const TimePos& time, float pitchValue, bool isRecording)
+void NotePlayHandle::processTimePos(const TimePos& time)
 {
 	if (!detuning() || time < songGlobalParentOffset() + pos()) { return; }
-
-	if (isRecording && m_origin == Origin::MidiInput)
+	const float v = detuning()->automationClip()->valueAt(time - songGlobalParentOffset() - pos());
+	if (!approximatelyEqual(v, m_baseDetuning->value()))
 	{
-		detuning()->automationClip()->recordValue(time - songGlobalParentOffset() - pos(), pitchValue / 100);
-	}
-	else
-	{
-		const float v = detuning()->automationClip()->valueAt(time - songGlobalParentOffset() - pos());
-		if (!approximatelyEqual(v, m_baseDetuning->value()))
-		{
-			m_baseDetuning->setValue(v);
-			updateFrequency();
-		}
+		m_baseDetuning->setValue(v);
+		updateFrequency();
 	}
 }
 

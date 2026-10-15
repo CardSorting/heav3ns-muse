@@ -24,6 +24,11 @@
  */
 
 #include <QMessageBox>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include "SampleFrame.h"
+#include "lmms_constants.h"
 
 #include "AudioFileDevice.h"
 #include "ExportProjectDialog.h"
@@ -43,6 +48,8 @@ AudioFileDevice::AudioFileDevice( OutputSettings const & outputSettings,
 	using gui::ExportProjectDialog;
 
 	setSampleRate( outputSettings.getSampleRate() );
+	if (_channels == 0 || sampleRate() == 0 || sampleRate() > static_cast<sample_rate_t>(std::numeric_limits<int>::max()))
+	{ recordWriteError(); return; }
 
 	if( m_outputFile.open( QFile::WriteOnly | QFile::Truncate ) == false )
 	{
@@ -65,8 +72,8 @@ AudioFileDevice::AudioFileDevice( OutputSettings const & outputSettings,
 		else
 		{
 			fprintf( stderr, "%s\n", message.toUtf8().constData() );
-			exit( EXIT_FAILURE );
 		}
+		recordWriteError();
 	}
 }
 
@@ -81,14 +88,41 @@ AudioFileDevice::~AudioFileDevice()
 
 
 
+bool AudioFileDevice::admitBuffer(const SampleFrame* data, f_cnt_t frames)
+{
+	if (frames == 0) { return false; }
+	if (m_finalized || !outputFileOpened() || hasWriteError() || !data || channels() == 0
+		|| frames > static_cast<f_cnt_t>(std::numeric_limits<int>::max()) / channels() / sizeof(float))
+	{ recordWriteError(); return false; }
+	for (f_cnt_t frame = 0; frame < frames; ++frame)
+	{
+		for (ch_cnt_t channel = 0; channel < std::min<ch_cnt_t>(channels(), DEFAULT_CHANNELS); ++channel)
+		{ if (!std::isfinite(data[frame][channel])) { recordWriteError(); return false; } }
+	}
+	return true;
+}
+
 int AudioFileDevice::writeData( const void* data, int len )
 {
-	if( m_outputFile.isOpen() )
+	if (len >= 0 && (data || len == 0) && m_outputFile.isOpen())
 	{
-		return m_outputFile.write( (const char *) data, len );
+		const auto written = m_outputFile.write(static_cast<const char*>(data), len);
+		if (written != len) { recordWriteError(); }
+		return static_cast<int>(written);
 	}
 
+	recordWriteError();
 	return -1;
+}
+
+bool AudioFileDevice::finalizeOutput()
+{
+	if (m_finalized) { return !hasWriteError(); }
+	if (!m_outputFile.isOpen() || !m_outputFile.flush()) { recordWriteError(); }
+	m_outputFile.close();
+	if (m_outputFile.error() != QFile::NoError) { recordWriteError(); }
+	m_finalized = true;
+	return !hasWriteError();
 }
 
 } // namespace lmms

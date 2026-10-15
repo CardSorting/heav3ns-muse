@@ -47,7 +47,7 @@ class InstrumentFunctionArpeggioView;
 }
 
 
-class InstrumentFunctionNoteStacking : public Model, public JournallingObject
+class LMMS_EXPORT InstrumentFunctionNoteStacking : public Model, public JournallingObject
 {
 	Q_OBJECT
 
@@ -173,7 +173,7 @@ private:
 
 
 
-class InstrumentFunctionArpeggio : public Model, public JournallingObject
+class LMMS_EXPORT InstrumentFunctionArpeggio : public Model, public JournallingObject
 {
 	Q_OBJECT
 public:

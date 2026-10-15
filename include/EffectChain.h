@@ -26,6 +26,10 @@
 #ifndef LMMS_EFFECT_CHAIN_H
 #define LMMS_EFFECT_CHAIN_H
 
+#include <memory>
+#include <vector>
+#include <QHash>
+#include <QPointer>
 #include "Model.h"
 #include "SerializingObject.h"
 #include "AutomatableModel.h"
@@ -59,23 +63,46 @@ public:
 		return "fxchain";
 	}
 
-	void appendEffect( Effect * _effect );
-	void removeEffect( Effect * _effect );
-	void moveDown( Effect * _effect );
-	void moveUp( Effect * _effect );
+	// Ownership transfers at publication, before observer callbacks. A rejected
+	// append leaves the candidate with its caller.
+	bool appendEffect(Effect* effect);
+	bool appendEffect(std::unique_ptr<Effect>& effect);
+	std::unique_ptr<Effect> takeEffect(Effect* effect);
+	bool removeEffect(Effect* effect);
+	bool moveEffect(int from, int to);
+	bool moveDown(Effect* effect);
+	bool moveUp(Effect* effect);
 	bool processAudioBuffer(AudioBuffer& buffer);
 
-	void clear();
+	bool clear();
+	bool isRetiring() const noexcept { return m_retiring; }
+
+	// Native capability clients need the same ordered chain used by the audio engine.
+	const std::vector<Effect*>& effects() const { return m_effects; }
+	BoolModel* enabledModel() { return &m_enabledModel; }
+	const BoolModel* enabledModel() const { return &m_enabledModel; }
 
 
 private:
 	using EffectList = std::vector<Effect*>;
 	EffectList m_effects;
+	bool m_changing = false;
+	bool m_retiring = false;
+	bool m_clearing = false;
+	std::unique_ptr<QObject> m_lifecycleContext = std::make_unique<QObject>();
+	QHash<Effect*, QMetaObject::Connection> m_lifecycleHooks;
+	class ChangeGuard;
+	bool canChange() const;
+	void watchEffect(Effect* effect);
+	void unwatchEffect(Effect* effect);
+	std::unique_ptr<Effect> detachEffect(Effect* effect, bool releaseParent);
+	bool clearImpl();
 
 	BoolModel m_enabledModel;
 
 
 	friend class gui::EffectRackView;
+	friend class Mixer;
 
 
 signals:

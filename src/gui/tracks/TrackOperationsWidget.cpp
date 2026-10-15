@@ -161,6 +161,11 @@ void TrackOperationsWidget::cloneTrack()
 	TrackContainerView *tcView = m_trackView->trackContainerView();
 
 	Track *newTrack = m_trackView->getTrack()->clone();
+	if (!newTrack)
+	{
+		QMessageBox::warning(this, tr("Track cloning failed"), Engine::getSong()->errorSummary());
+		return;
+	}
 	TrackView *newTrackView = tcView->createTrackView( newTrack );
 
 	int index = tcView->trackViews().indexOf( m_trackView );
@@ -171,11 +176,6 @@ void TrackOperationsWidget::cloneTrack()
 		i--;
 	}
 
-	if (m_soloBtn->model()->value())
-	{
-		// if this track was solo, make the new track the new solo
-		newTrack->toggleSolo();
-	}
 }
 
 

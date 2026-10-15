@@ -42,7 +42,7 @@
 
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
+#include <QSaveFile>
 #include <initializer_list>
 #include <span>
 #include <string>
@@ -50,6 +50,7 @@
 
 #include "LmmsTypes.h"
 #include "MidiPatch.h"
+#include "TimePos.h"
 
 namespace lmms
 {
@@ -59,21 +60,21 @@ class MidiFile
 {
 public:
 	//! Default number of ticks per single beat
-	static constexpr tick_t TicksPerBeat = 128;
+	static constexpr tick_t TicksPerBeat = TicksPerQuarterNote;
 
-	//! Maximum size of buffers used for each section
-	static constexpr std::size_t BufferSize = 50 * 1024;
+	//! Initial reservation, not a limit on the exported composition.
+	static constexpr std::size_t InitialBufferSize = 50 * 1024;
 
 private:
 	//! Base class for sections of MIDI file
 	class Section
 	{
 	public:
-		//! Constant-capacity buffer vector to be written to stream
+		//! Complete section buffer to be written to stream
 		std::vector<std::uint8_t> m_buffer;
 
 	protected:
-		//! Reserve constant space for @ref BufferSize capacity vector
+		//! Reserve initial space; grow to retain every event.
 		Section();
 
 		//! @brief Write bytes to buffer
@@ -130,7 +131,7 @@ private:
 		//! Possible event types, ordered from most important to least important
 		enum class Type
 		{
-			NoteOn, NoteOff, Tempo, BankSelectMSB, BankSelectLSB, ProgramChange, TrackName
+			TrackName, Tempo, BankSelectMSB, BankSelectLSB, ProgramChange, NoteOff, NoteOn
 		};
 		using enum Type;
 
@@ -172,7 +173,7 @@ private:
 		bool operator<(const Event& b) const noexcept
 		{
 			if (time < b.time) { return true; }
-			return (time == b.time && type > b.type);
+			return (time == b.time && type < b.type);
 		}
 	};
 
@@ -181,7 +182,7 @@ public:
 	class Track : public Section
 	{
 	public:
-		void setChannel(std::uint8_t channel) { m_channel = channel; }
+		void setChannel(std::uint8_t channel);
 
 		//! @brief Add both NOTE_ON and NOTE_OFF effects
 		//! @param pitch Note pitch
@@ -190,6 +191,8 @@ public:
 		//! @param duration How long the note lasts
 		void addNote(std::uint8_t pitch, std::uint8_t volume,
 			double realTime, double duration);
+		//! Add a note without converting native integer ticks through beat fractions.
+		void addNoteTicks(std::uint8_t pitch, std::uint8_t volume, tick_t time, tick_t duration);
 
 		//! Add a tempo mark
 		void addTempo(std::uint32_t tempo, tick_t time);
@@ -235,11 +238,11 @@ public:
 	MidiFile(const std::filesystem::path& file, std::size_t numTracks);
 
 	//! Write all data (both header and tracks) to stream
-	void writeAllToStream();
+	bool writeAllToStream();
 
 private:
 	//! Write-only data stream
-	std::ofstream m_stream;
+	QSaveFile m_stream;
 };
 
 } // namespace lmms

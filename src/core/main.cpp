@@ -36,6 +36,8 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTextStream>
+#include <QScopeGuard>
+#include <cstdio>
 
 #ifdef LMMS_BUILD_WIN32
 #include <windows.h>
@@ -70,6 +72,9 @@
 #include "ProjectRenderer.h"
 #include "RenderManager.h"
 #include "Song.h"
+#include "StudioRuntime.h"
+#include "StudioStdio.h"
+#include "StudioSignals.h"
 
 #ifdef LMMS_DEBUG_FPE
 #include <fenv.h> // For feenableexcept
@@ -163,6 +168,7 @@ void printHelp()
 		"  <no action> [options...] [<project>]  Start LMMS in normal GUI mode\n"
 		"  dump <in>                             Dump XML of compressed file <in>\n"
 		"  compress <in>                         Compress file <in>\n"
+		"  studio <session-directory>           Run a persistent native studio over JSON lines\n"
 		"  render <project> [options...]         Render given project file\n"
 		"  rendertracks <project> [options...]   Render each track to a different file\n"
 		"  upgrade <in> [out]                    Upgrade file <in> and save as <out>\n"
@@ -177,6 +183,12 @@ void printHelp()
 		"  -c, --config <configfile>      Get the configuration from <configfile>\n"
 		"  -h, --help                     Show this usage information and exit.\n"
 		"  -v, --version                  Show version information and exit.\n"
+		"\nOptions for \"studio\":\n"
+		"      --studio-live              Open configured native audio/MIDI backends\n"
+		"          (default studio startup uses dummy audio/MIDI).\n"
+		"      --studio-audio <name>      Select a compiled audio backend for this run\n"
+		"      --studio-midi <name>       Select a compiled MIDI backend for this run\n"
+		"          Backend selection requires --studio-live; auto uses native probing.\n"
 		"\nOptions if no action is given:\n"
 		"      --geometry <geometry>      Specify the size and position of\n"
 		"          the main window\n"
@@ -248,11 +260,15 @@ int main( int argc, char * * argv )
 	using namespace lmms;
 
 	bool coreOnly = false;
+	bool studioActionRequested = false;
 	bool fullscreen = true;
 	bool exitAfterImport = false;
 	bool allowRoot = false;
 	bool renderLoop = false;
 	bool renderTracks = false;
+	QString studioDirectory;
+	bool studioLive = false;
+	QString studioAudioBackend, studioMidiBackend;
 	QString fileToLoad, fileToImport, renderOut, profilerOutputFile, configFile;
 
 	// first of two command-line parsing stages
@@ -269,6 +285,21 @@ int main( int argc, char * * argv )
 		{
 			printVersion(argv[0]);
 			return EXIT_SUCCESS;
+		}
+		else if (arg == "studio")
+		{
+			coreOnly = true;
+			studioActionRequested = true;
+			if (i + 1 < argc) { ++i; }
+		}
+		else if (arg == "--studio-live" || arg == "--studio-audio" || arg == "--studio-midi")
+		{
+			coreOnly = true;
+			if (arg != "--studio-live" && i + 1 < argc) { ++i; }
+		}
+		else if (arg == "--config" || arg == "-c")
+		{
+			if (i + 1 < argc) { ++i; }
 		}
 		else if (arg == "render" || arg == "--render" || arg == "-r" )
 		{
@@ -306,7 +337,7 @@ int main( int argc, char * * argv )
 	// register signal SIGFPE and signal handler
 	signal(SIGFPE, sigfpeHandler);
 #endif
-	signal(SIGINT, gui::GuiApplication::sigintHandler);
+	signal(SIGINT, coreOnly ? SIG_DFL : gui::GuiApplication::sigintHandler);
 
 #ifdef LMMS_BUILD_WIN32
 	// Don't touch redirected streams here
@@ -368,6 +399,13 @@ int main( int argc, char * * argv )
 	QCoreApplication * app = coreOnly ?
 			new QCoreApplication( argc, argv ) :
 					new gui::MainApplication(argc, argv);
+	// Static/plugin teardown can also print diagnostics after main returns.
+	StudioProtocolOutput protocol(false);
+	if (studioActionRequested)
+	{
+		QString error;
+		if (!protocol.open(error)) { std::fprintf(stderr, "%s\n", error.toUtf8().constData()); delete app; return EXIT_FAILURE; }
+	}
 
 	OutputSettings os(44100, 160, OutputSettings::BitDepth::Depth16Bit, OutputSettings::StereoMode::JointStereo);
 	ProjectRenderer::ExportFileFormat eff = ProjectRenderer::ExportFileFormat::Wave;
@@ -377,7 +415,32 @@ int main( int argc, char * * argv )
 	{
 		QString arg = argv[i];
 
-		if (arg == "upgrade" || arg == "--upgrade" || arg  == "-u")
+		if (arg == "studio")
+		{
+			if (!studioDirectory.isEmpty()) { return usageError("Studio mode was specified more than once"); }
+			if (++i == argc) { return usageError("No studio session directory specified"); }
+			studioDirectory = QString::fromLocal8Bit(argv[i]);
+			if (studioDirectory.isEmpty() || studioDirectory.startsWith('-'))
+			{
+				return usageError("No studio session directory specified");
+			}
+		}
+		else if (arg == "--studio-live")
+		{
+			if (studioLive) { return usageError("--studio-live was specified more than once"); }
+			studioLive = true;
+		}
+		else if (arg == "--studio-audio" || arg == "--studio-midi")
+		{
+			auto& selection = arg == "--studio-audio" ? studioAudioBackend : studioMidiBackend;
+			if (!selection.isNull()) { return usageError(arg + " was specified more than once"); }
+			if (++i == argc) { return usageError("No native backend specified for " + arg); }
+			selection = QString::fromLocal8Bit(argv[i]);
+			if (selection.isEmpty() || selection.startsWith('-')) { return usageError("No native backend specified for " + arg); }
+			const bool valid = arg == "--studio-audio" ? AudioEngine::isAudioDevNameValid(selection) : AudioEngine::isMidiDevNameValid(selection);
+			if (selection != "auto" && !valid) { return usageError("Backend is not compiled into LMMS: " + selection); }
+		}
+		else if (arg == "upgrade" || arg == "--upgrade" || arg  == "-u")
 		{
 			++i;
 
@@ -659,6 +722,15 @@ int main( int argc, char * * argv )
 		}
 	}
 
+	if ((studioLive || !studioAudioBackend.isNull() || !studioMidiBackend.isNull()) && studioDirectory.isEmpty())
+	{
+		return usageError("Studio backend options require the studio action");
+	}
+	if ((!studioAudioBackend.isNull() || !studioMidiBackend.isNull()) && !studioLive)
+	{
+		return usageError("Native backend selection requires --studio-live");
+	}
+
 	// Test file argument before continuing
 	if( !fileToLoad.isEmpty() )
 	{
@@ -705,6 +777,42 @@ int main( int argc, char * * argv )
 
 	bool destroyEngine = false;
 
+	if (!studioDirectory.isEmpty())
+	{
+		if (!renderOut.isEmpty() || !fileToLoad.isEmpty() || !fileToImport.isEmpty())
+		{
+			return usageError("Studio mode cannot be combined with render, import, or a project argument");
+		}
+		StudioSignals interrupts;
+		QString interruptError;
+		if (!interrupts.install(interruptError))
+		{
+			std::fprintf(stderr, "%s\n", interruptError.toUtf8().constData());
+			delete app; NotePlayHandleManager::free(); return EXIT_FAILURE;
+		}
+		{
+			const auto config = ConfigManager::inst();
+			const auto audio = config->value("audioengine", "audiodev", QString{});
+			const auto midi = config->value("audioengine", "mididev", QString{});
+			const auto restoreSelections = qScopeGuard([&] {
+				if (!studioAudioBackend.isNull()) { if (audio.isNull()) { config->deleteValue("audioengine", "audiodev"); } else { config->setValue("audioengine", "audiodev", audio); } }
+				if (!studioMidiBackend.isNull()) { if (midi.isNull()) { config->deleteValue("audioengine", "mididev"); } else { config->setValue("audioengine", "mididev", midi); } }
+			});
+			if (!studioAudioBackend.isNull()) { config->setValue("audioengine", "audiodev", studioAudioBackend == "auto" ? QString{} : studioAudioBackend); }
+			if (!studioMidiBackend.isNull()) { config->setValue("audioengine", "mididev", studioMidiBackend == "auto" ? QString{} : studioMidiBackend); }
+			Engine::init(!studioLive);
+		}
+		int result;
+		{
+			StudioRuntime studio(studioDirectory, {}, protocol.stream(), [&] { return interrupts.requested(); });
+			result = studio.run();
+		}
+		Engine::destroy();
+		delete app;
+		NotePlayHandleManager::free();
+		return result;
+	}
+
 	// if we have an output file for rendering, just render the song
 	// without starting the GUI
 	if( !renderOut.isEmpty() )
@@ -733,8 +841,13 @@ int main( int argc, char * * argv )
 
 		// create renderer
 		auto r = new RenderManager(os, eff, renderOut);
-		QCoreApplication::instance()->connect( r,
-				SIGNAL(finished()), SLOT(quit()));
+		QObject::connect(r, &RenderManager::finished, app, [r]
+		{
+			const auto error = r->errorString();
+			if (!error.isEmpty()) { std::fprintf(stderr, "%s\n", error.toUtf8().constData()); }
+			delete r;
+			QCoreApplication::exit(error.isEmpty() ? EXIT_SUCCESS : EXIT_FAILURE);
+		}, Qt::QueuedConnection);
 
 		// timer for progress-updates
 		auto t = new QTimer(r);

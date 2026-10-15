@@ -53,10 +53,12 @@ public:
 
 	PatternClip* clone() override
 	{
-		return new PatternClip(*this);
+		return static_cast<PatternClip*>(cloneNative());
 	}
 
 private:
+	PatternClip(const PatternClip& other, Track* destination) : Clip(other, destination) { }
+	friend class Clip;
 	friend class PatternClipView;
 } ;
 

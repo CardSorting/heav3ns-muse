@@ -26,6 +26,7 @@
 #define LMMS_MIDI_EVENT_H
 
 #include <cstdlib>
+#include <QString>
 #include "Midi.h"
 #include "panning.h"
 #include "volume.h"
@@ -131,7 +132,7 @@ public:
 	panning_t panning() const
 	{
 		return (panning_t) ( PanningLeft +
-			( (float)( midiPanning() - MidiMinPanning ) ) / 
+			( (float)( midiPanning() - MidiMinPanning ) ) /
 			( (float)( MidiMaxPanning - MidiMinPanning ) ) *
 			( (float)( PanningRight - PanningLeft ) ) );
 	}
@@ -150,6 +151,14 @@ public:
 		return m_sourcePort;
 	}
 
+	// Backend callbacks own this name before leaving their native event storage.
+	const QString& sourcePortName() const { return m_sourcePortName; }
+	void setSourcePortName(const QString& name)
+	{
+		m_sourcePortName = name;
+		m_sourcePort = nullptr;
+	}
+
 	uint8_t controllerNumber() const
 	{
 		return param( 0 ) & 0x7F;
@@ -163,6 +172,14 @@ public:
 	uint8_t controllerValue() const
 	{
 		return param( 1 );
+	}
+
+	bool isValidControlChange() const
+	{
+		// Validate signed raw data before accessors mask/narrow malformed fields.
+		return type() == MidiControlChange && channel() >= 0 && channel() < MidiChannelCount
+			&& param(0) >= 0 && param(0) < MidiControllerCount
+			&& param(1) >= 0 && param(1) <= MidiMaxControllerValue;
 	}
 
 	void setControllerValue( uint8_t value )
@@ -219,6 +236,7 @@ private:
 
 	// Stores the source of the MidiEvent: Internal or External (hardware controllers).
 	Source m_source;
+	QString m_sourcePortName;
 } ;
 
 } // namespace lmms

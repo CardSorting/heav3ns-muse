@@ -42,36 +42,78 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
+#include <limits>
 #include <stack>
+#include <stdexcept>
 
 #include "endian_handling.h"
+#include "FileResourceIO.h"
 
 namespace lmms
 {
+namespace
+{
+constexpr std::uint32_t MaximumVariableLength = 0x0fffffff;
+void checkWork()
+{
+	QString error;
+	if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+}
+tick_t checkedTime(double beats)
+{
+	const double ticks = std::round(beats * MidiFile::TicksPerBeat);
+	if (!std::isfinite(ticks) || beats < 0 || ticks > std::numeric_limits<tick_t>::max())
+	{ throw std::out_of_range("MIDI event time is outside the native tick range"); }
+	return static_cast<tick_t>(ticks);
+}
+}
 
 MidiFile::MidiFile(const std::filesystem::path& file, std::size_t numTracks)
 	: m_header{numTracks}
 {
+	if (numTracks == 0 || numTracks > std::numeric_limits<std::uint16_t>::max())
+	{ throw std::out_of_range("Standard MIDI files require 1..65535 tracks"); }
 	// Open designated blank MIDI file as a data stream for writing
-	m_stream.open(file, std::ios_base::binary);
+#ifdef Q_OS_WIN
+	m_stream.setFileName(QString::fromStdWString(file.native()));
+#else
+	m_stream.setFileName(QString::fromStdString(file.native()));
+#endif
+	m_stream.open(QIODevice::WriteOnly);
 
 	// Resize track list
 	m_tracks.resize(numTracks);
 }
 
-void MidiFile::writeAllToStream()
+bool MidiFile::writeAllToStream()
 {
-	m_stream.write(reinterpret_cast<const char*>(m_header.m_buffer.data()), m_header.m_buffer.size());
+	if (!m_stream.isOpen()) { return false; }
+	const auto writeSection = [this](const auto& bytes)
+	{
+		if (bytes.empty()) { return false; }
+		for (std::size_t offset = 0; offset < bytes.size();)
+		{
+			checkWork();
+			const auto count = static_cast<qint64>(std::min<std::size_t>(64 * 1024, bytes.size() - offset));
+			if (m_stream.write(reinterpret_cast<const char*>(bytes.data() + offset), count) != count) { return false; }
+			offset += static_cast<std::size_t>(count);
+		}
+		return true;
+	};
+	if (!writeSection(m_header.m_buffer)) { return false; }
 
 	for (const Track& track : m_tracks)
 	{
-		m_stream.write(reinterpret_cast<const char*>(track.m_buffer.data()), track.m_buffer.size());
+		if (!writeSection(track.m_buffer)) { return false; }
 	}
+	checkWork();
+	return m_stream.commit();
 }
 
 MidiFile::Section::Section()
 {
-	m_buffer.reserve(BufferSize);
+	m_buffer.reserve(InitialBufferSize);
 }
 
 void MidiFile::Section::writeBytes(std::span<const std::uint8_t> bytes)
@@ -87,6 +129,7 @@ void MidiFile::Section::writeBytes(std::initializer_list<std::uint8_t> bytes)
 
 void MidiFile::Section::writeVarLength(std::uint32_t val)
 {
+	if (val > MaximumVariableLength) { throw std::out_of_range("MIDI variable-length value exceeds four bytes"); }
 	// Build little endian stack from 7-bit packs
 	std::uint8_t result = val & 0x7F;
 	auto littleEndian = std::stack<std::uint8_t>({result});
@@ -125,6 +168,9 @@ MidiFile::Header::Header(std::size_t numTracks, tick_t ticksPerBeat)
 
 void MidiFile::Header::writeToBuffer()
 {
+	if (m_numTracks == 0 || m_numTracks > std::numeric_limits<std::uint16_t>::max() || m_ticksPerBeat <= 0 || m_ticksPerBeat > 0x7fff)
+	{ throw std::out_of_range("Invalid Standard MIDI file header"); }
+	m_buffer.clear();
 	// Chunk ID
 	writeBytes({'M', 'T', 'h', 'd'});
 
@@ -141,36 +187,56 @@ void MidiFile::Header::writeToBuffer()
 
 void MidiFile::Track::addEvent(Event&& event, tick_t time)
 {
+	if (time < 0) { throw std::out_of_range("MIDI event time must not be negative"); }
 	event.time = time;
 	event.channel = m_channel;
 	m_events.push_back(std::move(event));
 }
 
+void MidiFile::Track::setChannel(std::uint8_t channel)
+{
+	if (channel > 15) { throw std::out_of_range("MIDI channel exceeds 15"); }
+	m_channel = channel;
+}
+
 void MidiFile::Track::addNote(std::uint8_t pitch, std::uint8_t volume,
 	double realTime, double duration)
 {
+	if (pitch > 127 || volume > 127 || !std::isfinite(duration) || duration <= 0)
+	{ throw std::out_of_range("MIDI note requires valid data bytes and a positive duration"); }
+	const auto onset = checkedTime(realTime), end = checkedTime(realTime + duration);
+	if (end <= onset) { throw std::out_of_range("MIDI note duration rounds to zero ticks"); }
+	addNoteTicks(pitch, volume, onset, end - onset);
+}
+
+void MidiFile::Track::addNoteTicks(std::uint8_t pitch, std::uint8_t volume, tick_t time, tick_t duration)
+{
+	if (pitch > 127 || volume > 127 || time < 0 || duration <= 0 || duration > std::numeric_limits<tick_t>::max() - time)
+	{ throw std::out_of_range("Invalid native MIDI note or endpoint"); }
+	if (volume == 0) { return; }
 	// Add start of note
-	auto time = static_cast<tick_t>(realTime * TicksPerBeat);
 	addEvent({
 		.type = Event::NoteOn,
 		.note = {.pitch = pitch, .volume = volume}
 	}, time);
 
 	// Add end of note
-	time = static_cast<tick_t>((realTime + duration) * TicksPerBeat);
 	addEvent({
 		.type = Event::NoteOff,
 		.note = {.pitch = pitch, .volume = volume}
-	}, time);
+	}, time + duration);
 }
 
 void MidiFile::Track::addTempo(std::uint32_t tempo, tick_t time)
 {
+	if (tempo == 0 || std::llround(6e7 / tempo) < 1 || std::llround(6e7 / tempo) > 0xffffff)
+	{ throw std::out_of_range("MIDI tempo cannot be represented in three bytes"); }
 	addEvent({.type = Event::Tempo, .tempo = tempo}, time);
 }
 
 void MidiFile::Track::addPatch(MidiPatch patch, tick_t time)
 {
+	if (patch.bank > 0x3fff || patch.program > 127) { throw std::out_of_range("Invalid MIDI bank or program"); }
 	addEvent({.type = Event::BankSelectMSB, .patch = patch}, time);
 	addEvent({.type = Event::BankSelectLSB, .patch = patch}, time);
 	addEvent({.type = Event::ProgramChange, .patch = patch}, time);
@@ -178,11 +244,14 @@ void MidiFile::Track::addPatch(MidiPatch patch, tick_t time)
 
 void MidiFile::Track::addName(std::string name, tick_t time)
 {
+	if (name.size() > MaximumVariableLength) { throw std::length_error("MIDI track name exceeds the file format limit"); }
 	addEvent({.type = Event::TrackName, .trackName = std::move(name)}, time);
 }
 
 void MidiFile::Track::writeToBuffer()
 {
+	checkWork();
+	m_buffer.clear();
 	// Chunk ID
 	writeBytes({'M', 'T', 'r', 'k'});
 
@@ -194,6 +263,7 @@ void MidiFile::Track::writeToBuffer()
 	writeMIDIToBuffer();
 
 	// Write correct size in placeholder place
+	if (m_buffer.size() - idx > std::numeric_limits<std::uint32_t>::max()) { throw std::length_error("MIDI track exceeds the chunk size limit"); }
 	const auto size = static_cast<std::uint32_t>(m_buffer.size() - idx);
 	const auto sizeBigEndian = std::bit_cast<std::array<std::uint8_t, 4>>(byteswapIfLE(size));
 	for (std::size_t i = 0; i < 4; ++i)
@@ -213,22 +283,24 @@ void MidiFile::Track::writeMIDIToBuffer()
 
 void MidiFile::Track::writeEventsToBuffer()
 {
-	std::sort(m_events.begin(), m_events.end());
+	std::stable_sort(m_events.begin(), m_events.end());
 
 	tick_t timeLast = 0;
-	for (Event& event : m_events)
+	std::size_t count = 0;
+	for (const Event& event : m_events)
 	{
+		if ((count++ % 1024) == 0) { checkWork(); }
 		assert(event.time >= timeLast);
-
-		auto tmp = event.time;
-		event.time -= timeLast;
-		timeLast = tmp;
-
-		// Write event to buffer
-		writeSingleEventToBuffer(event);
-
-		// In case of exceding maximum size, go away
-		if (m_buffer.size() >= BufferSize) { break; }
+		auto delta = event; delta.time -= timeLast; timeLast = event.time;
+		// A native arrangement may contain a gap larger than one SMF delta.
+		// Empty text meta events preserve that gap without a
+		// nonstandard five-byte VLQ or an audible channel message.
+		while (static_cast<std::uint32_t>(delta.time) > MaximumVariableLength)
+		{
+			writeVarLength(MaximumVariableLength); writeBytes({0xff, 0x01, 0x00});
+			delta.time -= static_cast<tick_t>(MaximumVariableLength);
+		}
+		writeSingleEventToBuffer(delta);
 	}
 }
 
@@ -242,14 +314,14 @@ void MidiFile::Track::writeSingleEventToBuffer(Event& event)
 		case MidiFile::Event::NoteOn:
 		{
 			// A note starts playing
-			std::uint8_t code = 0x90 | m_channel;
+			std::uint8_t code = 0x90 | event.channel;
 			writeBytes({code, event.note.pitch, event.note.volume});
 			break;
 		}
 		case MidiFile::Event::NoteOff:
 		{
 			// A note finishes playing
-			std::uint8_t code = 0x80 | m_channel;
+			std::uint8_t code = 0x80 | event.channel;
 			writeBytes({code, event.note.pitch, event.note.volume});
 			break;
 		}
@@ -260,7 +332,7 @@ void MidiFile::Track::writeSingleEventToBuffer(Event& event)
 			writeBytes({code, 0x51, 0x03});
 
 			// Convert to microseconds before writing
-			const auto usec = static_cast<std::uint32_t>(6e7 / event.tempo);
+			const auto usec = static_cast<std::uint32_t>(std::llround(6e7 / event.tempo));
 			const auto usecBigEndian = std::bit_cast<std::array<std::uint8_t, 4>>(byteswapIfLE(usec));
 			writeBytes({usecBigEndian[1], usecBigEndian[2], usecBigEndian[3]});
 			break;
@@ -268,19 +340,19 @@ void MidiFile::Track::writeSingleEventToBuffer(Event& event)
 		case MidiFile::Event::BankSelectMSB:
 		{
 			// Bank select (MSB)
-			writeBytes({static_cast<std::uint8_t>(0xB0 | m_channel), 0x00, event.patch.bankMSB()});
+			writeBytes({static_cast<std::uint8_t>(0xB0 | event.channel), 0x00, event.patch.bankMSB()});
 			break;
 		}
 		case MidiFile::Event::BankSelectLSB:
 		{
 			// Bank select (LSB)
-			writeBytes({static_cast<std::uint8_t>(0xB0 | m_channel), 0x20, event.patch.bankLSB()});
+			writeBytes({static_cast<std::uint8_t>(0xB0 | event.channel), 0x20, event.patch.bankLSB()});
 			break;
 		}
 		case MidiFile::Event::ProgramChange:
 		{
 			// Program change
-			writeBytes({static_cast<std::uint8_t>(0xC0 | m_channel), event.patch.program});
+			writeBytes({static_cast<std::uint8_t>(0xC0 | event.channel), event.patch.program});
 			break;
 		}
 		case MidiFile::Event::TrackName:
@@ -291,7 +363,7 @@ void MidiFile::Track::writeSingleEventToBuffer(Event& event)
 			// Write name string size and then copy it's content
 			// to the following size bytes of buffer
 			auto bytes = std::vector<std::uint8_t>(event.trackName.begin(), event.trackName.end());
-			writeVarLength(event.trackName.size());
+			writeVarLength(static_cast<std::uint32_t>(event.trackName.size()));
 			writeBytes(bytes);
 			break;
 		}

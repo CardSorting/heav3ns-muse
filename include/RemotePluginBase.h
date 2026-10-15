@@ -26,6 +26,10 @@
 #define LMMS_REMOTE_PLUGIN_BASE_H
 
 #include <atomic>  // IWYU pragma: keep
+#include <chrono>
+#include <cerrno>
+#include <mutex>
+#include <thread>
 #include <vector>
 #include <clocale> // IWYU pragma: keep
 #include <cstdio>
@@ -75,6 +79,8 @@
 #ifdef SYNC_WITH_SHM_FIFO
 #include "SharedMemory.h"
 #include "SystemSemaphore.h"
+#else
+#include <sys/socket.h>
 #endif
 
 namespace lmms
@@ -119,7 +125,7 @@ public:
 	{
 		m_data.create();
 		m_data->startPtr = m_data->endPtr = 0;
-		static int k = 0;
+		static std::atomic_int k{0};
 		m_data->dataSem.semKey = ( getpid()<<10 ) + ++k;
 		m_data->messageSem.semKey = ( getpid()<<10 ) + ++k;
 		m_dataSem = SystemSemaphore{std::to_string(m_data->dataSem.semKey), 1u};
@@ -156,30 +162,43 @@ public:
 	}
 
 	// recursive lock
-	inline void lock()
+	bool lock()
 	{
-		if( !isInvalid() && m_lockDepth.fetch_add( 1 ) == 0 )
+		using namespace std::chrono_literals;
+		while (!m_localMutex.try_lock_for(5ms))
 		{
-			m_dataSem.acquire();
+			if (isInvalid()) { return false; }
 		}
+		if (isInvalid()) { m_localMutex.unlock(); return false; }
+		if (m_lockDepth == 0)
+		{
+			while (!m_dataSem.acquireFor(5))
+			{
+				if (isInvalid()) { m_localMutex.unlock(); return false; }
+			}
+		}
+		++m_lockDepth;
+		return true;
 	}
 
 	// recursive unlock
 	inline void unlock()
 	{
-		if( m_lockDepth.fetch_sub( 1 ) <= 1 )
+		if (--m_lockDepth == 0)
 		{
 			m_dataSem.release();
 		}
+		m_localMutex.unlock();
 	}
 
 	// wait until message-semaphore is available
-	inline void waitForMessage()
+	inline bool waitForMessage()
 	{
-		if( !isInvalid() )
+		while (!isInvalid())
 		{
-			m_messageSem.acquire();
+			if (m_messageSem.acquireFor(5)) { return !isInvalid(); }
 		}
+		return false;
 	}
 
 	// increase message-semaphore
@@ -205,11 +224,11 @@ public:
 	{
 		std::string ret;
 		const int len = readInt();
+		if (len < 0 || len > SHM_FIFO_SIZE) { invalidate(); return {}; }
 		if (len > 0)
 		{
 			ret.resize(static_cast<std::size_t>(len));
 			read(ret.data(), len);
-			ret[len] = '\0';
 		}
 		return ret;
 	}
@@ -229,7 +248,8 @@ public:
 		{
 			return false;
 		}
-		lock();
+		if (!lock()) { return false; }
+		if (!validPointers()) { invalidate(); unlock(); return false; }
 		const bool empty = ( m_data->startPtr == m_data->endPtr );
 		unlock();
 		return !empty;
@@ -243,23 +263,31 @@ public:
 
 
 private:
+	friend class RemotePluginBase;
+
+	bool validPointers() const
+	{
+		return m_data->startPtr >= 0 && m_data->startPtr <= m_data->endPtr && m_data->endPtr <= SHM_FIFO_SIZE;
+	}
+
 	void read( void * _buf, int _len )
 	{
-		if( isInvalid() )
+		if (isInvalid() || _len < 0 || _len > SHM_FIFO_SIZE || !lock())
 		{
-			memset( _buf, 0, _len );
+			if (_len > 0) { memset(_buf, 0, _len); }
 			return;
 		}
-		lock();
+		if (!validPointers()) { invalidate(); unlock(); memset(_buf, 0, _len); return; }
 		while( isInvalid() == false &&
 				_len > m_data->endPtr - m_data->startPtr )
 		{
+			if (!validPointers()) { invalidate(); break; }
 			unlock();
-#ifndef LMMS_BUILD_WIN32
-			usleep( 5 );
-#endif
-			lock();
+			std::this_thread::sleep_for(std::chrono::microseconds(100));
+			if (!lock()) { memset(_buf, 0, _len); return; }
+			if (!validPointers()) { invalidate(); break; }
 		}
+		if (isInvalid() || !validPointers()) { invalidate(); unlock(); memset(_buf, 0, _len); return; }
 		std::memcpy(_buf, m_data->data + m_data->startPtr, _len);
 		m_data->startPtr += _len;
 		// nothing left?
@@ -273,13 +301,14 @@ private:
 
 	void write( const void * _buf, int _len )
 	{
-		if( isInvalid() || _len > SHM_FIFO_SIZE )
+		if (isInvalid() || _len < 0 || _len > SHM_FIFO_SIZE || !lock())
 		{
 			return;
 		}
-		lock();
-		while( _len > SHM_FIFO_SIZE - m_data->endPtr )
+		if (!validPointers()) { invalidate(); unlock(); return; }
+		while (!isInvalid() && _len > SHM_FIFO_SIZE - m_data->endPtr)
 		{
+			if (!validPointers()) { invalidate(); break; }
 			// if no space is left, try to move data to front
 			if( m_data->startPtr > 0 )
 			{
@@ -291,22 +320,23 @@ private:
 				m_data->startPtr = 0;
 			}
 			unlock();
-#ifndef LMMS_BUILD_WIN32
-			usleep( 5 );
-#endif
-			lock();
+			std::this_thread::sleep_for(std::chrono::microseconds(100));
+			if (!lock()) { return; }
+			if (!validPointers()) { invalidate(); break; }
 		}
+		if (isInvalid() || !validPointers()) { invalidate(); unlock(); return; }
 		std::memcpy(m_data->data + m_data->endPtr, _buf, _len);
 		m_data->endPtr += _len;
 		unlock();
 	}
 
-	volatile bool m_invalid;
+	std::atomic_bool m_invalid;
 	bool m_master;
 	SharedMemory<shmData> m_data;
 	SystemSemaphore m_dataSem;
 	SystemSemaphore m_messageSem;
-	std::atomic_int m_lockDepth;
+	std::recursive_timed_mutex m_localMutex;
+	int m_lockDepth;
 };
 #endif // SYNC_WITH_SHM_FIFO
 
@@ -390,7 +420,7 @@ public:
 
 		inline std::string getString( int _p = 0 ) const
 		{
-			return data[_p];
+			return _p >= 0 && static_cast<std::size_t>(_p) < data.size() ? data[_p] : std::string{};
 		}
 
 #ifndef BUILD_REMOTE_PLUGIN_CLIENT
@@ -402,12 +432,12 @@ public:
 
 		inline int getInt( int _p = 0 ) const
 		{
-			return atoi( data[_p].c_str() );
+			return atoi(getString(_p).c_str());
 		}
 
 		inline float getFloat( int _p ) const
 		{
-			return (float) atof( data[_p].c_str() );
+			return (float) atof(getString(_p).c_str());
 		}
 
 		inline bool operator==( const message & _m ) const
@@ -416,6 +446,7 @@ public:
 		}
 
 		int id;
+		std::size_t argumentCount() const { return data.size(); }
 
 	private:
 		std::vector<std::string> data;
@@ -441,8 +472,14 @@ public:
 	}
 #endif
 
-	int sendMessage( const message & _m );
+	virtual int sendMessage( const message & _m );
 	message receiveMessage();
+
+#ifdef SYNC_WITH_SHM_FIFO
+	static constexpr std::size_t maximumMessageBytes = SHM_FIFO_SIZE;
+#else
+	static constexpr std::size_t maximumMessageBytes = 64 * 1024 * 1024;
+#endif
 
 	inline bool isInvalid() const
 	{
@@ -453,7 +490,7 @@ public:
 #endif
 	}
 
-	message waitForMessage( const message & _m,
+	virtual message waitForMessage( const message & _m,
 						bool _busy_waiting = false );
 
 	inline message fetchAndProcessNextMessage()
@@ -480,11 +517,11 @@ public:
 	{
 		std::string ret;
 		const int len = readInt();
+		if (len < 0 || static_cast<std::size_t>(len) > maximumMessageBytes) { invalidate(); return {}; }
 		if (len > 0)
 		{
 			ret.resize(static_cast<std::size_t>(len));
 			read(ret.data(), len);
-			ret[len] = '\0';
 		}
 		return ret;
 	}
@@ -504,15 +541,19 @@ public:
 #ifdef SYNC_WITH_SHM_FIFO
 		return m_in->messagesLeft();
 #else
-		struct pollfd pollin;
+		struct pollfd pollin{};
 		pollin.fd = m_socket;
 		pollin.events = POLLIN;
 
-		if ( poll( &pollin, 1, 0 ) == -1 )
+		if (poll(&pollin, 1, 0) == -1)
 		{
+			if (errno == EINTR) { return false; }
 			qWarning( "Unexpected poll error." );
+			invalidate();
+			return false;
 		}
-		return pollin.revents & POLLIN;
+		if (pollin.revents & (POLLERR | POLLNVAL)) { invalidate(); return false; }
+		return pollin.revents & (POLLIN | POLLHUP);
 #endif
 	}
 
@@ -526,7 +567,7 @@ public:
 
 	static bool isMainThreadWaiting()
 	{
-		return waitDepthCounter() > 0;
+		return waitDepthCounter().load() > 0;
 	}
 #endif // BUILD_REMOTE_PLUGIN_CLIENT
 
@@ -551,23 +592,29 @@ protected:
 #ifdef SYNC_WITH_SHM_FIFO
 		m_in->invalidate();
 		m_out->invalidate();
-		m_in->messageSent();
 #else
-		m_invalid = true;
+		if (!m_invalid.exchange(true) && m_socket >= 0) { shutdown(m_socket, SHUT_RDWR); }
 #endif
 	}
 
 
 #ifndef SYNC_WITH_SHM_FIFO
-	int m_socket;
+	void resetConnection()
+	{
+		invalidate();
+		if (m_socket >= 0) { close(m_socket); }
+		m_socket = -1;
+		m_invalid = false;
+	}
+	std::atomic_int m_socket;
 #endif
 
 
 private:
 #ifndef BUILD_REMOTE_PLUGIN_CLIENT
-	static int & waitDepthCounter()
+	static std::atomic_int& waitDepthCounter()
 	{
-		static int waitDepth = 0;
+		static std::atomic_int waitDepth{0};
 		return waitDepth;
 	}
 #endif
@@ -588,6 +635,7 @@ private:
 		while ( remaining )
 		{
 			ssize_t nread = ::read( m_socket, buf, remaining );
+			if (nread == -1 && errno == EINTR) { continue; }
 			switch ( nread )
 			{
 				case -1:
@@ -610,10 +658,19 @@ private:
 			return;
 		}
 		const char * buf = (const char *) _buf;
+#ifdef SO_NOSIGPIPE
+		const int noSigpipe = 1;
+		setsockopt(m_socket, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, sizeof(noSigpipe));
+#endif
 		int remaining = _len;
 		while ( remaining )
 		{
-			ssize_t nwritten = ::write( m_socket, buf, remaining );
+#ifdef MSG_NOSIGNAL
+			ssize_t nwritten = ::send(m_socket, buf, remaining, MSG_NOSIGNAL);
+#else
+			ssize_t nwritten = ::send(m_socket, buf, remaining, 0);
+#endif
+			if (nwritten == -1 && errno == EINTR) { continue; }
 			switch ( nwritten )
 			{
 				case -1:
@@ -629,7 +686,7 @@ private:
 	}
 
 
-	bool m_invalid;
+	std::atomic_bool m_invalid;
 
 	pthread_mutex_t m_receiveMutex;
 	pthread_mutex_t m_sendMutex;

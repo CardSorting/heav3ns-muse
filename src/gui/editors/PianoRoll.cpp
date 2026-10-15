@@ -63,6 +63,8 @@
 #include "lmms_math.h"
 #include "MainWindow.h"
 #include "MidiClip.h"
+#include "NativeNoteTransfer.h"
+#include "AudioEngine.h"
 #include "PatternStore.h"
 #include "PianoView.h"
 #include "PositionLine.h"
@@ -452,6 +454,7 @@ PianoRoll::PianoRoll() :
 
 PianoRoll::~PianoRoll()
 {
+	stopRecording();
 	ConfigManager::inst()->setValue("ui", "pianorollzoom", QString::number(m_zoomingModel.value()));
 	ConfigManager::inst()->setValue("ui", "pianorollzoomvertical", QString::number(m_zoomingYModel.value()));
 	ConfigManager::inst()->setValue("ui", "pianorollquantization", QString::number(m_quantizeModel.value()));
@@ -660,141 +663,39 @@ void PianoRoll::clearGhostClip()
 
 void PianoRoll::glueNotes()
 {
-	if (hasValidMidiClip())
-	{
-		NoteVector selectedNotes = getSelectedNotes();
-		if (selectedNotes.empty())
-		{
-			selectedNotes = m_midiClip->notes();
-		}
-
-		// Make undo possible
-		m_midiClip->addJournalCheckPoint();
-
-		// Sort notes on key and then pos.
-		std::sort(selectedNotes.begin(), selectedNotes.end(),
-			[](const Note * note, const Note * compareNote) -> bool
-			{
-				if (note->key() == compareNote->key())
-				{
-					return note->pos() < compareNote->pos();
-				}
-				return note->key() < compareNote->key();
-			});
-
-		QList<Note *> noteToRemove;
-
-		NoteVector::iterator note = selectedNotes.begin();
-		auto nextNote = note+1;
-		NoteVector::iterator end = selectedNotes.end();
-
-		while (note != end && nextNote != end)
-		{
-			// key and position match for glue. The notes are already
-			// sorted so we don't need to test that nextNote is the same
-			// position or next in sequence.
-			if ((*note)->key() == (*nextNote)->key()
-				&& (*nextNote)->pos() <= (*note)->pos()
-				+ qMax(TimePos(0), (*note)->length()))
-			{
-				(*note)->setLength(qMax((*note)->length(),
-					TimePos((*nextNote)->endPos() - (*note)->pos())));
-				noteToRemove.push_back(*nextNote);
-				++nextNote;
-			}
-			// key or position doesn't match
-			else
-			{
-				note = nextNote;
-				nextNote = note+1;
-			}
-		}
-
-		// Remove old notes
-		for (int i = 0; i < noteToRemove.count(); ++i)
-		{
-			m_midiClip->removeNote(noteToRemove[i]);
-		}
-
-		update();
-	}
+	if (!hasValidMidiClip()) { return; }
+	auto notes = getSelectedNotes(); if (notes.empty()) { notes = m_midiClip->notes(); }
+	MidiClip::GlueResult result; QString error;
+	if (!m_midiClip->glueNotes(notes, result, error)) { Engine::getSong()->collectError(error); return; }
+	update();
+	getGUI()->songEditor()->update();
 }
 
 void PianoRoll::fitNoteLengths(bool fill)
 {
 	if (!hasValidMidiClip()) { return; }
-	m_midiClip->addJournalCheckPoint();
-	m_midiClip->rearrangeAllNotes();
-
-	// Reference notes
-	const NoteVector& refNotes = m_midiClip->notes();
-
-	// Notes to edit
 	NoteVector notes = getSelectedNotes();
-	if (notes.empty())
-	{
-		notes = refNotes;
-	}
-	else if (!fill)
-	{
-		std::sort(notes.begin(), notes.end(), Note::lessThan);
-	}
-	if (fill)
-	{
-		std::sort(notes.begin(), notes.end(), [](Note* n1, Note* n2) { return n1->endPos() < n2->endPos(); });
-	}
-
-	int length;
-	auto ref = refNotes.begin();
-	for (Note* note : notes)
-	{
-		// Fast forward to next reference note
-		while (ref != refNotes.end() && (fill ? (*ref)->pos() < note->endPos() : (*ref)->pos() <= note->pos()))
-		{
-			ref++;
-		}
-		if (ref == refNotes.end())
-		{
-			if (!fill) { break; }
-			// Last notes stretch to end of last bar
-			length = notes.back()->endPos().nextFullBar() * TimePos::ticksPerBar() - note->pos();
-		}
-		else
-		{
-			length = (*ref)->pos() - note->pos();
-		}
-		if (fill ? note->length() < length : note->length() > length)
-		{
-			note->setLength(length);
-		}
-	}
+	if (notes.empty()) { notes = m_midiClip->notes(); }
+	bool changed; QString error;
+	if (!m_midiClip->adjustNoteLengths(notes, fill ? MidiClip::LengthMode::Fill : MidiClip::LengthMode::Trim, 0, changed, error)) { Engine::getSong()->collectError(error); return; }
 
 	update();
 	getGUI()->songEditor()->update();
-	Engine::getSong()->setModified();
 }
 
 
 void PianoRoll::constrainNoteLengths(bool constrainMax)
 {
 	if (!hasValidMidiClip()) { return; }
-	m_midiClip->addJournalCheckPoint();
 
 	const NoteVector selectedNotes = getSelectedNotes();
 	const auto& notes = selectedNotes.empty() ? m_midiClip->notes() : selectedNotes;
 
-	TimePos bound = m_lenOfNewNotes; // will be length of last note
-	for (auto note : notes)
-	{
-		if (constrainMax ? note->length() > bound : note->length() < bound)
-		{
-			note->setLength(bound);
-		}
-	}
+	bool changed; QString error;
+	if (!m_midiClip->adjustNoteLengths(notes, constrainMax ? MidiClip::LengthMode::Maximum : MidiClip::LengthMode::Minimum, m_lenOfNewNotes.getTicks(), changed, error)) { Engine::getSong()->collectError(error); return; }
 
 	update();
 	getGUI()->songEditor()->update();
-	Engine::getSong()->setModified();
 }
 
 void PianoRoll::reverseNotes()
@@ -804,11 +705,11 @@ void PianoRoll::reverseNotes()
 	const NoteVector selectedNotes = getSelectedNotes();
 	const auto& notes = selectedNotes.empty() ? m_midiClip->notes() : selectedNotes;
 
-	m_midiClip->reverseNotes(notes);
+	bool changed; QString error;
+	if (!m_midiClip->reverseNotes(notes, changed, error)) { Engine::getSong()->collectError(error); return; }
 
 	update();
 	getGUI()->songEditor()->update();
-	Engine::getSong()->setModified();
 }
 
 
@@ -840,6 +741,7 @@ void PianoRoll::loadMarkedSemiTones(const QDomElement & de)
 
 void PianoRoll::setCurrentMidiClip( MidiClip* newMidiClip )
 {
+	stopRecording();
 	if( hasValidMidiClip() )
 	{
 		m_midiClip->instrumentTrack()->pianoModel()->disconnect(this);
@@ -916,6 +818,7 @@ void PianoRoll::setCurrentMidiClip( MidiClip* newMidiClip )
 
 	connect( m_midiClip->instrumentTrack(), SIGNAL( midiNoteOn( const lmms::Note& ) ), this, SLOT( startRecordNote( const lmms::Note& ) ) );
 	connect( m_midiClip->instrumentTrack(), SIGNAL( midiNoteOff( const lmms::Note& ) ), this, SLOT( finishRecordNote( const lmms::Note& ) ) );
+	connect(m_midiClip->instrumentTrack(), &InstrumentTrack::midiNotePitch, this, &PianoRoll::recordNotePitch);
 	connect( m_midiClip, SIGNAL(dataChanged()), this, SLOT(update()));
 	connect( m_midiClip->instrumentTrack()->pianoModel(), SIGNAL(dataChanged()), this, SLOT(update()));
 
@@ -1236,11 +1139,8 @@ void PianoRoll::shiftSemiTone(int amount) //Shift notes by amount semitones
 
 void PianoRoll::shiftSemiTone(const NoteVector& notes, int amount)
 {
-	m_midiClip->addJournalCheckPoint();
-	for (Note *note : notes) { note->setKey( note->key() + amount ); }
-
-	m_midiClip->rearrangeAllNotes();
-	m_midiClip->dataChanged();
+	MidiClip::ShiftResult result; QString error;
+	if (!m_midiClip->shiftNotes(notes, amount, 0, result, error)) { Engine::getSong()->collectError(error); return; }
 	//We modified the song
 	update();
 	getGUI()->songEditor()->update();
@@ -1261,22 +1161,8 @@ void PianoRoll::shiftPos(int amount) //Shift notes pos by amount
 
 void PianoRoll::shiftPos(const NoteVector& notes, int amount)
 {
-	m_midiClip->addJournalCheckPoint();
-
-	if (notes.empty()) {
-		return;
-	}
-
-	auto leftMostPos = notes.front()->pos();
-	//Limit leftwards shifts to prevent moving left of clip start
-	auto shiftAmount = (leftMostPos > -amount) ? amount : -leftMostPos;
-	if (shiftAmount == 0) { return; }
-
-	for (Note *note : notes) { note->setPos( note->pos() + shiftAmount ); }
-
-	m_midiClip->rearrangeAllNotes();
-	m_midiClip->updateLength();
-	m_midiClip->dataChanged();
+	MidiClip::ShiftResult result; QString error;
+	if (!m_midiClip->shiftNotes(notes, 0, amount, result, error)) { Engine::getSong()->collectError(error); return; }
 	// we modified the song
 	update();
 	getGUI()->songEditor()->update();
@@ -2408,7 +2294,8 @@ void PianoRoll::mouseReleaseEvent( QMouseEvent * me )
 		{
 			bool deleteShortEnds = me->modifiers() & Qt::ShiftModifier;
 			const NoteVector selectedNotes = getSelectedNotes();
-			m_midiClip->splitNotesAlongLine(!selectedNotes.empty() ? selectedNotes : m_midiClip->notes(), TimePos(m_knifeStartTickPos), m_knifeStartKey, TimePos(m_knifeEndTickPos), m_knifeEndKey, deleteShortEnds);
+			MidiClip::KnifeResult result; QString error;
+			if (!m_midiClip->splitNotesAlongLine(!selectedNotes.empty() ? selectedNotes : m_midiClip->notes(), TimePos(m_knifeStartTickPos), m_knifeStartKey, TimePos(m_knifeEndTickPos), m_knifeEndKey, deleteShortEnds, result, error)) { Engine::getSong()->collectError(error); }
 			m_knifeDown = false;
 		}
 
@@ -4349,7 +4236,12 @@ void PianoRoll::record()
 		return;
 	}
 
+	if (!m_midiClip->instrumentTrack()->beginNoteRecording(this)) { return; }
 	m_midiClip->addJournalCheckPoint();
+	m_recordingTrack = m_midiClip->instrumentTrack(); m_noteRecorder.reset();
+	m_recordingPitchBaseline = m_midiClip->instrumentTrack()->pitchModel()->storedValue();
+	m_restoreRecordingPitch = m_midiClip->instrumentTrack()->canRecordMidiPitch();
+	if (m_restoreRecordingPitch) { m_noteRecorder.configurePitch(m_recordingPitchBaseline, 1048576); }
 	m_recording = true;
 
 	Engine::getSong()->playMidiClip( m_midiClip, false );
@@ -4372,7 +4264,12 @@ void PianoRoll::recordAccompany()
 		return;
 	}
 
+	if (!m_midiClip->instrumentTrack()->beginNoteRecording(this)) { return; }
 	m_midiClip->addJournalCheckPoint();
+	m_recordingTrack = m_midiClip->instrumentTrack(); m_noteRecorder.reset();
+	m_recordingPitchBaseline = m_midiClip->instrumentTrack()->pitchModel()->storedValue();
+	m_restoreRecordingPitch = m_midiClip->instrumentTrack()->canRecordMidiPitch();
+	if (m_restoreRecordingPitch) { m_noteRecorder.configurePitch(m_recordingPitchBaseline, 1048576); }
 	m_recording = true;
 
 	if( m_midiClip->getTrack()->trackContainer() == Engine::getSong() )
@@ -4422,10 +4319,26 @@ bool PianoRoll::toggleStepRecording()
 
 
 
+void PianoRoll::stopRecording()
+{
+	m_recording = false;
+	if (m_recordingTrack) { m_recordingTrack->endNoteRecording(this); }
+	if (m_restoreRecordingPitch)
+	{
+		m_restoreRecordingPitch = false;
+		if (const auto instrument = dynamic_cast<InstrumentTrack*>(m_recordingTrack.data()))
+		{
+			try { instrument->pitchModel()->setValue(m_recordingPitchBaseline); }
+			catch (...) { Engine::getSong()->collectError(tr("Could not restore track pitch after MIDI recording")); }
+		}
+	}
+	m_recordingTrack.clear(); m_noteRecorder.reset();
+}
+
 void PianoRoll::stop()
 {
 	Engine::getSong()->stop();
-	m_recording = false;
+	stopRecording();
 	m_scrollBack = m_timeLine->autoScroll() != TimeLineWidget::AutoScrollState::Disabled;
 
 	auto* songEditor = GuiApplication::instance()->songEditor()->m_editor;
@@ -4448,18 +4361,8 @@ void PianoRoll::startRecordNote(const Note & n )
 			(Engine::getSong()->playMode() == desiredPlayModeForAccompany() ||
 			Engine::getSong()->playMode() == Song::PlayMode::MidiClip ))
 		{
-			TimePos sub;
-			if( Engine::getSong()->playMode() == Song::PlayMode::Song )
-			{
-				sub = m_midiClip->startPosition();
-			}
-			Note n1( 1, Engine::getSong()->getPlayPos(
-						Engine::getSong()->playMode() ) - sub,
-					n.key(), n.getVolume(), n.getPanning() );
-			if( n1.pos() >= 0 )
-			{
-				m_recordingNotes << n1;
-			}
+			m_noteRecorder.startNote(n, MidiNoteRecorder::positionInClip(n, *m_midiClip,
+				Engine::getSong()->playMode() == Song::PlayMode::Song));
 		}
 		else if (m_stepRecorder.isRecording())
 		{
@@ -4470,6 +4373,19 @@ void PianoRoll::startRecordNote(const Note & n )
 
 
 
+
+void PianoRoll::recordNotePitch(const Note& note, float pitch)
+{
+	if (!m_recording || !hasValidMidiClip() || !Engine::getSong()->isPlaying()) { return; }
+	const auto mode = Engine::getSong()->playMode();
+	if (mode != desiredPlayModeForAccompany() && mode != Song::PlayMode::MidiClip) { return; }
+	try { m_noteRecorder.recordPitch(note, pitch); }
+	catch (...)
+	{
+		// Do not stop transport inside a native note-construction signal.
+		stopRecording(); Engine::getSong()->collectError(tr("MIDI pitch recording exceeded its native range or point limit"));
+	}
+}
 
 void PianoRoll::finishRecordNote(const Note & n )
 {
@@ -4482,26 +4398,9 @@ void PianoRoll::finishRecordNote(const Note & n )
 					Engine::getSong()->playMode() ==
 						Song::PlayMode::MidiClip ) )
 		{
-			for( QList<Note>::Iterator it = m_recordingNotes.begin();
-						it != m_recordingNotes.end(); ++it )
+			if (const auto note = m_noteRecorder.finishNote(n, m_doAutoQuantization ? quantization() : 0))
 			{
-				if( it->key() == n.key() )
-				{
-					Note n1(n.length(), it->pos(),
-							it->key(), it->getVolume(),
-							it->getPanning(), n.detuning());
-
-					if (m_doAutoQuantization)
-					{
-						n1.quantizeLength(quantization());
-						n1.quantizePos(quantization());
-					}
-					n1.setLength(std::max(n1.length(), TimePos(1)));
-					m_midiClip->addNote(n1, false);
-					update();
-					m_recordingNotes.erase( it );
-					break;
-				}
+				m_midiClip->addNote(*note, false); update();
 			}
 		}
 		else if (m_stepRecorder.isRecording())
@@ -4636,6 +4535,15 @@ void PianoRoll::selectNotesOnKey()
 
 void PianoRoll::enterValue( NoteVector* nv )
 {
+	if (!hasValidMidiClip() || !nv || nv->empty()) { return; }
+	const QPointer<MidiClip> source(m_midiClip); const NoteVector notes = *nv; std::vector<std::shared_ptr<const void>> identities;
+	for (auto note : notes) { identities.push_back(note->selectionIdentity()); }
+	const auto apply = [&](const MidiClip::NoteEdit& edit) {
+		if (!source || !hasValidMidiClip() || m_midiClip != source.data()) { return false; }
+		for (std::size_t index = 0; index < notes.size(); ++index)
+		{ if (std::find(source->notes().begin(), source->notes().end(), notes[index]) == source->notes().end() || notes[index]->selectionIdentity() != identities[index]) { Engine::getSong()->collectError("Native value-dialog selection changed while the dialog was open"); return false; } }
+		bool changed = false; QString error; if (!source->editNotes(notes, edit, changed, error)) { Engine::getSong()->collectError(error); return false; } return true;
+	};
 
 	if( m_noteEditMode == NoteEditMode::Volume )
 	{
@@ -4649,11 +4557,8 @@ void PianoRoll::enterValue( NoteVector* nv )
 
 		if( ok )
 		{
-			for ( Note * n : *nv )
-			{
-				n->setVolume( new_val );
-			}
-			m_lastNoteVolume = new_val;
+			MidiClip::NoteEdit edit; edit.volume = new_val;
+			if (apply(edit)) { m_lastNoteVolume = new_val; }
 		}
 	}
 	else if( m_noteEditMode == NoteEditMode::Panning )
@@ -4668,11 +4573,8 @@ void PianoRoll::enterValue( NoteVector* nv )
 
 		if( ok )
 		{
-			for ( Note * n : *nv )
-			{
-				n->setPanning( new_val );
-			}
-			m_lastNotePanning = new_val;
+			MidiClip::NoteEdit edit; edit.panning = new_val;
+			if (apply(edit)) { m_lastNotePanning = new_val; }
 		}
 
 	}
@@ -4699,24 +4601,18 @@ void PianoRoll::updateYScroll()
 }
 
 
-void PianoRoll::copyToClipboard( const NoteVector & notes ) const
+bool PianoRoll::copyToClipboard(const NoteVector& notes) const
 {
 	// For copyString() and MimeType enum class
 	using namespace Clipboard;
 
 	DataFile dataFile( DataFile::Type::ClipboardData );
-	QDomElement note_list = dataFile.createElement( "note-list" );
-	dataFile.content().appendChild( note_list );
-
-	TimePos start_pos( notes.front()->pos().getBar(), 0 );
-	for( const Note *note : notes )
-	{
-		Note clip_note( *note );
-		clip_note.setPos( clip_note.pos( start_pos ) );
-		clip_note.saveState( dataFile, note_list );
-	}
-
+	if (!hasValidMidiClip() || notes.empty()) { return false; }
+	QString error;
+	if (!NativeNoteTransfer::save(m_midiClip, notes, TimePos(notes.front()->pos().getBar(), 0), dataFile, error))
+	{ Engine::getSong()->collectError(error); return false; }
 	copyString( dataFile.toString(), MimeType::Default );
+	return true;
 }
 
 
@@ -4746,18 +4642,14 @@ void PianoRoll::cutSelectedNotes()
 
 	if( ! selected_notes.empty() )
 	{
-		m_midiClip->addJournalCheckPoint();
-
-		copyToClipboard( selected_notes );
-
-		Engine::getSong()->setModified();
-
-		for( Note *note : selected_notes )
-		{
-			// note (the memory of it) is also deleted by
-			// MidiClip::removeNote(...) so we don't have to do that
-			m_midiClip->removeNote( note );
-		}
+		const QPointer<MidiClip> source(m_midiClip); std::vector<std::shared_ptr<const void>> identities;
+		for (auto note : selected_notes) { identities.push_back(note->selectionIdentity()); }
+		if (!copyToClipboard(selected_notes) || !hasValidMidiClip()) { return; }
+		if (!source || m_midiClip != source.data()) { return; }
+		for (std::size_t index = 0; index < selected_notes.size(); ++index)
+		{ if (std::find(source->notes().begin(), source->notes().end(), selected_notes[index]) == source->notes().end() || selected_notes[index]->selectionIdentity() != identities[index]) { Engine::getSong()->collectError("Native cut selection changed during clipboard publication"); return; } }
+		int removed = 0; QString error;
+		if (!m_midiClip->removeNotes(selected_notes, removed, error)) { Engine::getSong()->collectError(error); return; }
 	}
 
 	update();
@@ -4783,29 +4675,10 @@ void PianoRoll::pasteNotes()
 	{
 		DataFile dataFile( value.toUtf8() );
 
-		QDomNodeList list = dataFile.elementsByTagName( Note::classNodeName() );
-
-		// remove selection and select the newly pasted notes
-		clearSelectedNotes();
-
-		if( ! list.isEmpty() )
-		{
-			m_midiClip->addJournalCheckPoint();
-		}
-
-		for( int i = 0; ! list.item( i ).isNull(); ++i )
-		{
-			// create the note
-			Note cur_note;
-			cur_note.restoreState( list.item( i ).toElement() );
-			cur_note.setPos(cur_note.pos() + Note::quantized(m_timeLine->timeline()->pos(), quantization()));
-
-			// select it
-			cur_note.setSelected( true );
-
-			// add to MIDI clip
-			m_midiClip->addNote( cur_note, false );
-		}
+		NoteVector inserted; QString error;
+		if (!NativeNoteTransfer::load(dataFile, m_midiClip, Note::quantized(m_timeLine->timeline()->pos(), quantization()), inserted, error))
+		{ Engine::getSong()->collectError(error); return; }
+		clearSelectedNotes(); for (auto note : inserted) { note->setSelected(true); }
 
 		// we only have to do the following lines if we pasted at
 		// least one note...
@@ -4826,14 +4699,11 @@ bool PianoRoll::deleteSelectedNotes()
 	auto selectedNotes = getSelectedNotes();
 	if (selectedNotes.empty()) { return false; }
 
-	m_midiClip->addJournalCheckPoint();
-
-	for (Note* note: selectedNotes) { m_midiClip->removeNote( note ); }
-
-	Engine::getSong()->setModified();
+	int removed = 0; QString error;
+	if (!m_midiClip->removeNotes(selectedNotes, removed, error)) { Engine::getSong()->collectError(error); return false; }
 	update();
 	getGUI()->songEditor()->update();
-	return true;
+	return removed > 0;
 }
 
 
@@ -5006,8 +4876,6 @@ void PianoRoll::quantizeNotes(QuantizeAction mode)
 		return;
 	}
 
-	m_midiClip->addJournalCheckPoint();
-
 	NoteVector notes = getSelectedNotes();
 
 	if( notes.empty() )
@@ -5018,29 +4886,12 @@ void PianoRoll::quantizeNotes(QuantizeAction mode)
 		}
 	}
 
-	for( Note* n : notes )
-	{
-		if( n->length() == TimePos( 0 ) )
-		{
-			continue;
-		}
-
-		Note copy(*n);
-		m_midiClip->removeNote( n );
-		if (mode == QuantizeAction::Both || mode == QuantizeAction::Pos)
-		{
-			copy.quantizePos(quantization());
-		}
-		if (mode == QuantizeAction::Both || mode == QuantizeAction::Length)
-		{
-			copy.quantizeLength(quantization());
-		}
-		m_midiClip->addNote(copy, false);
-	}
+	const auto nativeMode = mode == QuantizeAction::Pos ? MidiClip::QuantizeMode::Positions : mode == QuantizeAction::Length ? MidiClip::QuantizeMode::Lengths : MidiClip::QuantizeMode::Both;
+	bool changed; QString error;
+	if (!m_midiClip->quantizeNotes(notes, quantization(), nativeMode, changed, error)) { Engine::getSong()->collectError(error); return; }
 
 	update();
 	getGUI()->songEditor()->update();
-	Engine::getSong()->setModified();
 }
 
 

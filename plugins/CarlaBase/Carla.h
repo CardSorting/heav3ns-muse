@@ -55,13 +55,13 @@
 
 // lmms/include/
 #include "AutomatableModel.h"
+#include "CarlaPluginHost.h"
 #include "Instrument.h"
 #include "InstrumentView.h"
 #include "SubWindow.h"
 
 class QPushButton;
 class QComboBox;
-class QCompleter;
 class QGridLayout;
 class QHBoxLayout;
 class QLineEdit;
@@ -85,7 +85,8 @@ public:
 	CarlaParamFloatModel(Model * parent):
 		FloatModel(0.f, 0.f, 1.f, 0.001f, parent, "Unused"),
 		m_isOutput(false),
-		m_isEnabled(false)
+		m_isEnabled(false),
+		m_groupId(0)
 	{
 	}
 
@@ -102,10 +103,21 @@ public:
 		bool mustQuote = mustQuoteName(name);
 		QDomElement me = element.firstChildElement(mustQuote ? QString("automatablemodel") : name);
 		if (!me.isNull()) {
-			m_isOutput = (bool)me.attribute("output", "0").toInt();
 			m_groupName = QString(me.attribute("groupName", ""));
 		}
 	}
+
+	ValueType valueType() const override { return m_valueType; }
+	bool isWritable() const override { return m_isEnabled && !m_isOutput; }
+	bool supportsAutomation() const override { return isWritable() && m_canAutomate; }
+	QMap<int, QString> valueLabels() const override { return m_valueLabels; }
+	void setNativeHints(unsigned int hints)
+	{
+		m_canAutomate = hints & NATIVE_PARAMETER_IS_AUTOMATABLE;
+		m_valueType = hints & NATIVE_PARAMETER_IS_BOOLEAN ? ValueType::Boolean
+			: hints & NATIVE_PARAMETER_IS_INTEGER ? ValueType::Integer : ValueType::Number;
+	}
+	void setValueLabels(const QMap<int, QString>& labels) { m_valueLabels = labels; }
 
 	inline void saveSettings(QDomDocument& doc, QDomElement& element,
 		const QString& name = QString( "value" )) override
@@ -168,6 +180,9 @@ private:
 	bool m_isEnabled;
 	uint8_t m_groupId;
 	QString m_groupName;
+	bool m_canAutomate = false;
+	ValueType m_valueType = ValueType::Number;
+	QMap<int, QString> m_valueLabels;
 };
 
 // -------------------------------------------------------------------
@@ -179,7 +194,8 @@ class CARLABASE_EXPORT CarlaInstrument : public Instrument
 public:
     static const uint32_t kMaxMidiEvents = 512;
 
-    CarlaInstrument(InstrumentTrack* const instrumentTrack, const Descriptor* const descriptor, const bool isPatchbay);
+    CarlaInstrument(InstrumentTrack* const instrumentTrack, const Descriptor* const descriptor, const bool isPatchbay,
+        const CarlaPluginHost::Resolver& hostResolver = {});
     ~CarlaInstrument() override;
 
     // Carla NativeHostDescriptor functions
@@ -187,7 +203,7 @@ public:
     double handleGetSampleRate() const;
     bool handleIsOffline() const;
     const NativeTimeInfo* handleGetTimeInfo() const;
-    void handleUiParameterChanged(const uint32_t index, const float value) const;
+    void handleUiParameterChanged(const uint32_t index, const float value);
     void handleUiClosed();
     intptr_t handleDispatcher(const NativeHostDispatcherOpcode opcode, const int32_t index, const intptr_t value, void* const ptr, const float opt);
 
@@ -195,8 +211,11 @@ public:
     QString nodeName() const override;
     void saveSettings(QDomDocument& doc, QDomElement& parent) override;
     void loadSettings(const QDomElement& elem) override;
+    void refreshParameterModels() override;
+    PluginHost* pluginHost() override;
     void play(SampleFrame* workingBuffer) override;
     bool handleMidiEvent(const MidiEvent& event, const TimePos& time, f_cnt_t offset) override;
+    bool supportsMidiOutput() const override { return fHandle && fDescriptor->midiOuts > 0; }
     gui::PluginView* instantiateView(QWidget* parent) override;
 
 signals:
@@ -212,9 +231,10 @@ private slots:
 
 private:
     const bool kIsPatchbay;
+	void editHostedLayout(const CarlaPluginHost::LayoutChange& change, const std::function<void()>& edit);
 
     NativePluginHandle fHandle;
-    NativeHostDescriptor fHost;
+    NativeHostDescriptor fHost{};
     const NativePluginDescriptor* fDescriptor;
 
     uint32_t        fMidiEventCount;
@@ -224,12 +244,16 @@ private:
     // this is only needed because note-offs are being sent during play
     QMutex fMutex;
 
-    uint8_t m_paramGroupCount;
+    bool m_lastOffline = false;
+    bool m_updatingParams = false;
+    uint8_t m_paramGroupCount = 0;
     std::vector<CarlaParamFloatModel*> m_paramModels;
     QDomElement m_settingsElem;
+    QString m_stateError;
+    CarlaPluginHost::Resolver m_hostResolver;
+    std::unique_ptr<CarlaPluginHost> m_pluginHost;
 
-    QCompleter* m_paramsCompleter;
-    QStringListModel* m_completerModel;
+    QStringListModel* m_completerModel = nullptr;
 
     friend class gui::CarlaInstrumentView;
     friend class gui::CarlaParamsView;

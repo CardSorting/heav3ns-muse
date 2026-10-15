@@ -26,10 +26,11 @@
 #define LMMS_AUDIO_ENGINE_WORKER_THREAD_H
 
 #include <QThread>
+#include <QList>
 
+#include <algorithm>
 #include <atomic>
-
-class QWaitCondition;
+#include <cstddef>
 
 namespace lmms
 {
@@ -41,10 +42,13 @@ class AudioEngineWorkerThread : public QThread
 {
 	Q_OBJECT
 public:
-	// internal representation of the job queue - all functions are thread-safe
+	// Consumers may run concurrently. Reset and job lifetime are caller-
+	// serialized; dynamic producers must be part of an outstanding job, so
+	// completion cannot precede future publication.
 	class JobQueue
 	{
 	public:
+		enum class Failure { None, ProcessingException, QueueOverflow };
 		enum class OperationMode
 		{
 			Static,	// no jobs added while processing queue
@@ -68,8 +72,15 @@ public:
 
 		void run();
 		void wait();
+		Failure failure() const { return m_failure.load(std::memory_order_acquire); }
 
 	private:
+		void fail(Failure reason)
+		{
+			auto expected = Failure::None;
+			m_failure.compare_exchange_strong(expected, reason, std::memory_order_acq_rel);
+		}
+		std::atomic<Failure> m_failure{Failure::None};
 		std::atomic<ThreadableJob*> m_items[JOB_QUEUE_SIZE];
 		std::atomic_size_t m_writeIndex;
 		std::atomic_size_t m_itemsDone;
@@ -82,11 +93,7 @@ public:
 
 	virtual void quit();
 
-	static void resetJobQueue( JobQueue::OperationMode _opMode =
-													JobQueue::OperationMode::Static )
-	{
-		globalJobQueue.reset( _opMode );
-	}
+	static void resetJobQueue(JobQueue::OperationMode mode = JobQueue::OperationMode::Static);
 
 	static void addJob( ThreadableJob * _job )
 	{
@@ -107,16 +114,29 @@ public:
 	}
 
 	static void startAndWaitForJobs();
+	static JobQueue::Failure jobQueueFailure() { return globalJobQueue.failure(); }
+	struct SchedulerStatus
+	{
+		int registered = 0;
+		int ready = 0;
+		int queued = 0;
+		int scanning = 0;
+		bool batchActive = false;
+	};
+	static SchedulerStatus schedulerStatus();
 
 
 private:
 	void run() override;
 
 	static JobQueue globalJobQueue;
-	static QWaitCondition * queueReadyWaitCond;
 	static QList<AudioEngineWorkerThread *> workerThreads;
 
-	volatile bool m_quit;
+	// Guarded by the shared scheduler mutex, including quit/wake predicates.
+	bool m_quit = false;
+	bool m_ready = false;
+	bool m_workPending = false;
+	bool m_workActive = false;
 } ;
 
 } // namespace lmms

@@ -41,6 +41,27 @@
 namespace lmms
 {
 
+QMap<int, QString> Oscillator::waveShapeLabels()
+{
+	return {{static_cast<int>(WaveShape::Sine), QObject::tr("Sine")},
+		{static_cast<int>(WaveShape::Triangle), QObject::tr("Triangle")},
+		{static_cast<int>(WaveShape::Saw), QObject::tr("Saw")},
+		{static_cast<int>(WaveShape::Square), QObject::tr("Square")},
+		{static_cast<int>(WaveShape::MoogSaw), QObject::tr("Moog saw")},
+		{static_cast<int>(WaveShape::Exponential), QObject::tr("Exponential")},
+		{static_cast<int>(WaveShape::WhiteNoise), QObject::tr("White noise")},
+		{static_cast<int>(WaveShape::UserDefined), QObject::tr("User defined")}};
+}
+
+QMap<int, QString> Oscillator::modulationAlgoLabels()
+{
+	return {{static_cast<int>(ModulationAlgo::PhaseModulation), QObject::tr("Phase modulation")},
+		{static_cast<int>(ModulationAlgo::AmplitudeModulation), QObject::tr("Amplitude modulation")},
+		{static_cast<int>(ModulationAlgo::SignalMix), QObject::tr("Signal mix")},
+		{static_cast<int>(ModulationAlgo::SynchronizedBySubOsc), QObject::tr("Sync")},
+		{static_cast<int>(ModulationAlgo::FrequencyModulation), QObject::tr("Frequency modulation")}};
+}
+
 
 void Oscillator::waveTableInit()
 {

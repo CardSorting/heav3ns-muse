@@ -28,9 +28,12 @@
 
 #include "lmms_export.h"
 #include "Engine.h"
+#include "LmmsTypes.h"
 #include "Model.h"
 #include "JournallingObject.h"
 #include "ValueBuffer.h"
+#include <cstdint>
+#include <QPointer>
 
 namespace lmms
 {
@@ -67,6 +70,7 @@ public:
 						const QString & _display_name );
 
 	~Controller() override;
+	bool isRetiring() const noexcept { return m_retiring; }
 
 	virtual float currentValue( int _offset );
 	// The per-controller get-value-in-buffers function
@@ -124,11 +128,14 @@ public:
 	{
 		return s_periods;
 	}
-	static unsigned int runningFrames();
+	static f_cnt_t runningFrames();
 	static float runningTime();
 
 	static void triggerFrameCounter();
 	static void resetFrameCounter();
+	// Native model ownership required. Preserve musical time while making the
+	// next read recompute buffers, including connection-owned MIDI controllers.
+	static void invalidateValueBuffers() noexcept { ++s_bufferGeneration; }
 
 	//Accepts a ControllerConnection * as it may be used in the future.
 	void addConnection( ControllerConnection * );
@@ -147,6 +154,25 @@ public slots:
 
 
 protected:
+	void notifyValueChange();
+	class LMMS_EXPORT SettingsGuard
+	{
+	public:
+		explicit SettingsGuard(Controller* controller);
+		~SettingsGuard();
+		SettingsGuard(const SettingsGuard&) = delete;
+		SettingsGuard& operator=(const SettingsGuard&) = delete;
+		void check() const;
+	private:
+		QPointer<Controller> m_owner;
+	};
+	// Builtin serializers hold one SettingsGuard across these base fields and their own fields.
+	void saveBaseSettings(QDomDocument& document, QDomElement& element);
+	void loadBaseSettings(const QDomElement& element);
+	// Begin before derived members/resources are retired. Song may initiate
+	// this phase after detaching the rack entry and before removal observers.
+	// Retirement listeners participate in destruction and must not throw.
+	void beginRetirement();
 	// The internal per-controller get-value function
 	virtual float value( int _offset );
 
@@ -158,6 +184,7 @@ protected:
 	ValueBuffer m_valueBuffer;
 	// when we last updated the valuebuffer - so we know if we have to update it
 	long m_bufferLastUpdated;
+	std::uint64_t m_bufferGeneration;
 
 	float m_currentValue;
 	bool  m_sampleExact;
@@ -165,17 +192,24 @@ protected:
 
 	QString m_name;
 	ControllerType m_type;
+	bool m_retiring = false;
+	bool m_changingSettings = false;
 
 	static ControllerVector s_controllers;
 
 	static long s_periods;
+	static std::uint64_t s_bufferGeneration;
 
 
 signals:
+	void retiring();
 	// The value changed while the audio engine isn't running (i.e: MIDI CC)
 	void valueChanged();
 
 	friend class gui::ControllerDialog;
+	friend class Song;
+	friend class LfoCatchUpTestAccess;
+	friend class ControllerStateTestAccess;
 
 } ;
 

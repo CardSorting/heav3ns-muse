@@ -27,10 +27,17 @@
 
 
 #include <QDomElement>
+#include <QDebug>
 #include <QMessageBox>
 
 #include "AudioEngine.h"
 #include "EffectChain.h"
+#include "Engine.h"
+#include "GuiApplication.h"
+#include "Song.h"
+#include "FileResourceIO.h"
+#include <QPointer>
+#include <stdexcept>
 #include "plugins/PeakControllerEffect/PeakControllerEffect.h"
 
 namespace lmms
@@ -68,6 +75,7 @@ PeakController::PeakController( Model * _parent,
 
 PeakController::~PeakController()
 {
+	beginRetirement();
 	if( m_peakEffect != nullptr && m_peakEffect->effectChain() != nullptr )
 	{
 		m_peakEffect->effectChain()->removeEffect( m_peakEffect );
@@ -140,9 +148,12 @@ void PeakController::handleDestroyedEffect()
 
 void PeakController::saveSettings( QDomDocument & _doc, QDomElement & _this )
 {
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events; SettingsGuard changing(this);
+	const QPointer<Effect> effect(m_peakEffect);
 	if( m_peakEffect )
 	{
-		Controller::saveSettings( _doc, _this );
+		saveBaseSettings(_doc, _this); changing.check();
+		if (!effect || m_peakEffect != effect.data()) { throw std::runtime_error("Native peak effect changed during controller serialization"); }
 
 		_this.setAttribute( "effectId", m_peakEffect->m_effectId );
 	}
@@ -152,7 +163,8 @@ void PeakController::saveSettings( QDomDocument & _doc, QDomElement & _this )
 
 void PeakController::loadSettings( const QDomElement & _this )
 {
-	Controller::loadSettings( _this );
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events; SettingsGuard changing(this);
+	loadBaseSettings(_this); changing.check();
 
 	int effectId = _this.attribute( "effectId" ).toInt();
 	if( m_buggedFile == true )
@@ -208,16 +220,13 @@ PeakController * PeakController::getControllerBySetting(const QDomElement & _thi
 			{
 				effect->m_effectId = newEffectId++;
 			}
-			QMessageBox msgBox;
-			msgBox.setIcon( QMessageBox::Information );
-			msgBox.setWindowTitle( tr("Peak Controller Bug") );
-			msgBox.setText( tr("Due to a bug in older version of LMMS, the peak "
+			const auto message = tr("Due to a bug in older version of LMMS, the peak "
 							   "controllers may not be connect properly. "
 							   "Please ensure that peak controllers are connected "
 							   "properly and re-save this file. "
-							   "Sorry for any inconvenience caused.") );
-			msgBox.setStandardButtons(QMessageBox::Ok);
-			msgBox.exec();
+							   "Sorry for any inconvenience caused.");
+			if (gui::getGUI() != nullptr) { QMessageBox::information(nullptr, tr("Peak Controller Bug"), message); }
+			else { Engine::getSong()->collectError(message); qWarning().noquote() << message; }
 		}
 	}
 

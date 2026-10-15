@@ -32,6 +32,7 @@
 #include "Instrument.h"
 #include "InstrumentView.h"
 #include "SubWindow.h"
+#include "VstParameterModels.h"
 
 
 class QGridLayout;
@@ -69,13 +70,22 @@ public:
 	virtual QString nodeName() const;
 
 	virtual void loadFile( const QString & _file );
+	void refreshParameterModels() override;
+	bool supportsNativePrograms() const override { return m_plugin != nullptr; }
+	NativeProgramPage nativePrograms(int offset, int limit) override;
+	bool selectNativeProgram(int index, QString& error) override;
+	bool supportsNativePresets() const override { return m_plugin != nullptr; }
+	NativePresetInfo inspectNativePreset(const QString& path) override;
+	NativePresetInfo loadNativePreset(const QString& path) override;
+	NativePresetInfo saveNativePreset(const QString& path, bool bank) override;
+	std::vector<FileResource> fileResources() const override;
+	bool setFileResource(const QString& key, const QString& path, QString& error) override;
 
 	virtual bool handleMidiEvent( const MidiEvent& event, const TimePos& time, f_cnt_t offset = 0 );
 
 	virtual gui::PluginView* instantiateView( QWidget * _parent );
 
 protected slots:
-	void setParameter( lmms::Model * action );
 	void handleConfigChange( QString cls, QString attr, QString value );
 	void reloadPlugin();
 
@@ -89,9 +99,9 @@ private:
 	QString m_pluginDLL;
 	gui::SubWindow* m_subWindow;
 	QScrollArea * m_scrollArea;
-	FloatModel ** knobFModel;
+	VstParameterModels m_parameters;
+	bool m_parameterOperation = false;
 	QObject * p_subWindow;
-	int paramCount;
 
 
 	friend class gui::VestigeInstrumentView;
@@ -113,7 +123,6 @@ public:
 protected slots:
 	void syncPlugin();
 	void displayAutomatedOnly();
-	void setParameter( lmms::Model * action );
 	void closeWindow();
 
 protected:
@@ -162,6 +171,7 @@ protected:
 
 private:
 	virtual void modelChanged();
+	void changeProgram(int program, bool relative);
 
 
 	VestigeInstrument * m_vi;

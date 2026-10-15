@@ -97,35 +97,16 @@ InstrumentTrackView::InstrumentTrackView( InstrumentTrack * _it, TrackContainerV
 
 	m_midiMenu = new QMenu( tr( "MIDI" ), this );
 
-	// sequenced MIDI?
-	if( !Engine::audioEngine()->midiClient()->isRaw() )
-	{
-		_it->m_midiPort.m_readablePortsMenu = new MidiPortMenu(
-							MidiPort::Mode::Input );
-		_it->m_midiPort.m_writablePortsMenu = new MidiPortMenu(
-							MidiPort::Mode::Output );
-		_it->m_midiPort.m_readablePortsMenu->setModel(
-							&_it->m_midiPort );
-		_it->m_midiPort.m_writablePortsMenu->setModel(
-							&_it->m_midiPort );
-		m_midiInputAction = m_midiMenu->addMenu(
-					_it->m_midiPort.m_readablePortsMenu );
-		m_midiOutputAction = m_midiMenu->addMenu(
-					_it->m_midiPort.m_writablePortsMenu );
-	}
-	else
-	{
-		m_midiInputAction = m_midiMenu->addAction( "" );
-		m_midiOutputAction = m_midiMenu->addAction( "" );
-		m_midiInputAction->setCheckable( true );
-		m_midiOutputAction->setCheckable( true );
-		connect( m_midiInputAction, SIGNAL(changed()), this,
-						SLOT(midiInSelected()));
-		connect( m_midiOutputAction, SIGNAL(changed()), this,
-					SLOT(midiOutSelected()));
-		connect( &_it->m_midiPort, SIGNAL(modeChanged()),
-				this, SLOT(midiConfigChanged()));
-	}
+	// Keep menus bound to native models across raw/named backend changes.
+	_it->m_midiPort.m_readablePortsMenu = new MidiPortMenu(MidiPort::Mode::Input);
+	_it->m_midiPort.m_writablePortsMenu = new MidiPortMenu(MidiPort::Mode::Output);
+	_it->m_midiPort.m_readablePortsMenu->setModel(&_it->m_midiPort);
+	_it->m_midiPort.m_writablePortsMenu->setModel(&_it->m_midiPort);
+	m_midiInputAction = m_midiMenu->addAction("");
+	m_midiOutputAction = m_midiMenu->addAction("");
+	connect(m_midiInputAction, &QAction::triggered, this, &InstrumentTrackView::midiInSelected);
+	connect(m_midiOutputAction, &QAction::triggered, this, &InstrumentTrackView::midiOutSelected);
+	connect(&_it->m_midiPort, &MidiPort::modeChanged, this, &InstrumentTrackView::midiConfigChanged);
 
 	m_midiInputAction->setText( tr( "Input" ) );
 	m_midiOutputAction->setText( tr( "Output" ) );
@@ -273,6 +254,7 @@ void InstrumentTrackView::modelChanged()
 	TrackView::modelChanged();
 	auto st = castModel<InstrumentTrack>();
 	m_mixerChannelNumber->setModel(&st->m_mixerChannelModel);
+	midiConfigChanged();
 }
 
 void InstrumentTrackView::dragEnterEvent( QDragEnterEvent * _dee )
@@ -340,7 +322,7 @@ void InstrumentTrackView::activityIndicatorReleased()
 
 void InstrumentTrackView::midiInSelected()
 {
-	if( model() )
+	if (model() && model()->m_midiPort.client() && model()->m_midiPort.client()->isRaw())
 	{
 		model()->m_midiPort.setReadable( m_midiInputAction->isChecked() );
 	}
@@ -351,7 +333,7 @@ void InstrumentTrackView::midiInSelected()
 
 void InstrumentTrackView::midiOutSelected()
 {
-	if( model() )
+	if (model() && model()->m_midiPort.client() && model()->m_midiPort.client()->isRaw())
 	{
 		model()->m_midiPort.setWritable( m_midiOutputAction->isChecked() );
 	}
@@ -362,8 +344,14 @@ void InstrumentTrackView::midiOutSelected()
 
 void InstrumentTrackView::midiConfigChanged()
 {
-	m_midiInputAction->setChecked( model()->m_midiPort.isReadable() );
-	m_midiOutputAction->setChecked( model()->m_midiPort.isWritable() );
+	if (!model()) { return; }
+	const auto& port = model()->m_midiPort;
+	const bool raw = !port.client() || port.client()->isRaw();
+	m_midiInputAction->setMenu(raw ? nullptr : port.m_readablePortsMenu);
+	m_midiOutputAction->setMenu(raw ? nullptr : port.m_writablePortsMenu);
+	m_midiInputAction->setCheckable(raw); m_midiOutputAction->setCheckable(raw);
+	m_midiInputAction->setChecked(port.isReadable());
+	m_midiOutputAction->setChecked(port.isWritable());
 }
 
 

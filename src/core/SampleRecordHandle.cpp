@@ -24,120 +24,141 @@
 
 
 #include "SampleRecordHandle.h"
+#include <algorithm>
+#include <cmath>
+#include <exception>
+#include <limits>
+#include <QDebug>
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QThread>
 #include "AudioEngine.h"
 #include "Engine.h"
 #include "PatternTrack.h"
+#include "PatternStore.h"
 #include "SampleBuffer.h"
 #include "SampleClip.h"
-
+#include "SampleTrack.h"
+#include "Song.h"
+#include "TrackContainer.h"
 
 namespace lmms
 {
-
-
-SampleRecordHandle::SampleRecordHandle( SampleClip* clip ) :
-	PlayHandle( Type::SamplePlayHandle ),
-	m_framesRecorded( 0 ),
-	m_minLength( clip->length() ),
-	m_track( clip->getTrack() ),
-	m_patternTrack( nullptr ),
-	m_clip( clip )
+SampleRecordHandle::SampleRecordHandle(SampleClip* clip, f_cnt_t frameLimit, bool reservedCompletion)
+	: PlayHandle(Type::SamplePlayHandle)
+	, m_minLength(clip ? clip->length() : TimePos())
+	, m_track(clip ? clip->getTrack() : nullptr)
+	, m_patternTrack(nullptr)
+	, m_clip(clip)
+	, m_clipIdentity(clip)
+	, m_frameLimit(frameLimit)
+	, m_reservedCompletion(reservedCompletion)
 {
+	setUsesBuffer(false);
+	if (Engine::audioEngine()) { m_inputErrorEpoch = Engine::audioEngine()->inputErrorEpoch(); }
+	if (auto track = dynamic_cast<SampleTrack*>(m_track)) { setAudioBusHandle(track->audioBusHandle()); }
+	else { m_recording.append(nullptr, 1, 0); }
+	if (m_clip && audioBusHandle())
+	{
+		m_registeredTake = m_clip->beginRecordingTake(reservedCompletion);
+		if (!m_registeredTake) { m_recording.reject(QObject::tr("Native clip recording is reserved or publishing")); }
+	}
 }
-
-
-
 
 SampleRecordHandle::~SampleRecordHandle()
 {
-	if (!m_buffers.empty()) { m_clip->setSampleBuffer(createSampleBuffer()); }
-
-	while( !m_buffers.empty() )
+	if (!m_clip || !m_registeredTake) { return; }
+	if (Engine::audioEngine() && Engine::audioEngine()->inputErrorEpoch() != m_inputErrorEpoch)
 	{
-		delete[] m_buffers.front().first;
-		m_buffers.erase( m_buffers.begin() );
+		m_recording.reject(QObject::tr("Native audio input was lost or rejected during the take"));
 	}
-	m_clip->setRecord( false );
+	std::shared_ptr<SampleRecordingBuffer> recording;
+	QString failure;
+	try { recording = std::make_shared<SampleRecordingBuffer>(std::move(m_recording)); }
+	catch (const std::exception& error)
+	{
+		failure = QString::fromUtf8(error.what());
+	}
+	try { m_clip->stageRecordingCompletion(std::move(recording), failure); }
+	catch (const std::exception& error) { qWarning() << "Native recording completion notification failed:" << error.what(); }
 }
 
-
-
-
-void SampleRecordHandle::play( SampleFrame* /*_working_buffer*/ )
+bool SampleRecordHandle::finalizePendingRecordings(QString& error)
 {
-	const SampleFrame* recbuf = Engine::audioEngine()->inputBuffer();
-	const f_cnt_t frames = Engine::audioEngine()->inputBufferFrames();
-	writeBuffer( recbuf, frames );
-	m_framesRecorded += frames;
-
-	TimePos len = (tick_t)( m_framesRecorded / Engine::framesPerTick() );
-	if( len > m_minLength )
+	const auto application = QCoreApplication::instance();
+	if (!application || QThread::currentThread() != application->thread() || !Engine::audioEngine() || !Engine::getSong())
 	{
-//		m_clip->changeLength( len );
-		m_minLength = len;
+		error = QObject::tr("Native recording persistence requires the application thread and engine"); return false;
 	}
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	std::vector<QPointer<SampleClip>> clips;
+	for (const auto container : {static_cast<TrackContainer*>(Engine::getSong()), static_cast<TrackContainer*>(Engine::patternStore())})
+	{
+		if (!container) { continue; }
+		for (const auto track : container->tracks())
+		{
+			for (const auto clip : track->getClips())
+			{
+				if (const auto sample = dynamic_cast<SampleClip*>(clip)) { clips.emplace_back(sample); }
+			}
+		}
+	}
+	for (const auto& clip : clips)
+	{
+		if (clip && (clip->hasReservedRecording() || clip->hasActiveRecording() || clip->isFinalizingRecording()))
+		{
+			error = QObject::tr("Finish native recording completion before saving"); return false;
+		}
+	}
+	for (const auto& clip : clips)
+	{
+		if (clip && !clip->finalizeRecordings(error)) { return false; }
+	}
+	error.clear(); return true;
 }
 
-
-
+void SampleRecordHandle::play(SampleFrame*)
+{
+	const auto engine = Engine::audioEngine();
+	if (engine->inputErrorEpoch() != m_inputErrorEpoch || engine->inputBufferFault())
+	{
+		m_recording.reject(QObject::tr("Native audio input was lost or rejected during the take")); return;
+	}
+	writeBuffer(engine->inputBuffer(), engine->inputBufferFrames());
+	const auto frames = framesRecorded();
+	const auto framesPerTick = Engine::framesPerTick();
+	if (std::isfinite(framesPerTick) && framesPerTick > 0)
+	{
+		const auto ticks = std::min(static_cast<double>(frames) / framesPerTick,
+			static_cast<double>(std::numeric_limits<tick_t>::max()));
+		const TimePos length(static_cast<tick_t>(ticks));
+		if (length > m_minLength) { m_minLength = length; }
+	}
+}
 
 bool SampleRecordHandle::isFinished() const
 {
-	return false;
+	return !m_clip || m_recording.failed() || (m_frameLimit && framesRecorded() >= m_frameLimit);
 }
-
-
-
-
-bool SampleRecordHandle::isFromTrack( const Track * _track ) const
-{
-	return (m_track == _track || m_patternTrack == _track);
-}
-
-
-
-
-f_cnt_t SampleRecordHandle::framesRecorded() const
-{
-	return( m_framesRecorded );
-}
-
-
-
+bool SampleRecordHandle::recordsClip(const SampleClip* clip) const { return m_clipIdentity == clip; }
+bool SampleRecordHandle::isFromTrack(const Track* track) const { return m_track == track || m_patternTrack == track; }
+f_cnt_t SampleRecordHandle::framesRecorded() const { return m_framesRecorded.load(std::memory_order_relaxed); }
 
 std::shared_ptr<const SampleBuffer> SampleRecordHandle::createSampleBuffer()
 {
-	const f_cnt_t frames = framesRecorded();
-	// create buffer to store all recorded buffers in
-	auto bigBuffer = std::vector<SampleFrame>(frames);
-
-	// now copy all buffers into big buffer
-	auto framesCopied = 0;
-	for (const auto& [buf, numFrames] : m_buffers)
+	if (Engine::audioEngine() && Engine::audioEngine()->inputErrorEpoch() != m_inputErrorEpoch)
 	{
-		std::copy_n(buf, numFrames, bigBuffer.begin() + framesCopied);
-		framesCopied += numFrames;
+		m_recording.reject(QObject::tr("Native audio input was lost or rejected during the take"));
 	}
-
-	// create according sample-buffer out of big buffer
-	return std::make_shared<const SampleBuffer>(std::move(bigBuffer), Engine::audioEngine()->inputSampleRate());
+	QString error; const auto result = m_recording.finalize(error);
+	if (!result) { qWarning() << error; }
+	return result;
 }
 
-
-
-
-void SampleRecordHandle::writeBuffer( const SampleFrame* _ab, const f_cnt_t _frames )
+void SampleRecordHandle::writeBuffer(const SampleFrame* input, f_cnt_t frames)
 {
-	auto buf = new SampleFrame[_frames];
-	for( f_cnt_t frame = 0; frame < _frames; ++frame )
-	{
-		for( ch_cnt_t chnl = 0; chnl < DEFAULT_CHANNELS; ++chnl )
-		{
-			buf[frame][chnl] = _ab[frame][chnl];
-		}
-	}
-	m_buffers.push_back( qMakePair( buf, _frames ) );
+	if (m_frameLimit) { frames = std::min(frames, m_frameLimit - std::min(m_frameLimit, framesRecorded())); }
+	m_recording.append(input, frames, Engine::audioEngine()->inputSampleRate());
+	m_framesRecorded.store(m_recording.framesRecorded(), std::memory_order_relaxed);
 }
-
-
 } // namespace lmms

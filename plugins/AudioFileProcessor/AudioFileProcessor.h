@@ -52,6 +52,8 @@ public:
 	void loadSettings(const QDomElement& elem) override;
 
 	void loadFile( const QString & _file ) override;
+	std::vector<FileResource> fileResources() const override;
+	bool setFileResource(const QString& key, const QString& path, QString& error) override;
 
 	QString nodeName() const override;
 
@@ -94,7 +96,13 @@ signals:
 	void sampleUpdated();
 
 private:
+	class Context;
+	class SettingsGuard;
+	bool loadAudioFile(const QString& path, bool rename, QString& error);
+	bool loadAudioFileImpl(const QString& path, bool rename, QString& error, SettingsGuard& work);
+	bool m_changingState = false;
 	Sample m_sample;
+	QString m_unresolvedFile;
 
 	FloatModel m_ampModel;
 	FloatModel m_startPointModel;

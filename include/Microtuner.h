@@ -36,7 +36,7 @@ class LMMS_EXPORT Microtuner : public Model, public JournallingObject
 {
 	Q_OBJECT
 public:
-	explicit Microtuner();
+	explicit Microtuner(Model* parent = nullptr);
 
 	bool enabled() const {return m_enabledModel.value();}
 	bool keyRangeImport() const {return enabled() && m_keyRangeImportModel.value();}
@@ -64,6 +64,9 @@ public:
 	QString nodeName() const override {return "microtuner";}
 	void saveSettings(QDomDocument & document, QDomElement &element) override;
 	void loadSettings(const QDomElement &element) override;
+
+signals:
+	void tuningChanged();
 
 protected slots:
 	//! @brief Update scale name displayed in the microtuner scale list.

@@ -26,10 +26,16 @@
 #define LMMS_SONG_H
 
 #include <array>
+#include <cstdint>
+#include <exception>
+#include <functional>
 #include <memory>
+#include <vector>
 
 #include <QString>
 #include <QHash>  // IWYU pragma: keep
+#include <QJsonArray>
+#include <QPointer>
 
 #include "AudioEngine.h"
 #include "Controller.h"
@@ -101,6 +107,22 @@ public:
 	void collectError( const QString error );
 	bool hasErrors();
 	QString errorSummary();
+	// Retained, silent sample references remain visible in native diagnostics but
+	// do not invalidate a checkpoint. Every ordinary collectError stays fatal.
+	void collectUnresolvedResource(const QString& path);
+	bool hasFatalErrors() const { return m_hasFatalErrors; }
+	std::uint64_t fatalErrorGeneration() const { return m_fatalErrorGeneration; }
+	// Read under native model ownership; entries and offsets can change whenever
+	// the generation changes, independently of persisted project revisions.
+	const QHash<QString, int>& nativeErrors() const { return m_errors; }
+	std::uint64_t errorGeneration() const { return m_errorGeneration; }
+	bool releaseMidiOutput();
+	QString midiOutputCleanupError() const { return m_midiOutputCleanupError; }
+	// Read under the audio engine model guard. Counts completed transport buffers
+	// across loops, independent of an external MIDI device's timestamp origin.
+	// Callback-interrupted buffers can have effects before being abandoned.
+	f_cnt_t playbackFrames() const { return m_playbackFrames; }
+	std::uint64_t playbackGeneration() const { return m_playbackGeneration; }
 
 	void processNextBuffer();
 
@@ -168,17 +190,19 @@ public:
 	{
 		return m_exporting;
 	}
+	bool hasPendingExportCleanup() const { return m_exportCleanupPending; }
 
 	inline void setExportLoop( bool exportLoop )
 	{
 		m_exportLoop = exportLoop;
 	}
+	bool exportLoop() const { return m_exportLoop; }
 
 	inline bool isRecording() const
 	{
 		return m_recording;
 	}
-	
+
 	inline void setLoopRenderCount(int count)
 	{
 		if (count < 1)
@@ -187,7 +211,7 @@ public:
 			m_loopRenderCount = count;
 		m_loopRenderRemaining = m_loopRenderCount;
 	}
-    
+
 	inline int getLoopRenderCount() const
 	{
 		return m_loopRenderCount;
@@ -200,11 +224,23 @@ public:
 	{
 		m_renderBetweenMarkers = renderBetweenMarkers;
 	}
+	bool renderBetweenMarkers() const { return m_renderBetweenMarkers; }
+
+	struct ExportRange
+	{
+		TimePos begin, end, loopBegin, loopEnd;
+		qint64 effectiveTicks = 0;
+	};
+	// Native export semantics shared by the renderer and headless preflight.
+	ExportRange exportRange(bool exportLoop, bool betweenMarkers, int loopCount) const;
+	ExportRange lastExportRange() const { return {m_exportSongBegin, m_exportSongEnd, m_exportLoopBegin, m_exportLoopEnd, m_exportEffectiveLength}; }
 
 	inline PlayMode playMode() const
 	{
 		return m_playMode;
 	}
+	const MidiClip* playingMidiClip() const { return m_playMode == PlayMode::MidiClip ? m_midiClipToPlay : nullptr; }
+	bool midiClipLoopEnabled() const { return m_loopMidiClip; }
 
 	const TimePos& getPlayPos(PlayMode pm) const
 	{
@@ -248,11 +284,15 @@ public:
 
 	// file management
 	void createNewProject();
+	void createEmptyProject();
 	void createNewProjectFromTemplate( const QString & templ );
-	void loadProject( const QString & filename );
+	// Returns false on rejection/cancellation without reporting success to headless callers.
+	bool loadProject( const QString & filename );
 	bool guiSaveProject();
 	bool guiSaveProjectAs(const QString & filename);
-	bool saveProjectFile(const QString & filename, bool withResources = false);
+	bool saveProjectFile(const QString & filename, bool withResources = false,
+		bool absoluteLocalResources = false, QJsonArray* checkpointAssets = nullptr);
+	std::uint64_t replacementGeneration() const noexcept { return m_replacementGeneration; }
 
 	const QString & projectFileName() const
 	{
@@ -292,6 +332,11 @@ public:
 
 	void addController( Controller * c );
 	void removeController( Controller * c );
+	//! Identity-only roster query; does not dereference the supplied pointer.
+	bool containsController(const Controller* controller) const;
+	// Synchronous owner-thread lifecycle receivers catch locally and report
+	// before returning to Qt. Accepted failures return through the native caller.
+	bool reportControllerNotificationFailure(std::exception_ptr failure) noexcept;
 
 
 	const ControllerVector & controllers() const
@@ -310,7 +355,7 @@ public:
 		return m_tempoModel;
 	}
 
-	void exportProjectMidi(const std::filesystem::path& filePath) const;
+	bool exportProjectMidi(const std::filesystem::path& filePath) const;
 
 	inline void setLoadOnLaunch(bool value) { m_loadOnLaunch = value; }
 	SaveOptions &getSaveOptions() {
@@ -318,6 +363,11 @@ public:
 	}
 
 	bool isSavingProject() const;
+	// Sharing/export preferences cannot discard state from a recovery checkpoint.
+	bool shouldDiscardMidiConnections() const
+	{
+		return m_savingProject && !m_savingCheckpoint && m_saveOptions.discardMIDIConnections.value();
+	}
 
 	std::shared_ptr<const Scale> getScale(unsigned int index) const;
 	std::shared_ptr<const Keymap> getKeymap(unsigned int index) const;
@@ -366,6 +416,8 @@ private slots:
 
 
 private:
+	class CreationGuard;
+	friend class ImportFilter;
 	Song();
 	Song( const Song & );
 	~Song() override;
@@ -387,6 +439,8 @@ private:
 	}
 
 	void saveControllerStates( QDomDocument & doc, QDomElement & element );
+	void clearProjectImpl();
+	void advanceReplacementGeneration();
 	void restoreControllerStates( const QDomElement & element );
 
 	void removeAllControllers();
@@ -397,7 +451,8 @@ private:
 	void saveKeymapStates(QDomDocument &doc, QDomElement &element);
 	void restoreKeymapStates(const QDomElement &element);
 
-	void processAutomations(const TrackList& tracks, TimePos timeStart, f_cnt_t frames);
+	// False means transport context is unavailable or changed; abandon this tick.
+	bool processAutomations(const std::vector<QPointer<Track>>& tracks, TimePos timeStart, f_cnt_t frames);
 	void processMetronome(size_t bufferOffset);
 
 	void setModified(bool value);
@@ -413,28 +468,54 @@ private:
 	IntModel m_masterPitchModel;
 
 	ControllerVector m_controllers;
+	enum class ControllerNotification { Added, Removed, Roster };
+	void notifyControllerChange(ControllerNotification kind, Controller* controller = nullptr);
+	std::vector<QPointer<Controller>> m_controllerRemovals;
+	// Disconnect roster hooks before Song fields and base-owned tracks die.
+	std::unique_ptr<QObject> m_controllerLifecycleContext = std::make_unique<QObject>();
 
 	int m_nLoadingTrack;
 
 	QString m_fileName;
+	// Retain presentation and extension data when a project is edited without views.
+	QDomDocument m_preservedProjectData;
 	QString m_oldFileName;
 	bool m_modified;
 	bool m_loadOnLaunch;
 
 	volatile bool m_recording;
 	volatile bool m_exporting;
+	bool m_exportCleanupPending = false;
+	class ExportTransitionGuard;
+	bool m_exportTransitionActive = false;
+	enum class ExportTransitionPoint { StartAfterTimeline, StartAfterPlayback, StopAfterTimeline, StopAfterPlayback };
+	void exportTransitionCheckpoint(ExportTransitionPoint point);
+	std::function<void(ExportTransitionPoint)> m_exportTransitionProbe;
 	volatile bool m_exportLoop;
 	volatile bool m_renderBetweenMarkers;
 	volatile bool m_playing;
 	volatile bool m_paused;
 
 	bool m_savingProject;
+	bool m_savingCheckpoint = false;
 	bool m_loadingProject;
+	bool m_loadingProjectFile = false;
+	bool m_clearingProject = false;
+	bool m_creatingProject = false;
+	bool m_importingProject = false;
+	bool m_permitCreationLoad = false;
+	std::uint64_t m_replacementGeneration = 0;
 	bool m_isCancelled;
 
 	SaveOptions m_saveOptions;
 
 	QHash<QString, int> m_errors;
+	bool m_hasFatalErrors = false;
+	std::uint64_t m_fatalErrorGeneration = 0;
+	std::uint64_t m_errorGeneration = 0;
+	QString m_midiOutputCleanupError;
+	f_cnt_t m_playbackFrames = 0;
+	std::uint64_t m_playbackGeneration = 0;
 
 	std::array<Timeline, PlayModeCount> m_timelines;
 
@@ -442,26 +523,31 @@ private:
 	bar_t m_length;
 
 	const MidiClip* m_midiClipToPlay;
+	QMetaObject::Connection m_playingMidiClipDestroyed;
 	bool m_loopMidiClip;
 
 	VstSyncController m_vstSyncController;
-    
+
 	int m_loopRenderCount;
 	int m_loopRenderRemaining;
 	TimePos m_exportSongBegin;
 	TimePos m_exportLoopBegin;
 	TimePos m_exportLoopEnd;
 	TimePos m_exportSongEnd;
-	TimePos m_exportEffectiveLength;
+	qint64 m_exportEffectiveLength = 0;
 
 	std::shared_ptr<Scale> m_scales[MaxScaleCount];
 	std::shared_ptr<Keymap> m_keymaps[MaxKeymapCount];
 
-	AutomatedValueMap m_oldAutomatedValues;
+	std::vector<QPointer<AutomatableModel>> m_oldAutomatedModels;
 
 	Metronome m_metronome;
 
 	friend class Engine;
+	friend class SongAutomationOwnershipTestAccess;
+	friend class StudioControllerLifecycleTestAccess;
+	friend class NativeSongTestAccess;
+	friend class SongExportTransitionTestAccess;
 	friend class gui::SongEditor;
 	friend class gui::ControllerRackView;
 
@@ -474,6 +560,7 @@ signals:
 	void timeSignatureChanged( int oldTicksPerBar, int ticksPerBar );
 	void controllerAdded( lmms::Controller * );
 	void controllerRemoved( lmms::Controller * );
+	void controllerRosterChanged();
 	void stopped();
 	void modified();
 	void projectFileNameChanged();

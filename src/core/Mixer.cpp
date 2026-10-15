@@ -25,11 +25,23 @@
 #include "Mixer.h"
 
 #include <QDomElement>
+#include <QHash>
+#include <QPointer>
+#include <QScopeGuard>
+#include <QSet>
+#include <QVector>
+#include <QThread>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <memory>
+#include <stdexcept>
 
 #include "AudioEngine.h"
 #include "AudioEngineWorkerThread.h"
 #include "Mixer.h"
 #include "Song.h"
+#include "FileResourceIO.h"
 
 #include "InstrumentTrack.h"
 #include "MixHelpers.h"
@@ -40,15 +52,63 @@
 namespace lmms
 {
 
+namespace
+{
+std::vector<QPointer<IntModel>> channelSelectors()
+{
+	std::vector<QPointer<IntModel>> result;
+	for (auto container : {static_cast<TrackContainer*>(Engine::getSong()), static_cast<TrackContainer*>(Engine::patternStore())})
+	{
+		if (!container) { continue; }
+		for (auto track : container->tracks())
+		{
+			if (auto instrument = dynamic_cast<InstrumentTrack*>(track)) { result.emplace_back(instrument->mixerChannelModel()); }
+			else if (auto sample = dynamic_cast<SampleTrack*>(track)) { result.emplace_back(sample->mixerChannelModel()); }
+		}
+	}
+	return result;
+}
+}
+
+MixerControlModel::MixerControlModel(bool value, Model* parent)
+	: BoolModel(value, parent), m_mixer(dynamic_cast<Mixer*>(parent)) { }
+
+JournallingObject* MixerControlModel::journalTarget()
+{
+	return m_mixer && m_mixer->m_updatingSolo ? nullptr : this;
+}
+
+QDomElement MixerControlModel::saveJournalState(QDomDocument& document, QDomElement& parent)
+{
+	return m_mixer ? m_mixer->saveSoloJournal(document, parent) : BoolModel::saveJournalState(document, parent);
+}
+
+bool MixerControlModel::restoreJournalState(const QDomElement& state, QString& error)
+{
+	return m_mixer ? m_mixer->restoreSoloJournal(state, error) : BoolModel::restoreJournalState(state, error);
+}
+
 
 MixerRoute::MixerRoute( MixerChannel * from, MixerChannel * to, float amount ) :
 	m_from( from ),
 	m_to( to ),
+	m_fromAnchor(&from->m_fxChain), m_toAnchor(&to->m_fxChain),
 	m_amount(amount, 0, 1, 0.001f, nullptr,
 			tr("Amount to send from channel %1 to channel %2").arg(m_from->index()).arg(m_to->index()))
 {
 	//qDebug( "created: %d to %d", m_from->m_channelIndex, m_to->m_channelIndex );
 	// create send amount model
+}
+
+MixerRoute::~MixerRoute()
+{
+	// Detach before the amount model emits destruction notifications. A listener
+	// can retire the mixer while this route's members are still unwinding.
+	if (!m_owner || m_owner->m_retiring) { return; }
+	const auto erase = [this](MixerRouteVector& routes) { routes.erase(std::remove(routes.begin(), routes.end(), this), routes.end()); };
+	erase(m_owner->m_mixerRoutes);
+	if (m_fromAnchor) { erase(m_from->m_sends); }
+	if (m_toAnchor) { erase(m_to->m_receives); }
 }
 
 
@@ -82,6 +142,11 @@ MixerChannel::MixerChannel( int idx, Model * _parent ) :
 
 MixerChannel::~MixerChannel()
 {
+	// These are members, not separately allocated children. A destruction
+	// observer may retire the mixer before the remaining members unwind.
+	m_volumeModel.setParent(nullptr);
+	m_muteModel.setParent(nullptr);
+	m_soloModel.setParent(nullptr);
 }
 
 
@@ -99,65 +164,12 @@ inline void MixerChannel::processed()
 void MixerChannel::incrementDeps()
 {
 	const auto i = m_dependenciesMet++ + 1;
-	if( i >= m_receives.size() && ! m_queued )
+	if (i == m_receives.size() && !m_queued.exchange(true))
 	{
-		m_queued = true;
 		AudioEngineWorkerThread::addJob( this );
 	}
 }
 
-void MixerChannel::unmuteForSolo()
-{
-	m_muteModel.setValue(false);
-
-	// if channel is not master, unmute also every channel it sends to/receives from
-	if (!isMaster())
-	{
-		for (const MixerRoute* sendsRoute : m_sends)
-		{
-			sendsRoute->receiver()->unmuteSenderForSolo();
-		}
-
-		for (const MixerRoute* receiverRoute : m_receives)
-		{
-			receiverRoute->sender()->unmuteReceiverForSolo();
-		}
-	}
-}
-
-void MixerChannel::unmuteSenderForSolo()
-{
-	m_muteModel.setValue(false);
-
-	// if channel is not master, unmute every channel it sends to
-	if (!isMaster())
-	{
-		for (const MixerRoute* sendsRoute : m_sends)
-		{
-			sendsRoute->receiver()->unmuteSenderForSolo();
-		}
-	}
-}
-
-
-void MixerChannel::unmuteReceiverForSolo()
-{
-	m_muteModel.setValue(false);
-
-	// if channel is not master, unmute every channel it receives from, and of those, unmute the channels they send to
-	if (!isMaster())
-	{
-		for (const MixerRoute* receiverRoute : m_receives)
-		{
-			receiverRoute->sender()->unmuteReceiverForSolo();
-		}
-
-		for (const MixerRoute* sendsRoute : m_sends)
-		{
-			sendsRoute->receiver()->unmuteSenderForSolo();
-		}
-	}
-}
 
 
 
@@ -243,9 +255,13 @@ Mixer::Mixer() :
 
 Mixer::~Mixer()
 {
+	m_retiring = true;
+	m_changingTopology = true;
+	m_updatingSolo = true;
+	m_lastSoloed = -1;
 	while (!m_mixerRoutes.empty())
 	{
-		deleteChannelSend(m_mixerRoutes.front());
+		deleteRouteImpl(m_mixerRoutes.front());
 	}
 	while( m_mixerChannels.size() )
 	{
@@ -257,124 +273,283 @@ Mixer::~Mixer()
 
 
 
+bool Mixer::canChangeTopology() const
+{
+	return !m_retiring && QThread::currentThread() == thread() && !m_changingTopology && !m_updatingSolo
+		&& std::all_of(m_mixerChannels.begin(), m_mixerChannels.end(), [](const auto channel) { return !channel->m_fxChain.m_changing; });
+}
+
+Mixer::FlagGuard::FlagGuard(Mixer* owner, bool Mixer::* flag)
+	: m_owner(owner), m_flag(flag), m_previous(owner->*flag)
+{
+	if (owner->m_retiring) { throw std::logic_error("Native mixer is retiring"); }
+	owner->*flag = true;
+}
+Mixer::FlagGuard::~FlagGuard() { restore(); }
+void Mixer::FlagGuard::restore() const { if (m_owner && !m_owner->m_retiring) { m_owner.data()->*m_flag = m_previous; } }
+void Mixer::FlagGuard::check() const
+{ if (!m_owner || m_owner->m_retiring) { throw std::runtime_error("Native mixer retired during transition"); } }
+MixerChannel* Mixer::ChannelRef::get() const
+{
+	if (!owner || owner->m_retiring || !anchor || row >= owner->m_mixerChannels.size() || owner->m_mixerChannels[row] != identity)
+	{ throw std::runtime_error("Native mixer channel retired or changed during transition"); }
+	return identity;
+}
+Mixer::ChannelRef Mixer::watchChannel(std::size_t row)
+{
+	if (row >= m_mixerChannels.size()) { throw std::out_of_range("Native mixer channel is unavailable"); }
+	return {this, m_mixerChannels[row], &m_mixerChannels[row]->m_fxChain, row};
+}
+std::vector<Mixer::ChannelRef> Mixer::watchChannels()
+{
+	std::vector<ChannelRef> channels; channels.reserve(m_mixerChannels.size());
+	for (std::size_t row = 0; row < m_mixerChannels.size(); ++row) { channels.push_back(watchChannel(row)); }
+	return channels;
+}
+
 int Mixer::createChannel()
 {
+	if (!canChangeTopology()) { throw std::logic_error("Mixer channels can only be added on their owner thread outside a mixer transition"); }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	return createChannelImpl();
+}
+
+int Mixer::createChannelImpl()
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (m_mixerChannels.size() >= std::numeric_limits<mix_ch_t>::max())
+	{
+		throw std::length_error("Native mixer channel count exceeds its index representation");
+	}
 	const int index = m_mixerChannels.size();
 	// create new channel
-	m_mixerChannels.push_back( new MixerChannel( index, this ) );
+	auto channel = std::make_unique<MixerChannel>(index, this);
+	m_mixerChannels.push_back(channel.get());
+	channel.release();
+	const auto watched = watchChannel(index);
 
 	// reset channel state
-	clearChannel( index );
+	if (!clearChannelImpl(index)) { throw std::runtime_error("Native new mixer channel could not be reset"); }
+	watched.check();
 
-	// if there is a soloed channel, mute the new track
-	if (m_lastSoloed != -1 && m_mixerChannels[m_lastSoloed]->m_soloModel.value())
-	{
-		m_mixerChannels[index]->m_muteBeforeSolo = m_mixerChannels[index]->m_muteModel.value();
-		m_mixerChannels[index]->m_muteModel.setValue(true);
-	}
+	const auto added = m_mixerChannels[index];
+	connect(&added->m_soloModel, &BoolModel::dataChanged, this, [this, added] { soloChanged(added); }, Qt::DirectConnection);
+	const QPointer<Mixer> owner(this); const QPointer<BoolModel> mute(&added->m_muteModel);
+	const auto rememberMute = [owner, mute, added] {
+		const auto guard = Engine::audioEngine()->requestChangesGuard();
+		// Explicit mute changes during solo also survive its eventual release.
+		if (owner && mute && !owner->m_updatingSolo && owner->m_lastSoloed >= 0) { added->m_muteBeforeSolo = mute->value(); }
+	};
+	connect(&added->m_muteModel, &BoolModel::dataChanged, this, rememberMute, Qt::DirectConnection);
+	connect(&added->m_muteModel, &BoolModel::dataUnchanged, this, [owner, mute, added, rememberMute] {
+		const auto guard = Engine::audioEngine()->requestChangesGuard();
+		if (owner && mute && !owner->m_updatingSolo && owner->m_lastSoloed >= 0 && added->m_muteBeforeSolo != mute->value())
+		{
+			// The effective value did not change, but its solo-release meaning
+			// did. Capture that change before the dataUnchanged handler applies it.
+			added->m_muteModel.addJournalCheckPoint();
+		}
+		rememberMute();
+	}, Qt::DirectConnection);
+	refreshSolo();
+	watched.check();
+	updateChannelSelectorRanges();
+	watched.check();
 
 	return index;
 }
 
-void Mixer::activateSolo()
+void Mixer::updateChannelSelectorRanges()
 {
-	for (auto i = std::size_t{1}; i < m_mixerChannels.size(); ++i)
+	const QPointer<Mixer> owner(this);
+	// This belongs to the native mixer, including headless creation/deletion.
+	// Track constructors/loaders also set their range when they first appear.
+	const auto maximum = static_cast<int>(m_mixerChannels.size()) - 1;
+	for (const auto& selector : channelSelectors())
 	{
-		m_mixerChannels[i]->m_muteBeforeSolo = m_mixerChannels[i]->m_muteModel.value();
-		m_mixerChannels[i]->m_muteModel.setValue( true );
+		if (selector) { selector->setRange(0, maximum, 1); }
+		if (!owner || owner->m_retiring) { throw std::runtime_error("Native mixer retired during selector range update"); }
 	}
 }
 
-void Mixer::deactivateSolo()
+QDomElement Mixer::saveSoloJournal(QDomDocument& document, QDomElement& parent)
 {
-	for (auto i = std::size_t{1}; i < m_mixerChannels.size(); ++i)
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	auto state = document.createElement("mixersolostate"); state.setAttribute("version", 1);
+	state.setAttribute("selected", m_lastSoloed < 0 ? 0u : m_mixerChannels[m_lastSoloed]->m_soloModel.id());
+	for (const auto channel : m_mixerChannels)
 	{
-		m_mixerChannels[i]->m_muteModel.setValue( m_mixerChannels[i]->m_muteBeforeSolo );
+		auto entry = document.createElement("channel");
+		entry.setAttribute("muteId", channel->m_muteModel.id()); entry.setAttribute("soloId", channel->m_soloModel.id());
+		entry.setAttribute("muted", channel->m_muteModel.value() ? 1 : 0);
+		entry.setAttribute("beforeSolo", channel->m_muteBeforeSolo ? 1 : 0);
+		state.appendChild(entry);
 	}
+	parent.appendChild(state); return state;
 }
 
-void Mixer::toggledSolo()
+bool Mixer::restoreSoloJournal(const QDomElement& state, QString& error)
 {
-	int soloedChan = -1;
-	bool resetSolo = m_lastSoloed != -1;
-	//untoggle if lastsoloed is entered
-	if (resetSolo)
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	const auto reject = [&](const QString& detail) { error = "Native mixer solo journal: " + detail; return false; };
+	if (m_updatingSolo || m_changingTopology) { return reject("a mixer transition is already active"); }
+	if (state.tagName() != "mixersolostate" || state.attribute("version") != "1") { return reject("invalid state format"); }
+	bool selectedOk = false; const auto selectedId = state.attribute("selected").toUInt(&selectedOk);
+	if (!selectedOk) { return reject("invalid selected model identity"); }
+	struct Entry { MixerChannel* channel; bool muted; bool beforeSolo; };
+	std::vector<Entry> entries; entries.reserve(m_mixerChannels.size());
+	QHash<jo_id_t, MixerChannel*> current;
+	for (const auto channel : m_mixerChannels) { current.insert(channel->m_muteModel.id(), channel); }
+	QSet<jo_id_t> seen; int selected = -1;
+	for (auto item = state.firstChildElement("channel"); !item.isNull(); item = item.nextSiblingElement("channel"))
 	{
-		m_mixerChannels[m_lastSoloed]->m_soloModel.setValue( false );
-	}
-	//determine the soloed channel
-	for (auto i = std::size_t{0}; i < m_mixerChannels.size(); ++i)
-	{
-		if (m_mixerChannels[i]->m_soloModel.value() == true)
-			soloedChan = i;
-	}
-	// if no channel is soloed, unmute everything, else mute everything
-	if (soloedChan != -1)
-	{
-		if (resetSolo)
+		bool muteOk = false, soloOk = false;
+		const auto muteId = item.attribute("muteId").toUInt(&muteOk), soloId = item.attribute("soloId").toUInt(&soloOk);
+		const auto channel = current.value(muteId, nullptr);
+		if (!muteOk || !soloOk || !channel || channel->m_soloModel.id() != soloId || seen.contains(muteId))
 		{
-			deactivateSolo();
-			activateSolo();
-		} else {
-			activateSolo();
+			return reject("referenced channels no longer match the current mixer");
 		}
-		// unmute the soloed chan and every channel it sends to/receives from
-		m_mixerChannels[soloedChan]->unmuteForSolo();
-	} else {
-		deactivateSolo();
+		const auto muted = item.attribute("muted"), before = item.attribute("beforeSolo");
+		if ((muted != "0" && muted != "1") || (before != "0" && before != "1")) { return reject("invalid mute state"); }
+		seen.insert(muteId); entries.push_back({channel, muted == "1", before == "1"});
+		if (soloId == selectedId) { selected = channel->index(); }
 	}
-	m_lastSoloed = soloedChan;
+	if (entries.size() != m_mixerChannels.size() || (selectedId != 0 && selected < 0))
+	{
+		return reject("the channel set or selected channel has changed");
+	}
+	// Replay only controls on the same native objects. Effects, automation
+	// ownership, volumes, routes and GUI pointers must not be recreated by solo undo.
+	FlagGuard updating(this, &Mixer::m_updatingSolo);
+	const auto channels = watchChannels();
+	m_lastSoloed = selected;
+	for (std::size_t row = 0; row < entries.size(); ++row)
+	{
+		const auto& entry = entries[row]; channels[row].check();
+		entry.channel->m_muteBeforeSolo = entry.beforeSolo;
+		entry.channel->m_soloModel.setValue(entry.channel->index() == selected);
+		channels[row].check();
+		entry.channel->m_muteModel.setValue(entry.muted);
+		channels[row].check();
+	}
+	return true;
+}
+
+void Mixer::soloChanged(MixerChannel* channel)
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (m_updatingSolo) { return; }
+	const auto found = std::find(m_mixerChannels.begin(), m_mixerChannels.end(), channel);
+	if (found == m_mixerChannels.end()) { return; }
+	const int index = static_cast<int>(std::distance(m_mixerChannels.begin(), found));
+	if (channel->m_soloModel.value()) { selectSolo(index); }
+	else if (m_lastSoloed == index) { selectSolo(-1); }
+}
+
+void Mixer::selectSolo(int index, bool preserveSnapshot)
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (m_updatingSolo || index == m_lastSoloed || index < -1
+		|| index >= static_cast<int>(m_mixerChannels.size())) { return; }
+	FlagGuard updating(this, &Mixer::m_updatingSolo);
+	const auto channels = watchChannels();
+	if (m_lastSoloed == -1 && index >= 0 && !preserveSnapshot)
+	{
+		for (const auto channel : m_mixerChannels) { channel->m_muteBeforeSolo = channel->m_muteModel.value(); }
+	}
+	m_lastSoloed = index;
+	for (const auto& channel : channels) { auto native = channel.get(); native->m_soloModel.setValue(native->index() == index); channel.check(); }
+	if (index < 0)
+	{
+		for (const auto& channel : channels) { auto native = channel.get(); native->m_muteModel.setValue(native->m_muteBeforeSolo); channel.check(); }
+	}
+	else { applySoloMask(); }
+}
+
+void Mixer::refreshSolo()
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (m_updatingSolo || m_lastSoloed < 0) { return; }
+	FlagGuard updating(this, &Mixer::m_updatingSolo);
+	applySoloMask();
+}
+
+void Mixer::applySoloMask()
+{
+	const auto channels = watchChannels();
+	// Preserve native solo routing: the selected channel, its ancestors, and
+	// every output of those ancestors are audible. Reaching master does not
+	// make master's other inputs audible. Each traversal visits a channel once.
+	const auto selected = m_mixerChannels[m_lastSoloed];
+	QSet<MixerChannel*> ancestors{selected};
+	std::vector<MixerChannel*> pending{selected};
+	while (!pending.empty())
+	{
+		const auto channel = pending.back(); pending.pop_back();
+		if (channel->isMaster()) { continue; }
+		for (const auto route : channel->m_receives)
+		{
+			const auto sender = route->sender();
+			if (!ancestors.contains(sender)) { ancestors.insert(sender); pending.push_back(sender); }
+		}
+	}
+	auto audible = ancestors;
+	for (const auto channel : ancestors) { pending.push_back(channel); }
+	while (!pending.empty())
+	{
+		const auto channel = pending.back(); pending.pop_back();
+		if (channel->isMaster()) { continue; }
+		for (const auto route : channel->m_sends)
+		{
+			const auto receiver = route->receiver();
+			if (!audible.contains(receiver)) { audible.insert(receiver); pending.push_back(receiver); }
+		}
+	}
+	for (const auto& watched : channels)
+	{
+		const auto channel = watched.get();
+		const bool muted = !audible.contains(channel) && (!channel->isMaster() || channel->m_muteBeforeSolo);
+		channel->m_muteModel.setValue(muted);
+		watched.check();
+	}
 }
 
 
 
-void Mixer::deleteChannel( int index )
+void MixerChannel::setName(const QString& name)
+{
+	const QString requested(name); const QPointer<EffectChain> owner(&m_fxChain);
+	const auto ready = [&] { if (!owner) { throw std::runtime_error("Native mixer channel retired during rename"); } };
+	m_name = requested;
+	m_volumeModel.setDisplayName(requested + ">" + Mixer::tr("Volume")); ready();
+	m_muteModel.setDisplayName(requested + ">" + Mixer::tr("Mute")); ready();
+	m_soloModel.setDisplayName(requested + ">" + Mixer::tr("Solo")); ready();
+}
+
+bool Mixer::deleteChannel( int index )
+{
+	if (!canChangeTopology()) { return false; }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	return deleteChannelImpl(index);
+}
+
+bool Mixer::deleteChannelImpl(int index)
 {
 	// channel deletion is performed between mixer rounds
-	Engine::audioEngine()->requestChangeInModel();
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (index <= 0 || index >= static_cast<int>(m_mixerChannels.size())) { return false; }
+	const auto watched = watchChannel(index);
+	if (m_lastSoloed == index) { selectSolo(-1); }
+	watched.check();
+	FlagGuard updating(this, &Mixer::m_updatingSolo);
 
-	// go through every instrument and adjust for the channel index change
-	TrackContainer::TrackList tracks;
-
-	auto& songTracks = Engine::getSong()->tracks();
-	auto& patternStoreTracks = Engine::patternStore()->tracks();
-	tracks.insert(tracks.end(), songTracks.begin(), songTracks.end());
-	tracks.insert(tracks.end(), patternStoreTracks.begin(), patternStoreTracks.end());
-
-	for( Track* t : tracks )
+	const auto remap = [index](int value) { return value == index ? 0 : value > index ? value - 1 : value; };
+	struct Assignment { QPointer<IntModel> model; int initial; int value; };
+	std::vector<Assignment> assignments;
+	for (const auto& selector : channelSelectors())
 	{
-		if( t->type() == Track::Type::Instrument )
-		{
-			auto inst = dynamic_cast<InstrumentTrack*>(t);
-			int val = inst->mixerChannelModel()->value(0);
-			if( val == index )
-			{
-				// we are deleting this track's channel send
-				// send to master
-				inst->mixerChannelModel()->setValue(0);
-			}
-			else if( val > index )
-			{
-				// subtract 1 to make up for the missing channel
-				inst->mixerChannelModel()->setValue(val-1);
-			}
-		}
-		else if( t->type() == Track::Type::Sample )
-		{
-			auto strk = dynamic_cast<SampleTrack*>(t);
-			int val = strk->mixerChannelModel()->value(0);
-			if( val == index )
-			{
-				// we are deleting this track's channel send
-				// send to master
-				strk->mixerChannelModel()->setValue(0);
-			}
-			else if( val > index )
-			{
-				// subtract 1 to make up for the missing channel
-				strk->mixerChannelModel()->setValue(val-1);
-			}
-		}
+		if (selector) { assignments.push_back({selector, remap(selector->initValue()), remap(static_cast<int>(selector->storedValue()))}); }
 	}
 
 	MixerChannel * ch = m_mixerChannels[index];
@@ -382,11 +557,13 @@ void Mixer::deleteChannel( int index )
 	// delete all of this channel's sends and receives
 	while (!ch->m_sends.empty())
 	{
-		deleteChannelSend(ch->m_sends.front());
+		deleteRouteImpl(ch->m_sends.front());
+		watched.check();
 	}
 	while (!ch->m_receives.empty())
 	{
-		deleteChannelSend(ch->m_receives.front());
+		deleteRouteImpl(ch->m_receives.front());
+		watched.check();
 	}
 
 	// if m_lastSoloed was our index, reset it
@@ -397,94 +574,109 @@ void Mixer::deleteChannel( int index )
 	// actually delete the channel
 	m_mixerChannels.erase(m_mixerChannels.begin() + index);
 	delete ch;
+	updating.check();
 
 	for (auto i = static_cast<std::size_t>(index); i < m_mixerChannels.size(); ++i)
 	{
+		const auto current = watchChannel(i);
 		validateChannelName( i, i + 1 );
+		current.check();
 
 		// set correct channel index
 		m_mixerChannels[i]->setIndex(i);
 
 		// now check all routes and update names of the send models
-		for( MixerRoute * r : m_mixerChannels[i]->m_sends )
+		std::vector<QPointer<MixerRoute>> routes;
+		for (auto route : m_mixerChannels[i]->m_sends) { routes.emplace_back(route); }
+		for (auto route : m_mixerChannels[i]->m_receives) { routes.emplace_back(route); }
+		for (const auto& route : routes)
 		{
-			r->updateName();
-		}
-		for( MixerRoute * r : m_mixerChannels[i]->m_receives )
-		{
-			r->updateName();
+			current.check(); if (!route) { throw std::runtime_error("Native mixer route retired during channel deletion"); }
+			route->updateName(); current.check();
 		}
 	}
 
-	Engine::audioEngine()->doneChangeInModel();
+	for (const auto& assignment : assignments)
+	{
+		if (!assignment.model) { continue; }
+		if (assignment.model->initValue() != assignment.initial) { assignment.model->setInitValue(assignment.initial); }
+		updating.check();
+		if (assignment.model) { assignment.model->setValue(assignment.value); }
+		updating.check();
+	}
+	updating.restore();
+	updateChannelSelectorRanges();
+	updating.check();
+	refreshSolo();
+	updating.check();
+	return true;
 }
 
 
 
-void Mixer::moveChannelLeft( int index )
+bool Mixer::moveChannel(int from, int to)
 {
-	// can't move master or first channel
-	if (index <= 1 || static_cast<std::size_t>(index) >= m_mixerChannels.size())
+	if (!canChangeTopology()) { return false; }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	const auto count = static_cast<int>(m_mixerChannels.size());
+	if (from <= 0 || to <= 0 || from >= count || to >= count) { return false; }
+	if (from == to) { return true; }
+	for (int index = 0; index < count; ++index)
 	{
-		return;
+		if (!m_mixerChannels[index] || m_mixerChannels[index]->index() != index) { return false; }
 	}
-	// channels to swap
-	int a = index - 1, b = index;
-
-	// check if m_lastSoloed is one of our swaps
-	if (m_lastSoloed == a) { m_lastSoloed = b; }
-	else if (m_lastSoloed == b) { m_lastSoloed = a; }
-
-	// go through every instrument and adjust for the channel index change
-	const TrackContainer::TrackList& songTrackList = Engine::getSong()->tracks();
-	const TrackContainer::TrackList& patternTrackList = Engine::patternStore()->tracks();
-
-	for (const auto& trackList : {songTrackList, patternTrackList})
+	const auto remap = [from, to](int index) {
+		if (index == from) { return to; }
+		if (from < to && index > from && index <= to) { return index - 1; }
+		if (from > to && index >= to && index < from) { return index + 1; }
+		return index;
+	};
+	struct Assignment { QPointer<IntModel> model; int initial; int value; };
+	std::vector<Assignment> assignments;
+	for (const auto& selector : channelSelectors())
 	{
-		for (const auto& track : trackList)
-		{
-			if (track->type() == Track::Type::Instrument)
-			{
-				auto inst = (InstrumentTrack*)track;
-				int val = inst->mixerChannelModel()->value(0);
-				if( val == a )
-				{
-					inst->mixerChannelModel()->setValue(b);
-				}
-				else if( val == b )
-				{
-					inst->mixerChannelModel()->setValue(a);
-				}
-			}
-			else if (track->type() == Track::Type::Sample)
-			{
-				auto strk = (SampleTrack*)track;
-				int val = strk->mixerChannelModel()->value(0);
-				if( val == a )
-				{
-					strk->mixerChannelModel()->setValue(b);
-				}
-				else if( val == b )
-				{
-					strk->mixerChannelModel()->setValue(a);
-				}
-			}
-		}
+		// Snapshot all assignments before linked controls can update each other.
+		if (selector) { assignments.push_back({selector, remap(selector->initValue()), remap(static_cast<int>(selector->storedValue()))}); }
 	}
 
-	// Swap positions in array
-	qSwap(m_mixerChannels[index], m_mixerChannels[index - 1]);
-
-	// Update m_channelIndex of both channels
-	m_mixerChannels[index]->setIndex(index);
-	m_mixerChannels[index - 1]->setIndex(index - 1);
+	if (from < to) { std::rotate(m_mixerChannels.begin() + from, m_mixerChannels.begin() + from + 1, m_mixerChannels.begin() + to + 1); }
+	else { std::rotate(m_mixerChannels.begin() + to, m_mixerChannels.begin() + from, m_mixerChannels.begin() + from + 1); }
+	m_lastSoloed = remap(m_lastSoloed);
+	for (int index = std::min(from, to); index <= std::max(from, to); ++index)
+	{
+		const auto watched = watchChannel(index);
+		validateChannelName(index, m_mixerChannels[index]->index());
+		watched.check();
+		m_mixerChannels[index]->setIndex(index);
+	}
+	std::vector<QPointer<MixerRoute>> routes;
+	for (auto route : m_mixerRoutes) { routes.emplace_back(route); }
+	for (const auto& route : routes) { changing.check(); if (!route) { throw std::runtime_error("Native mixer route retired during channel move"); } route->updateName(); changing.check(); }
+	for (const auto& assignment : assignments)
+	{
+		if (!assignment.model) { continue; }
+		if (assignment.model->initValue() != assignment.initial) { assignment.model->setInitValue(assignment.initial); }
+		changing.check();
+		if (assignment.model) { assignment.model->setValue(assignment.value); }
+		changing.check();
+	}
+	if (auto song = Engine::getSong()) { song->setModified(); }
+	changing.check();
+	emit channelMoved(from, to);
+	changing.check();
+	return true;
 }
 
+void Mixer::moveChannelLeft(int index)
+{
+	if (index > 1) { moveChannel(index, index - 1); }
+}
 
 
 void Mixer::moveChannelRight( int index )
 {
-	moveChannelLeft( index + 1 );
+	if (index > 0 && index < static_cast<int>(m_mixerChannels.size()) - 1) { moveChannel(index, index + 1); }
 }
 
 
@@ -492,52 +684,59 @@ void Mixer::moveChannelRight( int index )
 MixerRoute * Mixer::createChannelSend( mix_ch_t fromChannel, mix_ch_t toChannel,
 								float amount )
 {
-//	qDebug( "requested: %d to %d", fromChannel, toChannel );
-	// find the existing connection
-	MixerChannel * from = m_mixerChannels[fromChannel];
-	MixerChannel * to = m_mixerChannels[toChannel];
-
-	for (const auto& send : from->m_sends)
-	{
-		if (send->receiver() == to)
-		{
-			// simply adjust the amount
-			send->amount()->setValue(amount);
-			return send;
-		}
-	}
-
-	// connection does not exist. create a new one
-	return createRoute( from, to, amount );
+	if (!canChangeTopology()) { return nullptr; }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (fromChannel >= m_mixerChannels.size() || toChannel >= m_mixerChannels.size()) { return nullptr; }
+	return createRouteImpl(m_mixerChannels[fromChannel], m_mixerChannels[toChannel], amount);
 }
 
 
 MixerRoute * Mixer::createRoute( MixerChannel * from, MixerChannel * to, float amount )
 {
-	if( from == to )
+	if (!canChangeTopology()) { return nullptr; }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	return createRouteImpl(from, to, amount);
+}
+
+MixerRoute* Mixer::createRouteImpl(MixerChannel* from, MixerChannel* to, float amount)
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (!std::isfinite(amount) || amount < 0.f || amount > 1.f || checkInfiniteLoop(from, to)) { return nullptr; }
+	const auto source = watchChannel(from->index()), receiver = watchChannel(to->index());
+	for (const auto send : from->m_sends)
 	{
-		return nullptr;
+		if (send->receiver() == to)
+		{
+			const QPointer<MixerRoute> live(send); send->amount()->setValue(amount); source.check(); receiver.check();
+			if (!live) { throw std::runtime_error("Native mixer route retired during amount update"); } return live.data();
+		}
 	}
-	Engine::audioEngine()->requestChangeInModel();
-	auto route = new MixerRoute(from, to, amount);
-
-	// add us to from's sends
-	from->m_sends.push_back(route);
-
-	// add us to to's receives
-	to->m_receives.push_back(route);
-
-	// add us to mixer's list
-	Engine::mixer()->m_mixerRoutes.push_back(route);
-	Engine::audioEngine()->doneChangeInModel();
-
-	return route;
+	// Reserve every ownership view before publication; allocation failure must
+	// not leave a route in only one endpoint's dependency list.
+	auto route = std::make_unique<MixerRoute>(from, to, amount);
+	from->m_sends.reserve(from->m_sends.size() + 1);
+	to->m_receives.reserve(to->m_receives.size() + 1);
+	m_mixerRoutes.reserve(m_mixerRoutes.size() + 1);
+	from->m_sends.push_back(route.get());
+	to->m_receives.push_back(route.get());
+	m_mixerRoutes.push_back(route.get());
+	const QPointer<MixerRoute> published(route.release());
+	published->m_owner = this;
+	refreshSolo();
+	source.check(); receiver.check();
+	if (!published) { throw std::runtime_error("Native mixer route retired during creation"); }
+	return published.data();
 }
 
 
 // delete the connection made by createChannelSend
 void Mixer::deleteChannelSend( mix_ch_t fromChannel, mix_ch_t toChannel )
 {
+	if (!canChangeTopology()) { return; }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (fromChannel >= m_mixerChannels.size() || toChannel >= m_mixerChannels.size()) { return; }
 	// delete the send
 	MixerChannel * from = m_mixerChannels[fromChannel];
 	MixerChannel * to	 = m_mixerChannels[toChannel];
@@ -547,7 +746,7 @@ void Mixer::deleteChannelSend( mix_ch_t fromChannel, mix_ch_t toChannel )
 	{
 		if (send->receiver() == to)
 		{
-			deleteChannelSend(send);
+			deleteRouteImpl(send);
 			break;
 		}
 	}
@@ -556,7 +755,16 @@ void Mixer::deleteChannelSend( mix_ch_t fromChannel, mix_ch_t toChannel )
 
 void Mixer::deleteChannelSend( MixerRoute * route )
 {
-	Engine::audioEngine()->requestChangeInModel();
+	if (!canChangeTopology()) { return; }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	deleteRouteImpl(route);
+}
+
+void Mixer::deleteRouteImpl(MixerRoute* route)
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	const QPointer<Mixer> owner(this); const bool retiring = m_retiring;
+	if (!route || std::find(m_mixerRoutes.begin(), m_mixerRoutes.end(), route) == m_mixerRoutes.end()) { return; }
 
 	auto removeFromMixerRoute = [route](MixerRouteVector& routeVec)
 	{
@@ -571,47 +779,45 @@ void Mixer::deleteChannelSend( MixerRoute * route )
 	removeFromMixerRoute(route->receiver()->m_receives);
 
 	// remove us from mixer's list
-	removeFromMixerRoute(Engine::mixer()->m_mixerRoutes);
+	removeFromMixerRoute(m_mixerRoutes);
 
 	delete route;
-	Engine::audioEngine()->doneChangeInModel();
+	if (retiring) { return; }
+	if (!owner || owner->m_retiring) { throw std::runtime_error("Native mixer retired during route removal"); }
+	refreshSolo();
 }
 
 
 bool Mixer::isInfiniteLoop( mix_ch_t sendFrom, mix_ch_t sendTo )
 {
-	if( sendFrom == sendTo ) return true;
-	MixerChannel * from = m_mixerChannels[sendFrom];
-	MixerChannel * to = m_mixerChannels[sendTo];
-	bool b = checkInfiniteLoop( from, to );
-	return b;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (sendFrom >= m_mixerChannels.size() || sendTo >= m_mixerChannels.size()) { return true; }
+	return checkInfiniteLoop(m_mixerChannels[sendFrom], m_mixerChannels[sendTo]);
 }
 
 
 bool Mixer::checkInfiniteLoop( MixerChannel * from, MixerChannel * to )
 {
-	// can't send master to anything
-	if( from == m_mixerChannels[0] )
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	QSet<const MixerChannel*> members;
+	for (const auto channel : m_mixerChannels) { members.insert(channel); }
+	const auto owns = [&](const MixerChannel* channel) { return channel && members.contains(channel); };
+	if (!owns(from) || !owns(to) || from == m_mixerChannels[0] || from == to) { return true; }
+	// Visit each downstream channel once. Recursive path enumeration can repeat
+	// exponentially in a converging DAG or never return on a malformed cycle.
+	QSet<MixerChannel*> visited; std::vector<MixerChannel*> pending{to};
+	visited.insert(to);
+	while (!pending.empty())
 	{
-		return true;
-	}
-
-	// can't send channel to itself
-	if( from == to )
-	{
-		return true;
-	}
-
-	// follow sendTo's outputs recursively looking for something that sends
-	// to sendFrom
-	for (const auto& send : to->m_sends)
-	{
-		if (checkInfiniteLoop(from, send->receiver()))
+		const auto channel = pending.back(); pending.pop_back();
+		if (channel == from) { return true; }
+		for (const auto send : channel->m_sends)
 		{
-			return true;
+			if (!send || !owns(send->receiver())) { return true; }
+			const auto receiver = send->receiver();
+			if (!visited.contains(receiver)) { visited.insert(receiver); pending.push_back(receiver); }
 		}
 	}
-
 	return false;
 }
 
@@ -619,7 +825,8 @@ bool Mixer::checkInfiniteLoop( MixerChannel * from, MixerChannel * to )
 // how much does fromChannel send its output to the input of toChannel?
 FloatModel * Mixer::channelSendModel( mix_ch_t fromChannel, mix_ch_t toChannel )
 {
-	if( fromChannel == toChannel )
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (fromChannel == toChannel || fromChannel >= m_mixerChannels.size() || toChannel >= m_mixerChannels.size())
 	{
 		return nullptr;
 	}
@@ -677,13 +884,17 @@ void Mixer::masterMix( SampleFrame* _buf )
 	// about their senders, and can just increment the deps of their
 	// recipients right away.
 	AudioEngineWorkerThread::resetJobQueue( AudioEngineWorkerThread::JobQueue::OperationMode::Dynamic );
+	// Every receiver must have this period's mute state before the first
+	// sender can publish completion, including senders earlier in channel order.
+	for (const auto channel : m_mixerChannels) { channel->m_muted = channel->m_muteModel.value(); }
 	for( MixerChannel * ch : m_mixerChannels )
 	{
-		ch->m_muted = ch->m_muteModel.value();
 		if( ch->m_muted ) // instantly "process" muted channels
 		{
-			ch->processed();
+			ch->m_buffer.silenceAllChannels();
+			ch->m_peakLeft = ch->m_peakRight = 0.f;
 			ch->done();
+			ch->processed();
 		}
 		else if( ch->m_receives.size() == 0 )
 		{
@@ -691,24 +902,20 @@ void Mixer::masterMix( SampleFrame* _buf )
 			AudioEngineWorkerThread::addJob( ch );
 		}
 	}
-	while (m_mixerChannels[0]->state() != ThreadableJob::ProcessingState::Done)
+	// Drain the whole graph even when master is muted or finishes early.
+	// Unrouted buses still own effect state that must advance once per period.
+	AudioEngineWorkerThread::startAndWaitForJobs();
+	const auto queueFailed = AudioEngineWorkerThread::jobQueueFailure() != AudioEngineWorkerThread::JobQueue::Failure::None;
+	const auto incomplete = std::any_of(m_mixerChannels.begin(), m_mixerChannels.end(), [](const auto channel) {
+		return channel->state() != ThreadableJob::ProcessingState::Done;
+	});
+	if (queueFailed || incomplete)
 	{
-		bool found = false;
-		for( MixerChannel * ch : m_mixerChannels )
+		if (!queueFailed)
 		{
-			const auto s = ch->state();
-			if (s == ThreadableJob::ProcessingState::Queued
-				|| s == ThreadableJob::ProcessingState::InProgress)
-			{
-				found = true;
-				break;
-			}
+			Engine::audioEngine()->reportDspFailure(AudioEngine::DspFailure::MixerDependency);
 		}
-		if( !found )
-		{
-			break;
-		}
-		AudioEngineWorkerThread::startAndWaitForJobs();
+		discardProcessingPeriod(); return;
 	}
 
 	auto buffer = m_mixerChannels[0]->m_buffer.interleavedBuffer().asSampleFrames();
@@ -729,7 +936,11 @@ void Mixer::masterMix( SampleFrame* _buf )
 		? 1.0f
 		: m_mixerChannels[0]->m_volumeModel.value();
 	MixHelpers::addMultiplied(_buf, buffer.data(), v, fpp);
+	discardProcessingPeriod();
+}
 
+void Mixer::discardProcessingPeriod()
+{
 	// clear all channel buffers and
 	// reset channel process state
 	for( int i = 0; i < numChannels(); ++i)
@@ -746,27 +957,57 @@ void Mixer::masterMix( SampleFrame* _buf )
 
 void Mixer::clear()
 {
+	if (!canChangeTopology()) { return; }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	clearImpl();
+}
+
+void Mixer::clearImpl()
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	FlagGuard updating(this, &Mixer::m_updatingSolo);
+	if (m_replacementGeneration == std::numeric_limits<std::uint64_t>::max()) { throw std::length_error("Native mixer replacement generation exhausted"); }
+	++m_replacementGeneration;
+	m_lastSoloed = -1;
 	while( m_mixerChannels.size() > 1 )
 	{
-		deleteChannel(1);
+		deleteChannelImpl(1);
+		updating.check();
 	}
 
-	clearChannel(0);
+	clearChannelImpl(0);
+	updating.check();
 }
 
 
 
-void Mixer::clearChannel(mix_ch_t index)
+bool Mixer::clearChannel(mix_ch_t index)
 {
+	if (!canChangeTopology()) { return false; }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	return clearChannelImpl(index);
+}
+
+bool Mixer::clearChannelImpl(mix_ch_t index)
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (index >= m_mixerChannels.size()) { return false; }
+	const auto watched = watchChannel(index);
 	MixerChannel * ch = m_mixerChannels[index];
-	ch->m_fxChain.clear();
+	if (!ch->m_fxChain.clear()) { return false; }
+	watched.check();
+	if (m_lastSoloed == index) { selectSolo(-1); }
+	watched.check();
+	FlagGuard updating(this, &Mixer::m_updatingSolo);
 	ch->m_volumeModel.setValue( 1.0f );
+	watched.check();
 	ch->m_muteModel.setValue( false );
+	watched.check();
 	ch->m_soloModel.setValue( false );
-	ch->m_name = ( index == 0 ) ? tr( "Master" ) : tr( "Channel %1" ).arg( index );
-	ch->m_volumeModel.setDisplayName( ch->m_name + ">" + tr( "Volume" ) );
-	ch->m_muteModel.setDisplayName( ch->m_name + ">" + tr( "Mute" ) );
-	ch->m_soloModel.setDisplayName( ch->m_name + ">" + tr( "Solo" ) );
+	watched.check();
+	ch->m_muteBeforeSolo = false;
+	ch->setName(index == 0 ? tr("Master") : tr("Channel %1").arg(index));
+	watched.check();
 	ch->setColor(std::nullopt);
 
 	// send only to master
@@ -775,46 +1016,84 @@ void Mixer::clearChannel(mix_ch_t index)
 		// delete existing sends
 		while (!ch->m_sends.empty())
 		{
-			deleteChannelSend(ch->m_sends.front());
+			deleteRouteImpl(ch->m_sends.front());
+			watched.check();
 		}
 
 		// add send to master
-		createChannelSend( index, 0 );
+		createRouteImpl(ch, m_mixerChannels[0], 1.f);
+		watched.check();
 	}
 
 	// delete receives
 	while (!ch->m_receives.empty())
 	{
-		deleteChannelSend(ch->m_receives.front());
+		deleteRouteImpl(ch->m_receives.front());
+		watched.check();
 	}
+	updating.restore();
+	refreshSolo();
+	watched.check();
+	return true;
 }
 
 void Mixer::saveSettings( QDomDocument & _doc, QDomElement & _this )
 {
-	// save channels
-	for (auto i = std::size_t{0}; i < m_mixerChannels.size(); ++i)
+	if (!canChangeTopology()) { throw std::logic_error("Native mixer cannot serialize during a topology transition or from another thread"); }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	const QPointer<Mixer> owner(this);
+	m_changingTopology = true;
+	const auto changing = qScopeGuard([owner] { if (owner) { owner->m_changingTopology = false; } });
+	struct Channel { MixerChannel* identity; QPointer<EffectChain> anchor; std::vector<QPointer<MixerRoute>> sends; };
+	std::vector<Channel> channels;
+	for (auto channel : m_mixerChannels)
 	{
-		MixerChannel * ch = m_mixerChannels[i];
+		Channel entry{channel, &channel->m_fxChain, {}};
+		for (auto send : channel->m_sends) { entry.sends.emplace_back(send); }
+		channels.push_back(std::move(entry));
+	}
+	const auto ready = [&] {
+		if (!owner || owner->m_mixerChannels.size() != channels.size()) { throw std::runtime_error("Native mixer retired or changed during serialization"); }
+		for (std::size_t index = 0; index < channels.size(); ++index)
+		{
+			const auto& entry = channels[index];
+			if (!entry.anchor || owner->m_mixerChannels[index] != entry.identity || entry.identity->m_sends.size() != entry.sends.size()) { throw std::runtime_error("Native mixer channel changed during serialization"); }
+			for (std::size_t row = 0; row < entry.sends.size(); ++row)
+			{ if (!entry.sends[row] || entry.identity->m_sends[row] != entry.sends[row].data()) { throw std::runtime_error("Native mixer send changed during serialization"); } }
+		}
+	};
+	// save channels
+	for (auto i = std::size_t{0}; i < channels.size(); ++i)
+	{
+		QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready();
+		MixerChannel * ch = channels[i].identity;
 
 		QDomElement mixch = _doc.createElement( QString( "mixerchannel" ) );
 		_this.appendChild( mixch );
 
 		ch->m_fxChain.saveState( _doc, mixch );
+		ready();
 		ch->m_volumeModel.saveSettings( _doc, mixch, "volume" );
+		ready();
 		ch->m_muteModel.saveSettings( _doc, mixch, "muted" );
+		ready();
 		ch->m_soloModel.saveSettings( _doc, mixch, "soloed" );
+		ready();
+		if (m_lastSoloed >= 0) { mixch.setAttribute("mutedBeforeSolo", ch->m_muteBeforeSolo ? 1 : 0); }
 		mixch.setAttribute("num", static_cast<qulonglong>(i));
 		mixch.setAttribute( "name", ch->m_name );
 		if (const auto& color = ch->color()) { mixch.setAttribute("color", color->name()); }
 
 		// add the channel sends
-		for (const auto& send : ch->m_sends)
+		for (const auto& send : channels[i].sends)
 		{
 			QDomElement sendsDom = _doc.createElement( QString( "send" ) );
 			mixch.appendChild( sendsDom );
 
 			sendsDom.setAttribute("channel", send->receiverIndex());
 			send->amount()->saveSettings(_doc, sendsDom, "amount");
+			ready();
 		}
 	}
 }
@@ -823,35 +1102,98 @@ void Mixer::saveSettings( QDomDocument & _doc, QDomElement & _this )
 void Mixer::allocateChannelsTo(int num)
 {
 	if (num <= 0) { return; }
+	const QPointer<Mixer> owner(this);
 	while (static_cast<std::size_t>(num) > m_mixerChannels.size() - 1)
 	{
-		createChannel();
+		createChannelImpl();
+		if (!owner || owner->m_retiring) { throw std::runtime_error("Native mixer retired during allocation"); }
 
 		// delete the default send to master
-		deleteChannelSend( m_mixerChannels.size()-1, 0 );
+		if (!m_mixerChannels.back()->m_sends.empty()) { deleteRouteImpl(m_mixerChannels.back()->m_sends.front()); }
+		if (!owner || owner->m_retiring) { throw std::runtime_error("Native mixer retired during default route removal"); }
 	}
 }
 
 
 void Mixer::loadSettings( const QDomElement & _this )
 {
-	clear();
-	QDomNode node = _this.firstChild();
-
-	while( ! node.isNull() )
+	if (!canChangeTopology()) { throw std::logic_error("Mixer settings cannot be replaced during a mixer transition or from another thread"); }
+	FlagGuard changing(this, &Mixer::m_changingTopology);
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	const auto check = [&] { changing.check(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } changing.check(); };
+	check();
+	// Validate the complete XML routing graph before clearing an existing
+	// mixer or indexing/allocating channels. Forward references remain valid.
+	QHash<int, QVector<int>> sends;
+	QHash<int, int> incoming;
+	const auto readIndex = [&](const QDomElement& element, const QString& attribute, int& result) {
+		bool ok = false; result = element.attribute(attribute).toInt(&ok);
+		if (!ok || result < 0 || result >= std::numeric_limits<mix_ch_t>::max())
+		{
+			Engine::getSong()->collectError(tr("Invalid native mixer %1 index: %2")
+				.arg(attribute, element.attribute(attribute)));
+			return false;
+		}
+		return true;
+	};
+	for (auto channel = _this.firstChildElement("mixerchannel"); !channel.isNull(); channel = channel.nextSiblingElement("mixerchannel"))
 	{
-		QDomElement mixch = node.toElement();
-
+		check();
+		int from; if (!readIndex(channel, "num", from)) { return; }
+		if (channel.hasAttribute("mutedBeforeSolo") && channel.attribute("mutedBeforeSolo") != "0"
+			&& channel.attribute("mutedBeforeSolo") != "1")
+		{
+			Engine::getSong()->collectError(tr("Invalid native mixer solo mute snapshot")); return;
+		}
+		if (!incoming.contains(from)) { incoming.insert(from, 0); }
+		for (auto send = channel.firstChildElement("send"); !send.isNull(); send = send.nextSiblingElement("send"))
+		{
+			check();
+			int to; if (!readIndex(send, "channel", to)) { return; }
+			if (from == 0 || from == to)
+			{
+				Engine::getSong()->collectError(tr("Invalid native mixer route %1 to %2").arg(from).arg(to)); return;
+			}
+			sends[from].push_back(to); ++incoming[to];
+		}
+	}
+	QVector<int> ready;
+	for (auto it = incoming.constBegin(); it != incoming.constEnd(); ++it) { if (it.value() == 0) { ready.push_back(it.key()); } }
+	for (int next = 0; next < ready.size(); ++next)
+	{
+		check();
+		for (const auto receiver : sends.value(ready[next])) { if (--incoming[receiver] == 0) { ready.push_back(receiver); } }
+	}
+	if (ready.size() != incoming.size())
+	{
+		Engine::getSong()->collectError(tr("Native mixer routing contains a feedback cycle")); return;
+	}
+	FlagGuard loading(this, &Mixer::m_updatingSolo);
+	bool hasSoloSnapshot = false;
+	clearImpl();
+	check();
+	for (auto mixch = _this.firstChildElement("mixerchannel"); !mixch.isNull(); mixch = mixch.nextSiblingElement("mixerchannel"))
+	{
+		check();
 		// index of the channel we are about to load
 		int num = mixch.attribute( "num" ).toInt();
 
 		// allocate enough channels
 		allocateChannelsTo( num );
+		check(); const auto watched = watchChannel(num);
 
 		m_mixerChannels[num]->m_volumeModel.loadSettings( mixch, "volume" );
+		watched.check(); check();
 		m_mixerChannels[num]->m_muteModel.loadSettings( mixch, "muted" );
+		watched.check(); check();
 		m_mixerChannels[num]->m_soloModel.loadSettings( mixch, "soloed" );
-		m_mixerChannels[num]->m_name = mixch.attribute( "name" );
+		watched.check(); check();
+		hasSoloSnapshot = hasSoloSnapshot || mixch.hasAttribute("mutedBeforeSolo");
+		m_mixerChannels[num]->m_muteBeforeSolo = mixch.hasAttribute("mutedBeforeSolo")
+			? mixch.attribute("mutedBeforeSolo") == "1" : m_mixerChannels[num]->m_muteModel.value();
+		m_mixerChannels[num]->setName(mixch.attribute("name"));
+		watched.check();
 		if (mixch.hasAttribute("color"))
 		{
 			m_mixerChannels[num]->setColor(QColor{mixch.attribute("color")});
@@ -859,36 +1201,54 @@ void Mixer::loadSettings( const QDomElement & _this )
 
 		m_mixerChannels[num]->m_fxChain.restoreState( mixch.firstChildElement(
 			m_mixerChannels[num]->m_fxChain.nodeName() ) );
+		watched.check(); check();
 
 		// mixer sends
 		QDomNodeList chData = mixch.childNodes();
 		for (auto i = 0; i < chData.length(); ++i)
 		{
+			check(); watched.check();
 			QDomElement chDataItem = chData.at(i).toElement();
 			if( chDataItem.nodeName() == QString( "send" ) )
 			{
 				int sendTo = chDataItem.attribute( "channel" ).toInt();
 				allocateChannelsTo( sendTo ) ;
-				MixerRoute * mxr = createChannelSend( num, sendTo, 1.0f );
-				if( mxr ) mxr->amount()->loadSettings( chDataItem, "amount" );
+				watched.check(); const auto receiver = watchChannel(sendTo);
+				const QPointer<MixerRoute> mxr(createRouteImpl(m_mixerChannels[num], m_mixerChannels[sendTo], 1.f));
+				watched.check(); receiver.check();
+				if (mxr) { mxr->amount()->loadSettings(chDataItem, "amount"); }
+				else { Engine::getSong()->collectError(tr("Native mixer route %1 to %2 was rejected").arg(num).arg(sendTo)); }
+				watched.check(); receiver.check();
+				if (!mxr) { throw std::runtime_error("Native restored mixer route is unavailable"); }
 			}
 		}
-
-
-
-		node = node.nextSibling();
 	}
 
+	int selected = -1;
+	for (const auto channel : m_mixerChannels) { if (channel->m_soloModel.value()) { selected = channel->index(); } }
+	loading.restore();
+	if (selected >= 0)
+	{
+		if (hasSoloSnapshot)
+		{
+			// A new-format snapshot stores both effective mute overrides and the
+			// state to restore on release. Do not reapply the mask over overrides.
+			FlagGuard updating(this, &Mixer::m_updatingSolo);
+			m_lastSoloed = selected;
+			for (const auto& channel : watchChannels()) { auto native = channel.get(); native->m_soloModel.setValue(native->index() == selected); channel.check(); }
+		}
+		else { selectSolo(selected, true); }
+	}
+	check();
 	emit dataChanged();
+	check();
 }
 
 
 void Mixer::validateChannelName( int index, int oldIndex )
 {
-	if( m_mixerChannels[index]->m_name == tr( "Channel %1" ).arg( oldIndex ) )
-	{
-		m_mixerChannels[index]->m_name = tr( "Channel %1" ).arg( index );
-	}
+	const auto channel = m_mixerChannels[index];
+	channel->setName(channel->m_name == tr("Channel %1").arg(oldIndex) ? tr("Channel %1").arg(index) : channel->m_name);
 }
 
 bool Mixer::isChannelInUse(int index)

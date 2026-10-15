@@ -28,13 +28,27 @@
 #include "MidiExport.h"
 
 #include <algorithm>
-#include <stack>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <vector>
+#include <QDebug>
+#include <QThread>
 
+#include "AudioEngine.h"
+#include "Engine.h"
+#include "FileResourceIO.h"
 #include "Instrument.h"
-#include "DataFile.h"
 #include "InstrumentTrack.h"
-#include "LocaleHelper.h"
+#include "MidiClip.h"
+#include "MidiFile.h"
+#include "Note.h"
+#include "PatternClip.h"
 #include "PatternTrack.h"
+#include "Song.h"
 #include "plugin_export.h"
 
 namespace lmms
@@ -42,16 +56,12 @@ namespace lmms
 
 extern "C"
 {
-
-//! Standardized plugin descriptor for MIDI exporter
 Plugin::Descriptor PLUGIN_EXPORT midiexport_plugin_descriptor =
 {
 	LMMS_STRINGIFY(PLUGIN_NAME),
 	"MIDI Export",
-	QT_TRANSLATE_NOOP("PluginBrowser",
-		"Filter for exporting MIDI files from LMMS"),
-	"Mohamed Abdel Maksoud <mohamed at amaksoud.com> and "
-		"Hyunjin Song <tteu.ingog/at/gmail.com>",
+	QT_TRANSLATE_NOOP("PluginBrowser", "Filter for exporting MIDI files from LMMS"),
+	"Mohamed Abdel Maksoud <mohamed at amaksoud.com> and Hyunjin Song <tteu.ingog/at/gmail.com>",
 	0x0100,
 	Plugin::Type::ExportFilter,
 	nullptr,
@@ -59,290 +69,279 @@ Plugin::Descriptor PLUGIN_EXPORT midiexport_plugin_descriptor =
 	nullptr,
 };
 
-PLUGIN_EXPORT Plugin* lmms_plugin_main(Model*, void*)
-{
-	return new MidiExport{};
-}
-
+PLUGIN_EXPORT Plugin* lmms_plugin_main(Model*, void*) { return new MidiExport{}; }
 } // extern "C"
 
-void MidiExport::Clip::write(const QDomNode& root,
-	int basePitch, double baseVolume, tick_t baseTime)
+namespace
 {
-	// TODO: interpret steps="12" muted="0" type="1" name="Piano1" len="259"
-	for (QDomNode node = root.firstChild(); !node.isNull();
-		node = node.nextSibling())
+// Native positions are signed 32-bit ticks. Do intermediate clip/loop arithmetic
+// in a wider type and reject an unrepresentable result before publishing a file.
+using WideTick = std::int64_t;
+
+void checkWork()
+{
+	QString error;
+	if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+}
+
+struct ExportNote
+{
+	std::uint8_t pitch, velocity;
+	WideTick time, duration;
+	bool step;
+};
+
+struct Segment
+{
+	WideTick start, end, origin;
+};
+
+struct PatternSchedule
+{
+	WideTick period;
+	std::vector<Segment> segments;
+};
+using Schedules = std::map<int, PatternSchedule>;
+
+std::vector<ExportNote> readNotes(const MidiClip& clip, WideTick basePitch, double baseVolume, bool pattern)
+{
+	std::vector<ExportNote> result;
+	if (clip.isMuted() || clip.length() <= 0) { return result; }
+	const WideTick offset = clip.startTimeOffset();
+	const WideTick start = -offset;
+	const WideTick end = static_cast<WideTick>(clip.length().getTicks()) - offset;
+	std::size_t count = 0;
+	for (const auto note : clip.notes())
 	{
-		QDomElement element = node.toElement();
-
-		// Ignore zero-length notes
-		if (element.attribute("len", "0") == "0") { continue; }
-
-		// Adjust note attributes based on base measures
-		const int pitch = basePitch + element.attribute("key", "0").toInt();
-		double volume = LocaleHelper::toDouble(element.attribute("vol", "100"));
-		volume *= baseVolume * (127.0 / 200.0);
-
-		auto note = Note {
-			.pitch = std::clamp<std::uint8_t>(pitch, 0, 127),
-			.volume = std::min<std::uint8_t>(std::lround(volume), 127),
-			.time = baseTime + std::max(element.attribute("pos", "0").toInt(), 0),
-			.duration = element.attribute("len", "0").toInt(),
-			.type = static_cast<Note::Type>(element.attribute("type", "0").toInt())
+		if ((count++ % 1024) == 0) { checkWork(); }
+		const WideTick pos = note->pos(), length = note->length();
+		const bool step = note->type() == Note::Type::Step;
+		if (length == 0 || (!step && length < 0) || pos >= end) { continue; }
+		const double volume = note->getVolume() * baseVolume * (127.0 / 200.0);
+		if (!std::isfinite(volume)) { throw std::out_of_range("Nonfinite native MIDI note volume"); }
+		// Clamp in the wide source domain before narrowing to a MIDI data byte.
+		const auto velocity = static_cast<std::uint8_t>(std::lround(std::clamp(volume, 0., 127.)));
+		if (velocity == 0) { continue; }
+		const auto pitch = static_cast<std::uint8_t>(std::clamp<WideTick>(basePitch + note->key(), 0, 127));
+		const auto append = [&](WideTick onset)
+		{
+			const WideTick duration = step ? std::min<WideTick>(MidiExport::DefaultBeatLength, end - onset)
+				: std::min(pos + length, end) - onset;
+			if (duration > 0) { result.push_back({pitch, velocity, onset, duration, step}); }
 		};
-
-		// Append note to vector
-		m_notes.push_back(note);
-	}
-}
-
-void MidiExport::Clip::writeToTrack(MidiFile::Track& midiTrack) const
-{
-	for (const Note& note : m_notes)
-	{
-		midiTrack.addNote(note.pitch, note.volume,
-			note.time / 48.0, note.duration / 48.0);
-	}
-}
-
-void MidiExport::Clip::processPatternNotes(tick_t cutPos)
-{
-	// Sort in reverse order
-	std::sort(m_notes.rbegin(), m_notes.rend());
-
-	tick_t cur = std::numeric_limits<tick_t>::max();
-	tick_t next = std::numeric_limits<tick_t>::max();
-	for (Note& note : m_notes)
-	{
-		if (note.time < cur)
+		if (pattern)
 		{
-			// Set last two notes positions
-			next = cur;
-			cur = note.time;
+			// PatternStore passes loop-local time directly to InstrumentTrack.
+			// A cell offset does not shift its primary onsets; native playback
+			// also retriggers a note spanning the cell's trim boundary.
+			if (pos >= 0) { append(pos); }
+			if (start >= 0 && pos < start && pos + length > start) { append(start); }
 		}
-		if (note.type == Note::Type::Step)
-		{
-			// Note should have positive duration that neither
-			// overlaps next one nor exceeds cutPos
-			note.duration = std::min(std::min(DefaultBeatLength, next - cur), cutPos - note.time);
-		}
+		else if (pos >= start) { append(pos); }
+		else if (pos + length > start) { append(start); }
 	}
-}
-
-void MidiExport::Clip::writeToPattern(Clip& patternClip,
-	tick_t len, tick_t base, tick_t start, tick_t end)
-{
-	// Avoid misplaced start and end positions
-	if (start >= end) { return; }
-
-	// Adjust positions relatively to base pos
-	start -= base;
-	end -= base;
-
-	std::sort(m_notes.begin(), m_notes.end());
-	for (Note note : m_notes)
+	std::stable_sort(result.begin(), result.end(), [](const auto& a, const auto& b) { return a.time < b.time; });
+	WideTick next = end, current = end;
+	for (auto it = result.rbegin(); it != result.rend(); ++it)
 	{
-		// Insert periodically repeating notes from <t0> and spaced
-		// by <len> to mimic pattern clip behavior
-		tick_t t0 = note.time + std::ceil((start - note.time) / len) * len;
-		for (tick_t time = t0; time < end; time += len)
+		if (it->time < current) { next = current; current = it->time; }
+		if (it->step) { it->duration = std::min(it->duration, next - it->time); }
+	}
+	return result;
+}
+
+void writeNote(MidiFile::Track& output, const ExportNote& note, WideTick time, WideTick duration)
+{
+	if (time < 0) { duration += time; time = 0; }
+	if (duration <= 0) { return; }
+	if (time > std::numeric_limits<tick_t>::max() || duration > std::numeric_limits<tick_t>::max() - time)
+	{ throw std::out_of_range("Exported MIDI note exceeds the native tick range"); }
+	output.addNoteTicks(note.pitch, note.velocity, static_cast<tick_t>(time), static_cast<tick_t>(duration));
+}
+
+WideTick patternPeriod(int index, const TrackContainer::TrackList& rows)
+{
+	const WideTick bar = TimePos::ticksPerBar();
+	if (bar <= 0) { throw std::out_of_range("Invalid native pattern meter"); }
+	WideTick length = bar;
+	for (auto track : rows)
+	{
+		checkWork();
+		if (track->type() != Track::Type::Instrument || index >= track->numOfClips()) { continue; }
+		// Same maximum-of-all-instrument-rows rule as PatternStore::lengthOfPattern,
+		// without getClip(), which can create a missing native cell.
+		length = std::max(length, static_cast<WideTick>(track->getClips()[index]->length().getTicks()));
+	}
+	return ((length + bar - 1) / bar) * bar;
+}
+
+std::vector<Segment> patternSegments(PatternTrack& track)
+{
+	struct Placement { WideTick start, end, origin; };
+	struct Boundary { WideTick time; std::size_t index; bool begin; };
+	std::vector<Placement> placements;
+	std::vector<Boundary> boundaries;
+	if (track.isMuted()) { return {}; }
+	for (const auto clip : track.getClips())
+	{
+		checkWork();
+		if (!dynamic_cast<const PatternClip*>(clip) || clip->isMuted() || clip->length() <= 0) { continue; }
+		const WideTick start = clip->startPosition();
+		const WideTick end = start + clip->length().getTicks();
+		if (end <= 0) { continue; }
+		const auto index = placements.size();
+		placements.push_back({start, end, start + clip->startTimeOffset().getTicks()});
+		boundaries.push_back({std::max<WideTick>(0, start), index, true});
+		boundaries.push_back({end, index, false});
+	}
+	std::sort(boundaries.begin(), boundaries.end(), [](const auto& a, const auto& b) { return a.time < b.time; });
+	// Native PatternTrack chooses the latest starting active clip; stored order
+	// breaks equal-start ties. An earlier long placement resumes afterwards.
+	std::set<std::pair<WideTick, std::size_t>> active;
+	std::vector<Segment> result;
+	for (std::size_t i = 0; i < boundaries.size();)
+	{
+		checkWork();
+		const auto time = boundaries[i].time;
+		do
 		{
-			note.time = base + time;
-			patternClip.m_notes.push_back(note);
+			const auto& boundary = boundaries[i];
+			const auto key = std::pair{placements[boundary.index].start, boundary.index};
+			if (boundary.begin) { active.insert(key); } else { active.erase(key); }
+			++i;
+		} while (i < boundaries.size() && boundaries[i].time == time);
+		if (i == boundaries.size() || active.empty()) { continue; }
+		const auto& placement = placements[active.rbegin()->second];
+		if (!result.empty() && result.back().end == time && result.back().origin == placement.origin)
+		{ result.back().end = boundaries[i].time; }
+		else { result.push_back({time, boundaries[i].time, placement.origin}); }
+	}
+	return result;
+}
+
+void writePattern(MidiFile::Track& output, const std::vector<ExportNote>& notes, const PatternSchedule& schedule)
+{
+	std::size_t count = 0;
+	for (const auto& segment : schedule.segments)
+	{
+		checkWork();
+		for (const auto& note : notes)
+		{
+			if ((count++ % 1024) == 0) { checkWork(); }
+			if (note.time >= schedule.period) { continue; }
+			const WideTick base = segment.origin + note.time;
+			const WideTick distance = segment.start - base;
+			// Signed ceiling division: truncation alone starts some notes before
+			// a trimmed/overlapped segment and loses the phase of negative offsets.
+			const WideTick cycle = distance / schedule.period + (distance % schedule.period > 0 ? 1 : 0);
+			for (WideTick time = base + cycle * schedule.period; time < segment.end; time += schedule.period)
+			{
+				if ((count++ % 1024) == 0) { checkWork(); }
+				writeNote(output, note, time, note.step ? std::min(note.duration, segment.end - time) : note.duration);
+			}
 		}
 	}
 }
 
-MidiExport::MidiExport()
-	: ExportFilter(&midiexport_plugin_descriptor)
-{}
+void writeTrack(InstrumentTrack& track, MidiFile::Track& output, int tempo, int masterPitch,
+	std::uint8_t& channel, const Schedules* schedules)
+{
+	checkWork();
+	const auto instrument = track.instrument();
+	const auto patch = instrument ? instrument->midiPatch().value_or(MidiPatch{}) : MidiPatch{};
+	if (patch.bank == 128) { output.setChannel(9); }
+	else
+	{
+		output.setChannel(channel);
+		channel = (channel + 1) % 16;
+		if (channel == 9) { ++channel; }
+	}
+	output.addTempo(tempo, 0);
+	output.addName(track.name().toStdString(), 0);
+	output.addPatch(patch, 0);
+	const WideTick basePitch = static_cast<WideTick>(DefaultBaseKey) - track.baseNoteModel()->value()
+		+ (track.useMasterPitchModel()->value() ? masterPitch : 0);
+	const double baseVolume = track.volumeModel()->value() / 100.;
+	if (!track.isMuted())
+	{
+		const auto& clips = track.getClips();
+		for (std::size_t index = 0; index < clips.size(); ++index)
+		{
+			checkWork();
+			const auto clip = dynamic_cast<const MidiClip*>(clips[index]);
+			if (!clip) { continue; }
+			if (schedules)
+			{
+				if (index > static_cast<std::size_t>(std::numeric_limits<int>::max())) { break; }
+				const auto found = schedules->find(static_cast<int>(index));
+				if (found != schedules->end()) { writePattern(output, readNotes(*clip, basePitch, baseVolume, true), found->second); }
+			}
+			else
+			{
+				const WideTick origin = static_cast<WideTick>(clip->startPosition().getTicks()) + clip->startTimeOffset().getTicks();
+				std::size_t count = 0;
+				for (const auto& note : readNotes(*clip, basePitch, baseVolume, false))
+				{
+					if ((count++ % 1024) == 0) { checkWork(); }
+					writeNote(output, note, origin + note.time, note.duration);
+				}
+			}
+		}
+	}
+	output.writeToBuffer();
+}
+} // namespace
+
+MidiExport::MidiExport() : ExportFilter(&midiexport_plugin_descriptor) { }
 
 bool MidiExport::tryExport(const TrackContainer::TrackList& tracks,
 	const TrackContainer::TrackList& patternStoreTracks,
 	int tempo, int masterPitch, const std::filesystem::path& filePath)
 {
-	// Count number of instrument (and PatternStore) tracks
-	const auto numTracks = std::ranges::count_if(tracks, [](const Track* t) {
-		return t->type() == Track::Type::Instrument;
-	}) + patternStoreTracks.size();
-
-	// Write header info
-	auto file = MidiFile(filePath, numTracks);
-	file.m_header.writeToBuffer();
-
-	// Iterate through "normal" tracks
-	std::size_t trackIdx = 0;
-	for (Track* track : tracks)
+	try
 	{
-		assert(track != nullptr);
-		if (track->type() == Track::Type::Instrument)
+		if (Engine::getSong() && QThread::currentThread() != Engine::getSong()->thread())
+		{ throw std::runtime_error("MIDI export requires the native model owner thread"); }
+		const FileResourceIO::EventSuspension noReentry;
+		const auto guard = Engine::audioEngine() ? Engine::audioEngine()->requestChangesGuard() : AudioEngine::RequestChangesGuard{};
+		checkWork();
+		Schedules schedules;
+		for (auto track : tracks)
 		{
-			processTrack(*track, file.m_tracks[trackIdx++], tempo, masterPitch);
-		}
-		else if (track->type() == Track::Type::Pattern)
-		{
-			processPatternTrack(*track);
-		}
-	}
-
-	// Iterate through PatternStore tracks
-	for (Track* track : patternStoreTracks)
-	{
-		assert(track != nullptr);
-		processTrack(*track, file.m_tracks[trackIdx++], tempo, masterPitch, true);
-	}
-
-	// Write all buffered data to stream
-	file.writeAllToStream();
-
-	// Always returns success... for now?
-	return true;
-}
-
-void MidiExport::processTrack(Track& track, MidiFile::Track& midiTrack,
-	int tempo, int masterPitch, bool isPattern)
-{
-	// Cast track as a instrument one and save info from it to element
-	auto& instTrack = dynamic_cast<InstrumentTrack&>(track);
-	QDomElement root = instTrack.saveState(m_dataFile, m_dataFile.content());
-
-	// Use the MIDI patch from the instrument, if it supports it.
-	// Note that this only works decently if the current bank is a GM 1~128 one
-	// (which would be needed as the default either way for successful import).
-	// Pattern tracks are always bank 128 (see MidiImport), patch 0.
-	auto patch = instTrack.instrument()->midiPatch().value_or(MidiPatch{});
-	if (patch.bank == 128)
-	{
-		// Drum track, so set its channel to 10
-		midiTrack.setChannel(9);
-	}
-	else
-	{
-		midiTrack.setChannel(m_channel);
-
-		// Update the channel for the next MIDI file track
-		++m_channel;
-		if (m_channel == 9) { ++m_channel; } // skip drum channel
-		m_channel %= 16; // TODO: Give user option for how to handle wrap around?
-	}
-
-	// Add info about tempo, track name, bank select, and program change
-	midiTrack.addTempo(tempo, 0);
-	midiTrack.addName(track.name().toStdString(), 0);
-	midiTrack.addPatch(patch, 0);
-
-	// ---- Instrument track ---- //
-	QDomNode trackNode = root.firstChildElement("instrumenttrack");
-	QDomElement trackElem = trackNode.toElement();
-	int basePitch = 69 - trackElem.attribute("basenote", "69").toInt();
-	// Adjust to masterPitch if enabled
-	if (trackElem.attribute("usemasterpitch", "1").toInt())
-	{
-		basePitch += masterPitch;
-	}
-	// Volume ranges in [0.0, 2.0]
-	double baseVolume = LocaleHelper::toDouble(
-		trackElem.attribute("volume", "100")) / 100.0;
-
-	// ---- Clips ---- //
-	std::uint8_t patternId = 0;
-	for (QDomNode clipNode = root.firstChildElement("midiclip");
-		!clipNode.isNull();
-		clipNode = clipNode.nextSiblingElement("midiclip"))
-	{
-		QDomElement clipElem = clipNode.toElement();
-		Clip clip;
-		if (!isPattern)
-		{
-			// Base time == initial position
-			tick_t baseTime = std::max(clipElem.attribute("pos", "0").toInt(), 0);
-
-			// Write track notes to clip
-			clip.write(clipNode, basePitch, baseVolume, baseTime);
-
-			// Write clip info to MIDI file track
-			clip.processPatternNotes(INT_MAX);
-			clip.writeToTrack(midiTrack);
-		}
-		else
-		{
-			// Write to-be repeated pattern clip notes to clip
-			// (notice base time of 0)
-			clip.write(clipNode, basePitch, baseVolume, 0);
-
-			// Write clip to track
-			writePatternClip(clip, clipElem, patternId++, midiTrack);
-		}
-	}
-
-	// Write track data to buffer
-	midiTrack.writeToBuffer();
-}
-
-void MidiExport::writePatternClip(Clip& clip, const QDomElement& clipElem,
-	std::uint8_t patternIdx, MidiFile::Track& midiTrack)
-{
-	// Workaround for nested PatternClips
-	tick_t pos = 0;
-	tick_t len = 12 * clipElem.attribute("steps", "1").toInt();
-
-	// Iterate through PatternClip pairs of current list
-	// TODO: This *may* need some corrections?
-	const std::vector<std::pair<tick_t, tick_t>>& plist = m_plists.at(patternIdx);
-	std::stack<std::pair<tick_t, tick_t>> st;
-	Clip patternClip;
-	for (const std::pair<tick_t, tick_t>& p : plist)
-	{
-		while (!st.empty() && st.top().second <= p.first)
-		{
-			clip.writeToPattern(patternClip, len, st.top().first, pos, st.top().second);
-			pos = st.top().second;
-			st.pop();
-		}
-		if (!st.empty() && st.top().second <= p.second)
-		{
-			clip.writeToPattern(patternClip, len, st.top().first, pos, p.first);
-			pos = p.first;
-			while (!st.empty() && st.top().second <= p.second)
+			checkWork();
+			if (auto pattern = dynamic_cast<PatternTrack*>(track))
 			{
-				st.pop();
+				const auto index = pattern->patternIndex();
+				if (index < 0) { throw std::out_of_range("Invalid native pattern index"); }
+				schedules.emplace(index, PatternSchedule{patternPeriod(index, patternStoreTracks), patternSegments(*pattern)});
 			}
 		}
-		st.push(p);
-		pos = p.first;
+		const auto isInstrument = [](const Track* track) { return track->type() == Track::Type::Instrument; };
+		const auto count = std::ranges::count_if(tracks, isInstrument) + std::ranges::count_if(patternStoreTracks, isInstrument);
+		// An empty song still needs a valid conductor track with tempo and EOT.
+		MidiFile file(filePath, std::max<std::size_t>(1, count));
+		file.m_header.writeToBuffer();
+		std::size_t index = 0;
+		std::uint8_t channel = 0; // Every export starts a fresh channel allocation.
+		for (auto track : tracks)
+		{
+			if (isInstrument(track)) { writeTrack(static_cast<InstrumentTrack&>(*track), file.m_tracks[index++], tempo, masterPitch, channel, nullptr); }
+		}
+		for (auto track : patternStoreTracks)
+		{
+			if (isInstrument(track)) { writeTrack(static_cast<InstrumentTrack&>(*track), file.m_tracks[index++], tempo, masterPitch, channel, &schedules); }
+		}
+		if (index == 0)
+		{
+			file.m_tracks.front().addTempo(tempo, 0);
+			file.m_tracks.front().addName("LMMS", 0);
+			file.m_tracks.front().writeToBuffer();
+		}
+		return file.writeAllToStream();
 	}
-	while (!st.empty())
-	{
-		clip.writeToPattern(patternClip, len, st.top().first, pos, st.top().second);
-		pos = st.top().second;
-		st.pop();
-	}
-	// Write clip info to MIDI file track
-	patternClip.processPatternNotes(pos);
-	patternClip.writeToTrack(midiTrack);
-}
-
-void MidiExport::processPatternTrack(Track& track)
-{
-	// Cast track as a pattern track and save info from it to element
-	auto& patternTrack = dynamic_cast<PatternTrack&>(track);
-	QDomElement root = patternTrack.saveState(m_dataFile, m_dataFile.content());
-
-	// Build lists of (start, end) pairs from pattern clip note objects
-	std::vector<std::pair<tick_t, tick_t>> plist;
-	for (QDomNode patternClipNode = root.firstChildElement("patternclip");
-		!patternClipNode.isNull();
-		patternClipNode = patternClipNode.nextSiblingElement("patternclip"))
-	{
-		QDomElement patternClipElem = patternClipNode.toElement();
-		tick_t start = std::max(patternClipElem.attribute("pos", "0").toInt(), 0);
-		tick_t end = start + patternClipElem.attribute("len", "0").toInt();
-		plist.emplace_back(start, end);
-	}
-
-	// Sort list in ascending order and append it to matrix
-	std::sort(plist.begin(), plist.end());
-	m_plists.emplace_back(std::move(plist));
+	catch (const std::exception& error) { qWarning() << "MIDI export failed:" << error.what(); }
+	catch (...) { qWarning() << "MIDI export failed with an unknown native exception"; }
+	return false;
 }
 
 } // namespace lmms

@@ -34,7 +34,11 @@
 #include "LmmsTypes.h"
 #include "lmms_export.h"
 
+class QDomDocument;
+class QDomElement;
+
 namespace lmms {
+class FileResourceSnapshot;
 class LMMS_EXPORT SampleBuffer
 {
 public:
@@ -55,8 +59,14 @@ public:
 
 	friend void swap(SampleBuffer& first, SampleBuffer& second) noexcept;
 	auto toBase64() const -> QString;
+	bool toBase64(QString& encoded, QString& error) const;
+	bool saveEmbeddedData(QDomDocument& document, QDomElement& element, const QString& attribute) const;
 
 	auto audioFile() const -> const QString& { return m_audioFile; }
+	// Original path remains project metadata; this private file owns loader input.
+	auto acceptedFile() const -> QString;
+	void registerResourceSource(const QDomDocument& document, const QDomElement& element,
+		const QString& attribute, std::shared_ptr<const SampleBuffer> owner = {}) const;
 	auto sampleRate() const -> sample_rate_t { return m_sampleRate; }
 
 	auto begin() -> iterator { return m_data.begin(); }
@@ -86,10 +96,13 @@ public:
 	static std::shared_ptr<const SampleBuffer> fromFile(const QString& path);
 	static std::shared_ptr<const SampleBuffer> fromBase64(
 		const QString& str, int sampleRate = Engine::audioEngine()->outputSampleRate());
+	// Checked native loader: nullptr means failure; empty input is a valid empty buffer.
+	static std::shared_ptr<const SampleBuffer> fromBase64(const QString& str, int sampleRate, QString& error);
 
 private:
 	std::vector<SampleFrame> m_data;
 	QString m_audioFile;
+	std::shared_ptr<FileResourceSnapshot> m_sourceSnapshot;
 	sample_rate_t m_sampleRate = Engine::audioEngine()->outputSampleRate();
 };
 

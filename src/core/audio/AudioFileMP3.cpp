@@ -26,11 +26,10 @@
 #include "AudioFileMP3.h"
 
 #include "SampleFrame.h"
+#include <array>
 
 #ifdef LMMS_HAVE_MP3LAME
 
-
-#include <cassert>
 
 namespace lmms
 {
@@ -42,38 +41,46 @@ AudioFileMP3::AudioFileMP3(	OutputSettings const & outputSettings,
 				AudioEngine* audioEngine ) :
 	AudioFileDevice( outputSettings, channels, file, audioEngine )
 {
-	successful = true;
 	// For now only accept stereo sources
-	successful &= channels == 2;
-	successful &= initEncoder();
-	successful &= outputFileOpened();
+	m_initialized = channels == 2 && outputFileOpened() && initEncoder();
+	if (!m_initialized) { recordWriteError(); }
+	successful = m_initialized;
 }
 
 AudioFileMP3::~AudioFileMP3()
 {
-	flushRemainingBuffers();
+	finalizeOutput();
 	tearDownEncoder();
+}
+
+bool AudioFileMP3::finalizeOutput()
+{
+	if (!m_finalized)
+	{
+		if (m_initialized) { flushRemainingBuffers(); }
+		else { recordWriteError(); }
+		m_finalized = true;
+	}
+	return AudioFileDevice::finalizeOutput();
 }
 
 void AudioFileMP3::writeBuffer(const SampleFrame* _buf, const f_cnt_t _frames)
 {
-	if (_frames < 1)
-	{
-		return;
-	}
+	if (!admitBuffer(_buf, _frames)) { return; }
+	if (!m_initialized || m_finalized || !m_lame) { recordWriteError(); return; }
 
-	std::vector<float> interleavedDataBuffer(_frames * 2);
+	m_interleavedData.resize(_frames * 2); auto& interleavedDataBuffer = m_interleavedData;
 	for (f_cnt_t i = 0; i < _frames; ++i)
 	{
 		interleavedDataBuffer[2*i] = _buf[i][0];
 		interleavedDataBuffer[2*i + 1] = _buf[i][1];
 	}
 
-	size_t minimumBufferSize = 1.25 * _frames + 7200;
-	std::vector<unsigned char> encodingBuffer(minimumBufferSize);
+	const auto minimumBufferSize = static_cast<std::size_t>((_frames * 5 + 3) / 4 + 7200);
+	m_encodingBuffer.resize(minimumBufferSize); auto& encodingBuffer = m_encodingBuffer;
 
-	int bytesWritten = lame_encode_buffer_interleaved_ieee_float(m_lame, &interleavedDataBuffer[0], _frames, &encodingBuffer[0], static_cast<int>(encodingBuffer.size()));
-	assert (bytesWritten >= 0);
+	int bytesWritten = lame_encode_buffer_interleaved_ieee_float(m_lame, interleavedDataBuffer.data(), static_cast<int>(_frames), encodingBuffer.data(), static_cast<int>(encodingBuffer.size()));
+	if (bytesWritten < 0) { recordWriteError(); return; }
 
 	writeData(&encodingBuffer[0], bytesWritten);
 }
@@ -81,10 +88,10 @@ void AudioFileMP3::writeBuffer(const SampleFrame* _buf, const f_cnt_t _frames)
 void AudioFileMP3::flushRemainingBuffers()
 {
 	// The documentation states that flush should have at least 7200 bytes. So let's be generous.
-	std::vector<unsigned char> encodingBuffer(7200 * 4);
+	std::array<unsigned char, 7200 * 4> encodingBuffer{};
 
 	int bytesWritten = lame_encode_flush(m_lame, &encodingBuffer[0], static_cast<int>(encodingBuffer.size()));
-	assert (bytesWritten >= 0);
+	if (bytesWritten < 0) { recordWriteError(); return; }
 
 	writeData(&encodingBuffer[0], bytesWritten);
 }
@@ -107,6 +114,7 @@ MPEG_mode mapToMPEG_mode(OutputSettings::StereoMode stereoMode)
 bool AudioFileMP3::initEncoder()
 {
 	m_lame = lame_init();
+	if (!m_lame) { return false; }
 
 	// Handle stereo/joint/mono settings
 	OutputSettings::StereoMode stereoMode = getOutputSettings().getStereoMode();
@@ -123,12 +131,12 @@ bool AudioFileMP3::initEncoder()
 	id3tag_init(m_lame);
 	id3tag_set_comment(m_lame, "Created with LMMS");
 
-	return lame_init_params(m_lame) != -1;
+	return lame_init_params(m_lame) >= 0;
 }
 
 void AudioFileMP3::tearDownEncoder()
 {
-	lame_close(m_lame);
+	if (m_lame) { lame_close(m_lame); m_lame = nullptr; }
 }
 
 } // namespace lmms

@@ -26,6 +26,8 @@
 #ifndef LMMS_SAMPLE_PLAY_HANDLE_H
 #define LMMS_SAMPLE_PLAY_HANDLE_H
 
+#include <memory>
+
 #include "Sample.h"
 #include "PlayHandle.h"
 
@@ -44,6 +46,7 @@ public:
 	SamplePlayHandle(Sample* sample, bool ownAudioBusHandle = true);
 	SamplePlayHandle( const QString& sampleFile );
 	SamplePlayHandle( SampleClip* clip );
+	SamplePlayHandle(SampleClip* clip, const Sample& playbackSample);
 	~SamplePlayHandle() override;
 
 	inline bool affinityMatters() const override
@@ -76,6 +79,7 @@ private:
 	Sample::PlaybackState m_state;
 	f_cnt_t m_frame = 0;
 	Sample* m_sample = nullptr;
+	std::unique_ptr<Sample> m_clipSample;
 	Track* m_track = nullptr;
 	PatternTrack* m_patternTrack = nullptr;
 	bool m_doneMayReturnTrue = true;

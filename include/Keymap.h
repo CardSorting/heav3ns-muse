@@ -34,7 +34,7 @@
 namespace lmms
 {
 
-class Keymap : public QObject, public SerializingObject
+class LMMS_EXPORT Keymap : public QObject, public SerializingObject
 {
 	Q_OBJECT
 public:
@@ -46,7 +46,10 @@ public:
 		int newLast,
 		int newMiddle,
 		int newBaseKey,
-		float newBaseFreq
+		float newBaseFreq,
+		int octaveDegree = 0,
+		std::vector<bool> mapped = {},
+		bool linearFromMiddle = false
 	);
 
 	QString getDescription() const;
@@ -57,12 +60,16 @@ public:
 	int getLastKey() const {return m_lastKey;}
 	int getBaseKey() const {return m_baseKey;}
 	float getBaseFreq() const {return m_baseFreq;}
+	int octaveDegree() const { return m_octaveDegree; }
+	bool linearFromMiddle() const { return m_linearFromMiddle; }
+	bool isMapped(int key) const;
+	bool isDegreeMapped(std::size_t index) const;
 
 	std::size_t getSize() const {return m_map.size();}
 
 	//! @brief Return scale degree for a given key, based on current map and first/middle/last notes
 	//! @param key MIDI key to be mapped
-	//! @return Scale degree defined by the mapping on success, -1 if key isn't mapped
+	//! @return Signed scale degree on success, -1 if unmapped. Use isMapped to distinguish a valid degree -1.
 	int getDegree(int key) const;
 
 	//! @brief Return octave offset for a given key, based on current map and the middle note
@@ -85,6 +92,9 @@ private:
 	int m_middleKey;                //!< first line of the map refers to this key
 	int m_baseKey;                  //!< key which is assigned the reference "base note"
 	float m_baseFreq;               //!< frequency of the base note (usually A4 @440 Hz)
+	int m_octaveDegree = 0;         //!< zero retains the legacy last-scale-degree period
+	std::vector<bool> m_mapped;     //!< distinguish the valid degree -1 from an unmapped key
+	bool m_linearFromMiddle = false; //!< Scala zero-sized maps start at middle; legacy LMMS maps start at key zero
 };
 
 } // namespace lmms

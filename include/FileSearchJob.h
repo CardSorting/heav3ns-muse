@@ -29,6 +29,7 @@
 #include <QObject>
 #include <QString>
 #include <future>
+#include "FileSearch.h"
 
 namespace lmms::gui {
 //! The `FileSearchJob` class allows for searching for files on the filesystem.
@@ -38,13 +39,7 @@ class FileSearchJob : public QObject
 	Q_OBJECT
 public:
 	//! Represents a search task to be carried out by the search job.
-	struct Task
-	{
-		QString filter;					 //! The filter to be tokenized.
-		QStringList paths;				 //! The list of paths to search recursively through.
-		QStringList extensions;			 //! The list of allowed extensions.
-		QFlags<QDir::Filter> dirFilters; //! The directory filter flag.
-	};
+	using Task = FileSearch::Task;
 
 	//! Create a search job with the given @p parent (if any).
 	FileSearchJob(QObject* parent = nullptr);

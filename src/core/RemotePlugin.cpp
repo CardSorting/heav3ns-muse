@@ -42,6 +42,12 @@
 #include <QDebug>
 #include <QDir>
 #include <QUuid>
+#include <QTimer>
+#include <QMutexLocker>
+#include <chrono>
+#include <algorithm>
+#include <limits>
+#include <QElapsedTimer>
 
 #ifndef SYNC_WITH_SHM_FIFO
 #include <sys/socket.h>
@@ -75,6 +81,152 @@ HANDLE getRemotePluginJob()
 namespace lmms
 {
 
+namespace
+{
+std::atomic<std::uint64_t> remoteFailureCount{0};
+std::mutex renderContextMutex;
+std::uint64_t nextRenderContext = 1;
+std::atomic<std::uint64_t> activeRenderContext{0};
+std::atomic<std::uint64_t> executingRenderContext{0};
+std::atomic<std::uint64_t> cancelledRenderContext{0};
+std::atomic<std::int64_t> renderContextDeadline{0};
+
+std::int64_t monotonicMilliseconds()
+{
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}
+
+class RemotePlugin::RequestDeadline
+{
+public:
+	RequestDeadline(RemotePlugin& plugin, int timeoutMs = 0) :
+		m_plugin(plugin), m_previous(plugin.m_requestDeadline.load()),
+		m_previousContext(plugin.m_requestRenderContext.load())
+	{
+		const auto deadline = monotonicMilliseconds() + (timeoutMs ? timeoutMs : plugin.m_timeoutMs);
+		plugin.m_requestDeadline = m_previous ? std::min(m_previous, deadline) : deadline;
+		if (!m_previousContext) { plugin.m_requestRenderContext = executingRenderContext.load(); }
+	}
+	~RequestDeadline()
+	{
+		m_plugin.m_requestDeadline = m_previous;
+		m_plugin.m_requestRenderContext = m_previousContext;
+	}
+private:
+	RemotePlugin& m_plugin;
+	std::int64_t m_previous;
+	std::uint64_t m_previousContext;
+};
+
+std::uint64_t RemotePlugin::failureCount() { return remoteFailureCount.load(); }
+bool RemotePlugin::hasActiveRenderContext() { return activeRenderContext.load() != 0; }
+bool RemotePlugin::hasRunningRenderExecution() { return executingRenderContext.load() != 0; }
+
+std::uint64_t RemotePlugin::beginRenderContext(int timeoutMs)
+{
+	const auto lock = std::lock_guard{renderContextMutex};
+	if (activeRenderContext || nextRenderContext == std::numeric_limits<std::uint64_t>::max()) { return 0; }
+	const auto context = nextRenderContext++;
+	renderContextDeadline = timeoutMs > 0 ? monotonicMilliseconds() + timeoutMs : 0;
+	executingRenderContext = context;
+	activeRenderContext = context;
+	return context;
+}
+
+void RemotePlugin::cancelRenderContext(std::uint64_t context)
+{
+	// Keep cancellation of retired contexts visible to their outstanding requests;
+	// monotonically allocated IDs keep it from cancelling a later export.
+	auto cancelled = cancelledRenderContext.load();
+	while (context > cancelled && !cancelledRenderContext.compare_exchange_weak(cancelled, context)) { }
+}
+
+void RemotePlugin::finishRenderExecution(std::uint64_t context)
+{
+	const auto lock = std::lock_guard{renderContextMutex};
+	if (context && activeRenderContext == context) { executingRenderContext = 0; }
+}
+
+void RemotePlugin::endRenderContext(std::uint64_t context)
+{
+	if (context)
+	{
+		const auto lock = std::lock_guard{renderContextMutex};
+		if (activeRenderContext == context)
+		{
+			executingRenderContext = 0;
+			activeRenderContext = 0;
+		}
+	}
+}
+
+bool RemotePlugin::renderContextCancelled(std::uint64_t context)
+{
+	if (!context) { return false; }
+	if (context <= cancelledRenderContext.load()) { return true; }
+	// Read the ID and deadline together. A watcher checking an older request
+	// must not combine a retired deadline with a newly started export's ID.
+	const auto lock = std::lock_guard{renderContextMutex};
+	const auto deadline = renderContextDeadline.load();
+	if (context == activeRenderContext.load() && deadline && monotonicMilliseconds() >= deadline)
+	{
+		cancelRenderContext(context);
+		return true;
+	}
+	return false;
+}
+
+bool RemotePlugin::requestCancelled()
+{
+	if (!m_requestDeadline) { return false; }
+	auto context = m_requestRenderContext.load();
+	if (!context)
+	{
+		// Export setup can be stopping a hardware period whose RPC began before
+		// the render context. Adopt it so the watcher can unwind that wait too.
+		const auto active = executingRenderContext.load();
+		m_requestRenderContext.compare_exchange_strong(context, active);
+		context = m_requestRenderContext.load();
+	}
+	return renderContextCancelled(context);
+}
+
+void RemotePlugin::recordFailure()
+{
+	if (!m_failed.exchange(true)) { ++remoteFailureCount; }
+}
+
+int RemotePlugin::sendMessage(const message& m)
+{
+	QMutexLocker locker(&m_commMutex);
+	RequestDeadline deadline(*this);
+	if (requestCancelled()) { recordFailure(); invalidate(); return 0; }
+	const auto bytes = RemotePluginBase::sendMessage(m);
+	if (!bytes) { recordFailure(); }
+	return bytes;
+}
+
+RemotePluginBase::message RemotePlugin::waitForMessage(const message& expected, bool busyWaiting)
+{
+	QMutexLocker locker(&m_commMutex);
+	RequestDeadline deadline(*this);
+	if (requestCancelled()) { recordFailure(); invalidate(); return {}; }
+	const auto received = RemotePluginBase::waitForMessage(expected, busyWaiting);
+	if (received.id != expected.id) { recordFailure(); invalidate(); }
+	return received;
+}
+
+void RemotePlugin::fetchAndProcessAllMessages()
+{
+	QMutexLocker locker(&m_commMutex);
+	RequestDeadline deadline(*this);
+	if (requestCancelled()) { recordFailure(); invalidate(); return; }
+	RemotePluginBase::fetchAndProcessAllMessages();
+	if (isInvalid()) { recordFailure(); }
+}
+
 // simple helper thread monitoring our RemotePlugin - if process terminates
 // unexpectedly invalidate plugin so LMMS doesn't lock up
 ProcessWatcher::ProcessWatcher( RemotePlugin * _p ) :
@@ -89,10 +241,28 @@ void ProcessWatcher::run()
 {
 	auto& process = m_plugin->m_process;
 	process.start(m_plugin->m_exec, m_plugin->m_args);
+	QElapsedTimer startup;
+	startup.start();
+	while (process.state() == QProcess::Starting && startup.elapsed() < 30000
+		&& !m_quit && !m_plugin->isInvalid() && !m_plugin->requestCancelled())
+	{
+		if (process.waitForStarted(25)) { break; }
+	}
+	if (process.state() != QProcess::Running || m_quit || m_plugin->isInvalid() || m_plugin->requestCancelled())
+	{
+		m_plugin->recordFailure();
+		m_plugin->invalidate();
+		process.kill();
+		process.waitForFinished(1000);
+		m_plugin->m_running = false;
+		process.moveToThread(m_plugin->thread());
+		return;
+	}
+	m_plugin->m_running = true;
 
 #ifdef LMMS_BUILD_WIN32
 	// Add the process to our job so it is killed if we crash
-	if (process.waitForStarted(-1))
+	if (process.state() == QProcess::Running)
 	{
 		if (const auto processHandle = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, process.processId()))
 		{
@@ -113,17 +283,46 @@ void ProcessWatcher::run()
 	}
 #endif // LMMS_BUILD_WIN32
 
-	exec();
-	process.moveToThread(m_plugin->thread());
-	while (!m_quit && m_plugin->messagesLeft())
+	QTimer watchdog;
+	watchdog.setInterval(25);
+	QObject::connect(&watchdog, &QTimer::timeout, &watchdog, [&]
 	{
-		msleep(200);
-	}
+		if (m_quit) { quit(); return; }
+		if (m_plugin->requestCancelled() && !m_plugin->isInvalid())
+		{
+			qWarning() << "Remote plugin request interrupted by native render cancellation" << m_plugin->m_exec;
+			m_plugin->recordFailure();
+			m_plugin->invalidate();
+		}
+		const auto deadline = m_plugin->m_requestDeadline.load();
+		if (deadline && monotonicMilliseconds() >= deadline && !m_plugin->isInvalid())
+		{
+			qCritical() << "Remote plugin communication deadline exceeded" << m_plugin->m_exec;
+			m_plugin->recordFailure();
+			m_plugin->invalidate();
+		}
+		if (m_plugin->isInvalid()) { process.kill(); quit(); }
+	});
+	watchdog.start();
+	if (!m_quit && process.state() == QProcess::Running) { exec(); }
+	watchdog.stop();
 	if (!m_quit)
 	{
-		fprintf(stderr, "remote plugin died! invalidating now.\n");
-		m_plugin->invalidate();
+		m_plugin->recordFailure();
 	}
+	// Do not inspect/drain the FIFO after a child exits: its data lock may
+	// have been abandoned. Invalidation wakes both transports without it.
+	m_plugin->invalidate();
+	if (process.state() != QProcess::NotRunning)
+	{
+		if (!m_quit || !process.waitForFinished(1000))
+		{
+			process.kill();
+			process.waitForFinished(1000);
+		}
+	}
+	m_plugin->m_running = process.state() != QProcess::NotRunning;
+	process.moveToThread(m_plugin->thread());
 }
 
 
@@ -144,6 +343,13 @@ RemotePlugin::RemotePlugin() :
 	m_inputCount( DEFAULT_CHANNELS ),
 	m_outputCount( DEFAULT_CHANNELS )
 {
+	bool validTimeout = false;
+	const auto configuredTimeout = qEnvironmentVariableIntValue("LMMS_REMOTE_PLUGIN_TIMEOUT_MS", &validTimeout);
+	if (validTimeout && configuredTimeout >= 1000 && configuredTimeout <= 600000) { m_timeoutMs = configuredTimeout; }
+	else if (qEnvironmentVariableIsSet("LMMS_REMOTE_PLUGIN_TIMEOUT_MS"))
+	{
+		qWarning() << "Invalid LMMS_REMOTE_PLUGIN_TIMEOUT_MS; using 120000 ms (supported range 1000..600000)";
+	}
 #ifndef SYNC_WITH_SHM_FIFO
 	struct sockaddr_un sa;
 	sa.sun_family = AF_LOCAL;
@@ -181,6 +387,12 @@ RemotePlugin::RemotePlugin() :
 		Qt::DirectConnection );
 	connect( &m_process, SIGNAL(finished(int,QProcess::ExitStatus)),
 		&m_watcher, SLOT(quit()), Qt::DirectConnection );
+	connect(&m_process, &QProcess::readyReadStandardOutput, &m_process, [this]
+	{
+		const auto diagnostics = m_process.readAllStandardOutput();
+		std::fwrite(diagnostics.constData(), 1, static_cast<std::size_t>(diagnostics.size()), stderr);
+		std::fflush(stderr);
+	}, Qt::DirectConnection);
 }
 
 
@@ -188,25 +400,7 @@ RemotePlugin::RemotePlugin() :
 
 RemotePlugin::~RemotePlugin()
 {
-	m_watcher.stop();
-	m_watcher.wait();
-
-	if( m_failed == false )
-	{
-		if( isRunning() )
-		{
-			lock();
-			sendMessage( IdQuit );
-
-			m_process.waitForFinished( 1000 );
-			if( m_process.state() != QProcess::NotRunning )
-			{
-				m_process.terminate();
-				m_process.kill();
-			}
-			unlock();
-		}
-	}
+	retireProcess();
 
 #ifndef SYNC_WITH_SHM_FIFO
 	if ( close( m_server ) == -1)
@@ -214,7 +408,27 @@ RemotePlugin::~RemotePlugin()
 		qWarning( "Error freeing resources." );
 	}
 	remove( m_socketFile.toUtf8().constData() );
+	if (m_socket >= 0) { close(m_socket); }
 #endif
+}
+
+void RemotePlugin::retireProcess()
+{
+	// Mark orderly retirement before IdQuit can make QProcess emit finished.
+	m_watcher.m_quit = true;
+	if (m_watcher.isRunning() && m_running && !isInvalid())
+	{
+		RequestDeadline deadline(*this, 500);
+		RemotePluginBase::sendMessage(IdQuit);
+	}
+	m_watcher.stop();
+	m_watcher.wait();
+	if (m_process.state() != QProcess::NotRunning)
+	{
+		m_process.kill();
+		m_process.waitForFinished(1000);
+	}
+	m_running = false;
 }
 
 
@@ -223,14 +437,20 @@ RemotePlugin::~RemotePlugin()
 bool RemotePlugin::init(const QString &pluginExecutable,
 							bool waitForInitDoneMsg , QStringList extraArgs)
 {
-	lock();
-	if( m_failed )
-	{
+	QMutexLocker initializationLock(&m_commMutex);
+	RequestDeadline deadline(*this);
+	if (requestCancelled()) { recordFailure(); invalidate(); return true; }
+	retireProcess();
 #ifdef SYNC_WITH_SHM_FIFO
-		reset( new shmFifo(), new shmFifo() );
+	reset(new shmFifo(), new shmFifo());
+#else
+	resetConnection();
 #endif
-		m_failed = false;
-	}
+	m_failed = false;
+	m_inputCount = DEFAULT_CHANNELS;
+	m_outputCount = DEFAULT_CHANNELS;
+	m_audioBuffer.detach();
+	m_audioBufferSize = 0;
 	QString exec = QFileInfo(QDir("plugins:"), pluginExecutable).absoluteFilePath();
 
 	// We may have received a directory via a environment variable
@@ -256,9 +476,8 @@ bool RemotePlugin::init(const QString &pluginExecutable,
 	{
 		qWarning( "Remote plugin '%s' not found",
 						exec.toUtf8().constData() );
-		m_failed = true;
+		recordFailure();
 		invalidate();
-		unlock();
 		return failed();
 	}
 
@@ -277,7 +496,7 @@ bool RemotePlugin::init(const QString &pluginExecutable,
 #endif
 	args << extraArgs;
 #ifndef DEBUG_REMOTE_PLUGIN
-	m_process.setProcessChannelMode( QProcess::ForwardedChannels );
+	m_process.setProcessChannelMode(QProcess::ForwardedErrorChannel);
 	m_process.setWorkingDirectory( QCoreApplication::applicationDirPath() );
 	m_exec = exec;
 	m_args = args;
@@ -289,26 +508,36 @@ bool RemotePlugin::init(const QString &pluginExecutable,
 #endif
 
 #ifndef SYNC_WITH_SHM_FIFO
-	struct pollfd pollin;
+	struct pollfd pollin{};
 	pollin.fd = m_server;
 	pollin.events = POLLIN;
 
-	switch ( poll( &pollin, 1, 30000 ) )
+	QElapsedTimer connection;
+	connection.start();
+	while (connection.elapsed() < 30000 && !failed() && !isInvalid() && !requestCancelled())
 	{
-		case -1:
-			qWarning( "Unexpected poll error." );
-			break;
-
-		case 0:
-			qWarning( "Remote plugin did not connect." );
-			break;
-
-		default:
+		const auto available = poll(&pollin, 1, 25);
+		if (available < 0 && errno != EINTR) { qWarning("Unexpected poll error."); break; }
+		if (available > 0 && (pollin.revents & POLLIN))
+		{
 			m_socket = accept( m_server, nullptr, nullptr );
 			if ( m_socket == -1 )
 			{
 				qWarning( "Unexpected socket error." );
 			}
+			break;
+		}
+		if (available > 0 && (pollin.revents & (POLLERR | POLLNVAL | POLLHUP))) { break; }
+		if (QCoreApplication::instance() && QThread::currentThread() == QCoreApplication::instance()->thread())
+		{
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
+		}
+	}
+	if (m_socket == -1)
+	{
+		recordFailure();
+		invalidate();
+		return true;
 	}
 #endif
 
@@ -319,7 +548,6 @@ bool RemotePlugin::init(const QString &pluginExecutable,
 	{
 		waitForInitDone();
 	}
-	unlock();
 
 	return failed();
 }
@@ -329,10 +557,16 @@ bool RemotePlugin::init(const QString &pluginExecutable,
 
 bool RemotePlugin::process( const SampleFrame* _in_buf, SampleFrame* _out_buf )
 {
+	QMutexLocker processingLock(&m_commMutex);
+	RequestDeadline deadline(*this);
 	const f_cnt_t frames = Engine::audioEngine()->framesPerPeriod();
 
-	if( m_failed || !isRunning() )
+	if (m_failed || isInvalid() || !isRunning())
 	{
+		// A previously failed host used by a new export must fail that export,
+		// rather than publish silence merely because the original failure is old.
+		++remoteFailureCount;
+		recordFailure();
 		if( _out_buf != nullptr )
 		{
 			zeroSampleFrames(_out_buf, frames);
@@ -397,14 +631,14 @@ bool RemotePlugin::process( const SampleFrame* _in_buf, SampleFrame* _out_buf )
 	lock();
 	sendMessage( IdStartProcessing );
 
-	if( m_failed || _out_buf == nullptr || m_outputCount == 0 )
+	const auto completed = waitForMessage(IdProcessingDone).id == IdProcessingDone && !failed() && !isInvalid();
+	unlock();
+	if (!completed)
 	{
-		unlock();
+		if (_out_buf) { zeroSampleFrames(_out_buf, frames); }
 		return false;
 	}
-
-	waitForMessage( IdProcessingDone );
-	unlock();
+	if (!_out_buf || m_outputCount == 0) { return false; }
 
 	const ch_cnt_t outputs = std::min<ch_cnt_t>(m_outputCount,
 							DEFAULT_CHANNELS);
@@ -479,6 +713,20 @@ void RemotePlugin::hideUI()
 
 void RemotePlugin::resizeSharedProcessingMemory()
 {
+	const auto frames = Engine::audioEngine()->framesPerPeriod();
+	constexpr std::size_t maximumAudioBytes = 64 * 1024 * 1024;
+	const auto maximumChannels = frames > 0 ? maximumAudioBytes / sizeof(float) / frames : 0;
+	if (m_inputCount < 0 || m_outputCount < 0
+		|| static_cast<std::size_t>(m_inputCount) > maximumChannels
+		|| static_cast<std::size_t>(m_outputCount) > maximumChannels - m_inputCount)
+	{
+		qCritical() << "Remote plugin reported invalid or excessive audio channel counts";
+		m_audioBuffer.detach();
+		m_audioBufferSize = 0;
+		recordFailure();
+		invalidate();
+		return;
+	}
 	const size_t s = (m_inputCount + m_outputCount) * Engine::audioEngine()->framesPerPeriod();
 	try
 	{
@@ -488,6 +736,9 @@ void RemotePlugin::resizeSharedProcessingMemory()
 	{
 		qCritical() << "Failed to allocate shared audio buffer:" << error.what();
 		m_audioBuffer.detach();
+		m_audioBufferSize = 0;
+		recordFailure();
+		invalidate();
 		return;
 	}
 	m_audioBufferSize = s * sizeof(float);
@@ -500,6 +751,10 @@ void RemotePlugin::resizeSharedProcessingMemory()
 void RemotePlugin::processFinished( int exitCode,
 					QProcess::ExitStatus exitStatus )
 {
+	m_running = false;
+	if (m_watcher.m_quit) { return; }
+	recordFailure();
+	invalidate();
 	if ( exitStatus == QProcess::CrashExit )
 	{
 		qCritical() << "Remote plugin crashed";
@@ -508,14 +763,13 @@ void RemotePlugin::processFinished( int exitCode,
 	{
 		qCritical() << "Remote plugin exit code: " << exitCode;
 	}
-#ifndef SYNC_WITH_SHM_FIFO
-	invalidate();
-#endif
 }
 
 void RemotePlugin::processErrored( QProcess::ProcessError err )
 {
+	if (m_watcher.m_quit || err == QProcess::Timedout) { return; }
 	qCritical() << "Process error: " << err;
+	if (err == QProcess::FailedToStart || err == QProcess::Crashed) { recordFailure(); invalidate(); }
 }
 
 

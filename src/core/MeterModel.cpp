@@ -25,6 +25,7 @@
 
 #include "MeterModel.h"
 #include "AutomationClip.h"
+#include <QPointer>
 
 
 namespace lmms
@@ -44,10 +45,14 @@ MeterModel::MeterModel( Model * _parent ) :
 
 void MeterModel::reset()
 {
+	const QPointer<MeterModel> receiver(this);
 	m_numeratorModel.setValue( 4 );
+	if (!receiver) { return; }
 	m_denominatorModel.setValue( 4 );
+	if (!receiver) { return; }
 
 	AutomationClip::globalAutomationClip( &m_numeratorModel )->clear();
+	if (!receiver) { return; }
 	AutomationClip::globalAutomationClip( &m_denominatorModel )->clear();
 }
 
@@ -67,7 +72,9 @@ void MeterModel::saveSettings( QDomDocument & _doc, QDomElement & _this,
 void MeterModel::loadSettings( const QDomElement & _this,
 								const QString & _name )
 {
+	const QPointer<MeterModel> receiver(this);
 	m_numeratorModel.loadSettings( _this, _name + "_numerator" );
+	if (!receiver) { return; }
 	m_denominatorModel.loadSettings( _this, _name + "_denominator" );
 }
 

@@ -26,6 +26,8 @@
 #define _VST_EFFECT_CONTROLS_H
 
 #include "EffectControls.h"
+#include "VstParameterModels.h"
+#include "Plugin.h"
 
 
 #include <QObject>
@@ -65,6 +67,12 @@ public:
 	}
 
 	int controlCount() override;
+	void refreshParameterModels();
+	Plugin::NativeProgramPage nativePrograms(int offset, int limit);
+	bool selectNativeProgram(int index, QString& error);
+	Plugin::NativePresetInfo inspectNativePreset(const QString& path);
+	Plugin::NativePresetInfo loadNativePreset(const QString& path);
+	Plugin::NativePresetInfo saveNativePreset(const QString& path, bool bank);
 
 	gui::EffectControlDialog* createView() override;
 
@@ -77,20 +85,20 @@ protected slots:
 	void rollPreset();
 	void rolrPreset();
 	void selPreset();
-	void setParameter( lmms::Model * action );
 
 protected:
 	virtual void paintEvent( QPaintEvent * _pe );
 
 private:
+	void changeProgram(int program, bool relative);
 	VstEffect * m_effect;
 
 	QPushButton * m_selPresetButton;
 
 	QMdiSubWindow * m_subWindow;
 	QScrollArea * m_scrollArea;
-	std::vector<FloatModel*> knobFModel;
-	int paramCount;
+	VstParameterModels m_parameters;
+	bool m_parameterOperation = false;
 
 	QObject * ctrHandle;
 
@@ -99,6 +107,7 @@ private:
 
 	friend class gui::VstEffectControlDialog;
 	friend class gui::ManageVSTEffectView;
+	friend class VstEffect;
 
 	bool m_vstGuiVisible;
 } ;
@@ -119,7 +128,6 @@ public:
 protected slots:
 	void syncPlugin();
 	void displayAutomatedOnly();
-	void setParameter( lmms::Model * action );
 	void closeWindow();
 
 private:

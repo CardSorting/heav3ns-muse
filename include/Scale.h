@@ -26,6 +26,7 @@
 #define LMMS_SCALE_H
 
 #include <cstdint>
+#include <limits>
 #include <vector>
 #include <QObject>
 #include <QString>
@@ -35,7 +36,7 @@
 namespace lmms
 {
 
-class Interval : public SerializingObject
+class LMMS_EXPORT Interval : public SerializingObject
 {
 public:
 	Interval() : m_numerator(1), m_denominator(1), m_cents(0), m_ratio(1) {};
@@ -43,11 +44,24 @@ public:
 	Interval(uint32_t numerator, uint32_t denominator);
 
 	float getRatio() const {return m_ratio;}
+	bool isRatio() const { return m_denominator != 0; }
+	uint32_t numerator() const { return m_numerator; }
+	uint32_t denominator() const { return m_denominator; }
+	float cents() const { return m_cents; }
 
 	QString getString() const
 	{
 		if (m_denominator) {return QString::number(m_numerator) + "/" + QString::number(m_denominator);}
-		else {return QString("%1").arg(m_cents, 0, 'f', 4);}
+		else
+		{
+			auto text = QString::number(m_cents, 'g', std::numeric_limits<float>::max_digits10);
+			if (!text.contains('.'))
+			{
+				const auto exponent = text.indexOf('e');
+				text.insert(exponent < 0 ? text.size() : exponent, ".0");
+			}
+			return text;
+		}
 	}
 
 	void saveSettings(QDomDocument &doc, QDomElement &element) override;
@@ -63,7 +77,7 @@ private:
 };
 
 
-class Scale : public QObject, public SerializingObject
+class LMMS_EXPORT Scale : public QObject, public SerializingObject
 {
 	Q_OBJECT
 public:

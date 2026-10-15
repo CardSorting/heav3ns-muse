@@ -33,6 +33,10 @@
 #include "Knob.h"
 #include "TempoSyncKnob.h"
 #include "PixmapButton.h"
+#include <QPointer>
+#include <exception>
+#include "Engine.h"
+#include "Song.h"
 
 namespace lmms::gui
 {
@@ -62,7 +66,7 @@ LfoControllerDialog::LfoControllerDialog( Controller * _model, QWidget * _parent
 	setWindowTitle( title );
 	setWindowIcon( embed::getIconPixmap( "controller" ) );
 	setFixedSize( 240, 58 );
-	
+
 	m_baseKnob = new Knob(KnobType::Bright26, tr("BASE"), SMALL_FONT_SIZE, this);
 	m_baseKnob->move( CD_LFO_BASE_CD_KNOB_X, CD_LFO_CD_KNOB_Y );
 	m_baseKnob->setHintText( tr( "Base:" ), "" );
@@ -153,7 +157,7 @@ LfoControllerDialog::LfoControllerDialog( Controller * _model, QWidget * _parent
 			this, SLOT(askUserDefWave()));
 	m_userWaveBtn->setToolTip(
 				tr( "User-defined shape.\nDouble click to pick a file." ) );
-	
+
 	m_waveBtnGrp = new AutomatableButtonGroup( this );
 	m_waveBtnGrp->addButton( sin_wave_btn );
 	m_waveBtnGrp->addButton( triangle_wave_btn );
@@ -208,14 +212,25 @@ LfoControllerDialog::~LfoControllerDialog()
 
 void LfoControllerDialog::askUserDefWave()
 {
+	const QPointer<LfoControllerDialog> owner(this);
+	const QPointer<Song> song(Engine::getSong());
+	const QPointer<LfoController> lfoModel(dynamic_cast<LfoController*>(model()));
+	const QPointer<PixmapButton> button(m_userWaveBtn);
+	const auto generation = song ? song->replacementGeneration() : 0;
+	const auto current = [&] { return owner && lfoModel && button && owner->model() == lfoModel.data() && owner->m_userWaveBtn == button.data()
+		&& song && Engine::getSong() == song.data() && song->replacementGeneration() == generation; };
 	const auto fileName = FileDialog::openWaveformFile();
-	if (fileName.isEmpty()) { return; }
+	if (fileName.isEmpty() || !current()) { return; }
 
-	auto lfoModel = dynamic_cast<LfoController*>(model());
-	auto& buffer = lfoModel->m_userDefSampleBuffer;
-	buffer = SampleBuffer::fromFile(fileName);
-
-	m_userWaveBtn->setToolTip(buffer->audioFile());
+	try
+	{
+	QString error;
+	if (!lfoModel->setUserWave(fileName, error)) { return; }
+	if (!current()) { return; }
+	button->setToolTip(lfoModel->userWaveFile());
+	}
+	catch (const std::exception& error) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError(QString::fromUtf8(error.what())); } }
+	catch (...) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError("Native LFO waveform loading failed"); } }
 }
 
 
@@ -255,6 +270,7 @@ void LfoControllerDialog::modelChanged()
 	m_phaseKnob->setModel( &m_lfo->m_phaseModel );
 	m_waveBtnGrp->setModel( &m_lfo->m_waveModel );
 	m_multiplierBtnGrp->setModel( &m_lfo->m_multiplierModel );
+	m_userWaveBtn->setToolTip(m_lfo->userWaveFile());
 }
 
 

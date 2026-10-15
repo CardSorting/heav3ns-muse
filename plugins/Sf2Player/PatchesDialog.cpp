@@ -2,7 +2,7 @@
  * PatchesDialog.cpp - display sf2 patches
  *
  * Copyright (c) 2008 Paul Giblock <drfaygo/at/gmail/dot/com>
- * 
+ *
  * This file is part of LMMS - https://lmms.io
  *
  * This program is free software; you can redistribute it and/or
@@ -24,61 +24,68 @@
 
 
 #include "PatchesDialog.h"
-
-#include <fluidsynth.h>
 #include <QHeaderView>
-//#include <QFileInfo>
-#include <QLabel>
+#include <QPushButton>
+#include <QScopeGuard>
+#include <QSet>
 #include <QKeyEvent>
-#include <QSortFilterProxyModel>
-#include <QStandardItemModel>
-#include <QStandardItem>
-
+#include <QRegularExpression>
 #include "embed.h"
+#include <algorithm>
+#include "Engine.h"
+#include "InstrumentTrack.h"
+#include "Mixer.h"
+#include "Song.h"
+#include "TrackContainer.h"
 
 namespace lmms::gui
 {
+namespace
+{
+bool restorePreview(const QPointer<Sf2Instrument>& native, const Sf2Instrument::ProgramPreviewToken& token) noexcept
+{
+	if (!native || !token) { return false; }
+	try { QString error; return native->restoreProgramPreview(token, error); } catch (...) { return false; }
+}
 
-
-// Custom list-view item (as for numerical sort purposes...)
-class PatchItem : public QTreeWidgetItem
+class PatchItem final : public QTreeWidgetItem
 {
 public:
-
-	// Constructor.
-	PatchItem( QTreeWidget *pListView,
-		QTreeWidgetItem *pItemAfter )
-		: QTreeWidgetItem( pListView, pItemAfter ) {}
-
-	// Sort/compare overriden method.
-	bool operator< ( const QTreeWidgetItem& other ) const override
+	using QTreeWidgetItem::QTreeWidgetItem;
+	bool operator<(const QTreeWidgetItem& other) const override
 	{
-		int iColumn = QTreeWidgetItem::treeWidget()->sortColumn();
-		const QString& s1 = text( iColumn );
-		const QString& s2 = other.text( iColumn );
-		if( iColumn == 0 || iColumn == 2 )
-		{
-			return( s1.toInt() < s2.toInt() );
-		} 
-		else 
-		{
-			return( s1 < s2 );
-		}
+		const int column = treeWidget() ? treeWidget()->sortColumn() : 0;
+		return column == 0 ? text(column).toInt() < other.text(column).toInt() : text(column) < other.text(column);
 	}
 };
+}
 
-// Constructor.
-PatchesDialog::PatchesDialog( QWidget *pParent, Qt::WindowFlags wflags )
-	: QDialog(pParent, wflags)
-	, m_pSynth{nullptr}
-	, m_iChan{0}
-	, m_iBank{0}
-	, m_iProg{0}
-	, m_selProg{0}
+class PatchesDialog::ViewGuard
 {
-	// Setup UI struct...
-	setupUi( this );
+public:
+	explicit ViewGuard(PatchesDialog* owner) : m_owner(owner), m_banks(owner->m_banksView), m_programs(owner->m_programsView), m_ok(owner->m_acceptButton), m_filter(owner->m_filter), m_source(owner->m_source), m_proxy(owner->m_proxy), m_selection(owner->m_selection), m_epoch(owner->m_epoch) { }
+	bool alive() const { return m_owner && m_owner->m_epoch == m_epoch && m_banks && m_programs && m_ok
+		&& m_filter && m_source && m_proxy && m_selection && m_owner->m_bankListView == m_banks.data() && m_owner->m_progListView == m_programs.data()
+		&& m_owner->m_okButton == m_ok.data() && m_owner->m_filterEdit == m_filter.data() && m_programs->model() == m_proxy.data()
+		&& m_proxy->sourceModel() == m_source.data() && m_programs->selectionModel() == m_selection.data(); }
+	bool ready(bool controls = true) const { return alive() && m_owner->contextValid(controls) && alive(); }
+	void refuse() const { if (m_owner && m_owner->m_epoch == m_epoch) { m_owner->invalidate(); } }
+private:
+	QPointer<PatchesDialog> m_owner;
+	QPointer<QTreeWidget> m_banks;
+	QPointer<QTableView> m_programs;
+	QPointer<QLineEdit> m_filter;
+	QPointer<QStandardItemModel> m_source;
+	QPointer<QSortFilterProxyModel> m_proxy;
+	QPointer<QItemSelectionModel> m_selection;
+	QPointer<QPushButton> m_ok;
+	std::uint64_t m_epoch;
+};
 
+PatchesDialog::PatchesDialog(QWidget* parent, Qt::WindowFlags flags) : QDialog(parent, flags)
+{
+	setupUi(this); m_source = new QStandardItemModel(this); m_proxy = new QSortFilterProxyModel(this);
+	m_banksView = m_bankListView; m_programsView = m_progListView; m_acceptButton = m_okButton; m_filter = m_filterEdit;
 	// Configure bank list view
 	auto bankHeader = m_bankListView->header();
 	bankHeader->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -89,19 +96,19 @@ PatchesDialog::PatchesDialog( QWidget *pParent, Qt::WindowFlags wflags )
 	m_splitter->setStretchFactor(1, 6);
 
 	// Configure program list models
-	m_progListSourceModel.setHorizontalHeaderLabels({tr("Patch"), tr("Name")});
-	m_progListProxyModel.setSourceModel(&m_progListSourceModel);
-	m_progListProxyModel.setFilterCaseSensitivity(Qt::CaseInsensitive);
-	m_progListProxyModel.setFilterKeyColumn(1); // "Name" column
-	m_progListProxyModel.setDynamicSortFilter(true);
+	m_source->setHorizontalHeaderLabels({tr("Patch"), tr("Name")});
+	m_proxy->setSourceModel(m_source.data());
+	m_proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
+	m_proxy->setFilterKeyColumn(1); // "Name" column
+	m_proxy->setDynamicSortFilter(true);
 
 	// Configure program list view
-	m_progListView->setModel(&m_progListProxyModel);
+	m_progListView->setModel(m_proxy.data());
 	m_progListView->setEditTriggers(QAbstractItemView::NoEditTriggers);
 	m_progListView->setSelectionBehavior(QAbstractItemView::SelectRows);
 	m_progListView->setSelectionMode(QAbstractItemView::SingleSelection);
 	m_progListView->setSortingEnabled(true);
-	m_progListView->sortByColumn(0, Qt::AscendingOrder); // Initial sort by column 0 (Name)
+	m_progListView->sortByColumn(0, Qt::AscendingOrder); // Numeric patch order
 
 	constexpr int RowHeight = 18;
 	auto progVHeader = m_progListView->verticalHeader();
@@ -119,6 +126,7 @@ PatchesDialog::PatchesDialog( QWidget *pParent, Qt::WindowFlags wflags )
 	progHeader->setStretchLastSection(true);
 
 	// Initial sort order...
+	m_bankListView->setSortingEnabled(true);
 	m_bankListView->sortItems(0, Qt::AscendingOrder);
 
 	m_filterEdit->setPlaceholderText(tr("Search"));
@@ -131,335 +139,207 @@ PatchesDialog::PatchesDialog( QWidget *pParent, Qt::WindowFlags wflags )
 	m_bankListView->setFocusPolicy(Qt::NoFocus);
 	m_progListView->setFocusPolicy(Qt::NoFocus);
 
-	// UI connections...
-	QObject::connect(m_filterEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
-		m_progListProxyModel.setFilterRegularExpression(
-			QRegularExpression(text, QRegularExpression::CaseInsensitiveOption));
-		diffSelectProgRow(0); // fix the selection if it has been invalidated
-	});
-	QObject::connect(m_bankListView,
-		SIGNAL(currentItemChanged(QTreeWidgetItem*,QTreeWidgetItem*)),
-		SLOT(bankChanged()));
-	QObject::connect(m_progListView,
-		&QTableView::doubleClicked, this, &PatchesDialog::accept);
-	QObject::connect(m_progListView->selectionModel(), &QItemSelectionModel::currentRowChanged,
-		this, &PatchesDialog::progChanged);
-	QObject::connect(m_okButton,
-		SIGNAL(clicked()),
-		SLOT(accept()));
-	QObject::connect(m_cancelButton,
-		SIGNAL(clicked()),
-		SLOT(reject()));
+	m_selection = m_progListView->selectionModel();
+	connect(m_filterEdit, &QLineEdit::textChanged, this, &PatchesDialog::filterChanged);
+	connect(m_bankListView, &QTreeWidget::currentItemChanged, this, &PatchesDialog::bankChanged);
+	connect(m_selection.data(), &QItemSelectionModel::currentRowChanged, this, &PatchesDialog::progChanged);
+	connect(m_progListView, &QTableView::doubleClicked, this, &PatchesDialog::accept);
+	connect(m_okButton, &QPushButton::clicked, this, &PatchesDialog::accept);
+	connect(m_cancelButton, &QPushButton::clicked, this, &PatchesDialog::reject);
 }
 
-
-// Dialog setup loader.
-void PatchesDialog::setup ( fluid_synth_t * pSynth, int iChan,
-						const QString & _chanName,
-						LcdSpinBoxModel * _bankModel,
-						LcdSpinBoxModel * _progModel,
-							QLabel * _patchLabel )
+PatchesDialog::~PatchesDialog()
 {
-	// We'll going to changes the whole thing...
-	m_dirty = 0;
-	m_bankModel = _bankModel;
-	m_progModel = _progModel;
-	m_patchLabel =  _patchLabel;
+	const auto native = m_instrument; const auto token = std::move(m_previewToken); m_closed = true; m_invalid = true; ++m_epoch;
+	for (const auto& connection : m_connections) { QObject::disconnect(connection); }
+	restorePreview(native, token);
+}
 
-	// Set the proper caption...
-	setWindowTitle( _chanName + " - Soundfont patches" );
+bool PatchesDialog::actorsValid() const
+{
+	return m_instrument && m_track && !m_track->isRetiring() && m_track->instrument() == m_instrument.data()
+		&& m_instrument->isFromTrack(m_track.data()) && m_container && m_track->trackContainer() == m_container.data()
+		&& std::find(m_container->tracks().begin(), m_container->tracks().end(), m_track.data()) != m_container->tracks().end()
+		&& m_song && Engine::getSong() == m_song.data() && m_song->replacementGeneration() == m_project && m_song->projectFileName() == m_projectPath
+		&& m_mixer && Engine::mixer() == m_mixer.data() && m_mixer->replacementGeneration() == m_routing
+		&& m_engine && Engine::audioEngine() == m_engine.data() && m_engine->outputSampleRate() == m_rate;
+}
 
-	// set m_pSynth to NULL so we don't trigger any progChanged events
-	m_pSynth = nullptr;
-
-	// Load bank list from actual synth stack...
-	m_bankListView->setSortingEnabled(false);
-	m_bankListView->clear();
-
-	// now it should be safe to set internal stuff
-	m_pSynth = pSynth;
-	m_iChan  = iChan;
-
-	QTreeWidgetItem *pBankItem = nullptr;
-	// For all soundfonts (in reversed stack order) fill the available banks...
-	int cSoundFonts = ::fluid_synth_sfcount(m_pSynth);
-	for (int i = 0; i < cSoundFonts; i++) {
-		fluid_sfont_t *pSoundFont = ::fluid_synth_get_sfont(m_pSynth, i);
-		if (pSoundFont) {
-#ifdef CONFIG_FLUID_BANK_OFFSET
-			int iBankOffset = ::fluid_synth_get_bank_offset(m_pSynth, fluid_sfont_get_id(pSoundFont));
-#endif
-			fluid_sfont_iteration_start(pSoundFont);
-			fluid_preset_t* pCurPreset = nullptr;
-
-			while ((pCurPreset = fluid_sfont_iteration_next(pSoundFont))) {
-				int iBank = fluid_preset_get_banknum(pCurPreset);
-#ifdef CONFIG_FLUID_BANK_OFFSET
-				iBank += iBankOffset;
-#endif
-				if (!findBankItem(iBank)) {
-					pBankItem = new PatchItem(m_bankListView, pBankItem);
-					if (pBankItem)
-						pBankItem->setText(0, QString::number(iBank));
-				}
-			}
-		}
-	}
-	m_bankListView->setSortingEnabled(true);
-
-	// Set the selected bank.
-	m_iBank = 0;
-	fluid_preset_t *pPreset = ::fluid_synth_get_channel_preset(m_pSynth, m_iChan);
-	if (pPreset) {
-		m_iBank = fluid_preset_get_banknum(pPreset);
-#ifdef CONFIG_FLUID_BANK_OFFSET
-		m_iBank += ::fluid_synth_get_bank_offset(m_pSynth, fluid_sfont_get_id(fluid_preset_get_sfont(sfont)));
-#endif
-	}
-
-	pBankItem = findBankItem(m_iBank);
-	m_bankListView->setCurrentItem(pBankItem);
-	m_bankListView->scrollToItem(pBankItem);
-	bankChanged();
-
-	// Set the selected program.
-	if (pPreset) { m_iProg = fluid_preset_get_num(pPreset); }
-
-	if (auto progItem = findProgItem(m_iProg); progItem != nullptr)
+bool PatchesDialog::contextValid(bool controls)
+{
+	const QPointer<PatchesDialog> owner(this); const auto epoch = m_epoch; const auto native = m_instrument;
+	if (m_invalid || !actorsValid() || !m_bankModel || !m_programModel
+		|| (controls && (m_bankModel->storedValue() != m_bank || m_programModel->storedValue() != m_program))) { return false; }
+	try
 	{
-		auto sourceIdx = progItem->index();
-		auto proxyIdx = m_progListProxyModel.mapFromSource(sourceIdx);
+		const auto resources = native->fileResources();
+		return owner && owner->m_epoch == epoch && !owner->m_invalid && owner->actorsValid() && owner->m_bankModel && owner->m_programModel
+			&& (!controls || (owner->m_bankModel->storedValue() == owner->m_bank && owner->m_programModel->storedValue() == owner->m_program))
+			&& resources.size() == 1 && resources[0].identity == owner->m_identity && resources[0].path == owner->m_path && !resources[0].unresolved;
+	}
+	catch (...) { return false; }
+}
 
-		if (proxyIdx.isValid())
+bool PatchesDialog::setup(Sf2Instrument* instrument, const QString& channelName)
+{
+	const auto previousIdentity = m_identity; // Release retired QObject-backed resources after all scoped continuations.
+	const QString caption(channelName); ++m_epoch; const auto epoch = m_epoch; const QPointer<PatchesDialog> owner(this); ViewGuard view(this);
+	const auto priorNative = m_instrument; const auto priorPreview = std::move(m_previewToken);
+	m_invalid = true; m_closed = false; m_preparing = true; m_committing = false;
+	const auto preparing = qScopeGuard([owner, epoch] { if (owner && owner->m_epoch == epoch) { owner->m_preparing = false; } });
+	try
+	{
+		restorePreview(priorNative, priorPreview); if (!view.alive()) { return false; }
+		for (const auto& connection : m_connections) { QObject::disconnect(connection); } m_connections.clear();
+		m_instrument = instrument; m_track = instrument ? instrument->instrumentTrack() : nullptr; m_container = m_track ? m_track->trackContainer() : nullptr;
+		m_song = Engine::getSong(); m_mixer = Engine::mixer(); m_engine = Engine::audioEngine();
+		m_project = m_song ? m_song->replacementGeneration() : 0; m_routing = m_mixer ? m_mixer->replacementGeneration() : 0;
+		m_projectPath = m_song ? m_song->projectFileName() : QString{}; m_rate = m_engine ? m_engine->outputSampleRate() : 0;
+		if (!view.alive() || !actorsValid()) { view.refuse(); return false; }
+		auto bank = instrument->childModel("bank"); if (!view.alive() || !actorsValid()) { view.refuse(); return false; } m_bankModel = bank;
+		auto program = instrument->childModel("patch"); if (!view.alive() || !actorsValid()) { view.refuse(); return false; } m_programModel = program;
+		if (!m_bankModel || !m_programModel) { view.refuse(); return false; }
+		m_bank = m_bankModel->storedValue(); m_program = m_programModel->storedValue(); m_programs = instrument->programSnapshot();
+		const auto resources = instrument->fileResources();
+		if (!view.alive() || !actorsValid() || resources.size() != 1 || !resources[0].identity || resources[0].unresolved || m_programs.empty()) { view.refuse(); return false; }
+		m_identity = resources[0].identity; m_path = resources[0].path; m_invalid = false;
+		if (!view.ready()) { view.refuse(); return false; }
+		const auto effective = instrument->currentProgramModels(); if (!view.ready()) { view.refuse(); return false; }
+		const auto invalid = [this, epoch] { if (m_epoch == epoch) { invalidate(); } };
+		m_connections.append(connect(instrument, &QObject::destroyed, this, invalid));
+		m_connections.append(connect(instrument, &Sf2Instrument::fileLoading, this, invalid));
+		m_connections.append(connect(instrument, &Sf2Instrument::fileChanged, this, invalid));
+		m_connections.append(connect(m_song.data(), &Song::projectFileNameChanged, this, invalid));
+		m_connections.append(connect(m_engine.data(), &AudioEngine::sampleRateChanged, this, invalid));
+		const auto changed = [this, epoch] { if (m_epoch == epoch && !m_committing) { invalidate(); } };
+		m_connections.append(connect(m_bankModel.data(), &AutomatableModel::dataChanged, this, changed));
+		m_connections.append(connect(m_programModel.data(), &AutomatableModel::dataChanged, this, changed));
+		setWindowTitle(caption + tr(" - SoundFont patches")); if (!view.ready()) { view.refuse(); return false; }
+		m_filterEdit->clear(); if (!view.ready()) { view.refuse(); return false; }
+		m_proxy->setFilterRegularExpression(QRegularExpression{}); if (!view.ready()) { view.refuse(); return false; }
+		m_bankListView->clear(); if (!view.ready()) { view.refuse(); return false; }
+		const auto available = m_programs; int previous = -1;
+		for (const auto& item : available)
 		{
-			constexpr auto setMask = QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows;
-			int row = proxyIdx.row();
-			auto idx = m_progListView->model()->index(row, 0);
-
-			m_progListView->selectionModel()->setCurrentIndex(idx, setMask);
-			m_progListView->scrollTo(idx);
+			if (item.bank != previous) { new PatchItem(m_bankListView, {QString::number(item.bank)}); previous = item.bank; if (!view.ready()) { view.refuse(); return false; } }
 		}
+		int selectedBank = effective.bank, selected = effective.program; bool found = false;
+		for (const auto& item : available) { if (item.bank == selectedBank && item.program == selected) { found = true; break; } }
+		if (!found) { selectedBank = available.front().bank; selected = available.front().program; }
+		const auto banks = m_bankListView->findItems(QString::number(selectedBank), Qt::MatchExactly, 0);
+		m_bankListView->setCurrentItem(banks.isEmpty() ? nullptr : banks.front()); if (!view.ready()) { view.refuse(); return false; }
+		if (!fillPrograms(selectedBank, selected) || !view.ready()) { view.refuse(); return false; }
+		m_preparing = false; stabilizeForm(); return view.ready();
 	}
-
-	// Done with setup...
-	//m_iDirtySetup--;
+	catch (...) { view.refuse(); return false; }
 }
 
-
-// Stabilize current state form.
-void PatchesDialog::stabilizeForm()
+bool PatchesDialog::selectedProgram(int& bank, int& program) const
 {
-	m_okButton->setEnabled(validateForm());
+	const auto bankItem = m_bankListView->currentItem(); const auto selected = m_proxy->mapToSource(m_progListView->currentIndex());
+	if (!bankItem || !selected.isValid()) { return false; } bool bankOk = false, programOk = false;
+	bank = bankItem->text(0).toInt(&bankOk); program = m_source->index(selected.row(), 0).data().toInt(&programOk);
+	return bankOk && programOk && std::any_of(m_programs.begin(), m_programs.end(), [=](const Instrument::Program& item) { return item.bank == bank && item.program == program; });
 }
 
-
-// Validate form fields.
-bool PatchesDialog::validateForm()
+bool PatchesDialog::fillPrograms(int bank, int preferredProgram)
 {
-	bool bValid = true;
-
-	bValid = bValid && (m_bankListView->currentItem() != nullptr);
-
-	return bValid;
-}
-
-
-// Realize a bank-program selection preset.
-void PatchesDialog::setBankProg ( int iBank, int iProg )
-{
-	if (m_pSynth == nullptr)
-		return;
-
-	// just select the synth's program preset...
-	::fluid_synth_bank_select(m_pSynth, m_iChan, iBank);
-	::fluid_synth_program_change(m_pSynth, m_iChan, iProg);
-	// Maybe this is needed to stabilize things around.
-	::fluid_synth_program_reset(m_pSynth);
-}
-
-
-// Validate form fields and accept it valid.
-void PatchesDialog::accept()
-{
-	if (validateForm()) {
-		bool updateUi = m_dirty > 0;
-		updatePatch(updateUi);
-
-		// Do remember preview state...
-		// if (m_pOptions)
-			// m_pOptions->bPresetPreview = m_ui.PreviewCheckBox->isChecked();
-		// We got it.
-
-		QDialog::accept();
-	}
-}
-
-
-// Reject settings (Cancel button slot).
-void PatchesDialog::reject ()
-{
-	// Reset selection to initial selection, if applicable...
-	if (m_dirty > 0)
-		setBankProg(m_bankModel->value(), m_progModel->value());
-	// Done (hopefully nothing).
-	QDialog::reject();
-}
-
-
-// Find the bank item of given bank number id.
-QTreeWidgetItem *PatchesDialog::findBankItem ( int iBank )
-{
-	QList<QTreeWidgetItem *> banks
-		= m_bankListView->findItems(
-			QString::number(iBank), Qt::MatchExactly, 0);
-
-	QListIterator<QTreeWidgetItem *> iter(banks);
-	if (iter.hasNext())
-		return iter.next();
-	else
-		return nullptr;
-}
-
-QStandardItem* PatchesDialog::findProgItem(int iProg)
-{
-	QList<QStandardItem*> progs = m_progListSourceModel.findItems(QString::number(iProg), Qt::MatchExactly, 0);
-
-	auto it = QListIterator<QStandardItem*>(progs);
-	return it.hasNext() ? it.next() : nullptr;
-}
-
-
-// Bank change slot.
-void PatchesDialog::bankChanged ()
-{
-	if (m_pSynth == nullptr)
-		return;
-
-	QTreeWidgetItem *pBankItem = m_bankListView->currentItem();
-	if (pBankItem == nullptr)
-		return;
-
-	int iBankSelected = pBankItem->text(0).toInt();
-
-	// Clear up the program list to refill
-	m_progListView->setSortingEnabled(false);
-	m_progListSourceModel.setRowCount(0);
-
-	// For all soundfonts (in reversed stack order) fill the available programs...
-	bool stop = false; // replaces the `pProgItem` check that used to exist here
-	int cSoundFonts = ::fluid_synth_sfcount(m_pSynth);
-	for (int i = 0; i < cSoundFonts && !stop; i++) {
-		fluid_sfont_t *pSoundFont = ::fluid_synth_get_sfont(m_pSynth, i);
-		if (pSoundFont) {
-#ifdef CONFIG_FLUID_BANK_OFFSET
-			int iBankOffset = ::fluid_synth_get_bank_offset(m_pSynth, fluid_sfont_get_id(pSoundFont));
-#endif
-			fluid_sfont_iteration_start(pSoundFont);
-			fluid_preset_t* pCurPreset = nullptr;
-
-			while ((pCurPreset = fluid_sfont_iteration_next(pSoundFont))) {
-				int iBank = fluid_preset_get_banknum(pCurPreset);
-#ifdef CONFIG_FLUID_BANK_OFFSET
-				iBank += iBankOffset;
-#endif
-				int iProg = fluid_preset_get_num(pCurPreset);
-				if (iBank == iBankSelected && !findProgItem(iProg)) {
-					// Numeric value on the batch number column - allows for numerical sorting
-					auto patchNumItem = new QStandardItem();
-					patchNumItem->setData(iProg, Qt::DisplayRole);
-
-					auto patchNameItem = new QStandardItem(fluid_preset_get_name(pCurPreset));
-
-					stop = true;
-
-					m_progListSourceModel.appendRow({patchNumItem, patchNameItem});
-					// Old columns:
-					// Col. 2: QString::number(fluid_sfont_get_id(pSoundFont))
-					// Col. 3: QFileInfo(fluid_sfont_get_name(pSoundFont).baseName())
-				}
-			}
-		}
-	}
-	m_progListView->setSortingEnabled(true);
-
-	// Stabilize the form.
-	stabilizeForm();
-}
-
-void PatchesDialog::updatePatch(bool updateUi)
-{
-	int iBank = m_bankListView->currentItem()->text(0).toInt();
-	setBankProg(iBank, m_selProg);
-
-	if (updateUi)
+	ViewGuard view(this); if (!view.ready()) { view.refuse(); return false; } const auto available = m_programs;
+	m_source->setRowCount(0); if (!view.ready()) { view.refuse(); return false; } QSet<int> seen;
+	for (const auto& item : available)
 	{
-		m_bankModel->setValue(iBank);
-		m_progModel->setValue(m_selProg);
-		m_patchLabel->setText(m_selProgName);
+		if (item.bank != bank || seen.contains(item.program)) { continue; } seen.insert(item.program);
+		auto number = std::make_unique<QStandardItem>(); auto name = std::make_unique<QStandardItem>(item.name); number->setData(item.program, Qt::DisplayRole);
+		QList<QStandardItem*> row{number.get(), name.get()}; number.release(); name.release(); m_source->appendRow(row);
+		if (!view.ready()) { view.refuse(); return false; }
 	}
+	QModelIndex selected;
+	for (int row = 0; row < m_source->rowCount(); ++row) { if (m_source->index(row, 0).data().toInt() == preferredProgram) { selected = m_proxy->mapFromSource(m_source->index(row, 0)); break; } }
+	if (!selected.isValid() && m_proxy->rowCount() > 0) { selected = m_proxy->index(0, 0); }
+	m_selection->setCurrentIndex(selected, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+	if (!view.ready()) { view.refuse(); return false; } return true;
 }
 
-void PatchesDialog::progChanged(const QModelIndex& cur, const QModelIndex& prev)
+void PatchesDialog::bankChanged()
 {
-	if (m_pSynth == nullptr) { return; }
+	if (m_preparing) { return; } ViewGuard view(this); if (!view.ready()) { view.refuse(); return; }
+	const auto selected = m_bankListView->currentItem(); if (!selected) { stabilizeForm(); return; } const int bank = selected->text(0).toInt();
+	const QPointer<PatchesDialog> owner(this); const auto epoch = m_epoch; m_preparing = true;
+	const auto preparing = qScopeGuard([owner, epoch] { if (owner && owner->m_epoch == epoch) { owner->m_preparing = false; } });
+	if (!fillPrograms(bank, static_cast<int>(m_program)) || !view.ready()) { view.refuse(); return; } m_preparing = false; previewSelection();
+}
 
-	auto curRow = m_progListProxyModel.mapToSource(cur).row();
-	if (curRow < 0) { return; }
+void PatchesDialog::progChanged(const QModelIndex&, const QModelIndex&) { if (!m_preparing) { previewSelection(); } }
 
-	auto progIdx = m_progListSourceModel.index(curRow, 0);
-	m_selProg = m_progListSourceModel.data(progIdx).toInt();
-
-	auto nameIdx = m_progListSourceModel.index(curRow, 1);
-	m_selProgName = m_progListSourceModel.data(nameIdx).toString();
-
-	// Which preview state...
-	if (validateForm())
+void PatchesDialog::previewSelection()
+{
+	ViewGuard view(this); if (!view.ready()) { view.refuse(); return; } int bank = 0, program = 0;
+	const auto native = m_instrument;
+	if (!selectedProgram(bank, program))
 	{
-		updatePatch(false);
-
-		// Now we're dirty nuff.
-		m_dirty++;
+		const auto token = std::move(m_previewToken); restorePreview(native, token); if (!view.ready()) { view.refuse(); return; } stabilizeForm(); return;
 	}
+	try
+	{
+		Sf2Instrument::ProgramPreviewToken token; QString error; const bool previewed = native->previewProgram(bank, program, error, token);
+		if (!view.ready()) { restorePreview(native, token); view.refuse(); return; }
+		if (!previewed) { invalidate(); return; } m_previewToken = token; stabilizeForm();
+	}
+	catch (...) { view.refuse(); }
+}
 
-	// Stabilize the form.
-	stabilizeForm();
+void PatchesDialog::filterChanged(const QString& text)
+{
+	if (m_preparing) { return; } const QString query(text); ViewGuard view(this); if (!view.ready()) { view.refuse(); return; }
+	try { m_proxy->setFilterRegularExpression(QRegularExpression(query, QRegularExpression::CaseInsensitiveOption)); if (!view.ready()) { view.refuse(); return; } diffSelectProgRow(0); }
+	catch (...) { view.refuse(); }
+}
+
+void PatchesDialog::diffSelectProgRow(int offset)
+{
+	ViewGuard view(this); if (!view.ready()) { view.refuse(); return; }
+	const int count = m_proxy->rowCount(); if (count <= 0) { previewSelection(); return; }
+	const int row = qBound(0, m_selection->currentIndex().row() + offset, count - 1);
+	m_selection->setCurrentIndex(m_proxy->index(row, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+	if (!view.ready()) { view.refuse(); return; } const auto selected = m_selection->currentIndex(); m_progListView->scrollTo(selected);
+	if (!view.ready()) { view.refuse(); return; } previewSelection();
 }
 
 void PatchesDialog::keyPressEvent(QKeyEvent* event)
 {
 	const auto key = event->key();
-
-	if (key == Qt::Key_Up || key == Qt::Key_Down)
-	{
-		event->accept();
-		int rowDiff = (key == Qt::Key_Up) ? -1 : +1;
-		diffSelectProgRow(rowDiff);
-	}
-	else if (key == Qt::Key_Return || key == Qt::Key_Enter)
-	{
-		event->accept();
-		accept();
-	}
-	else if (key == Qt::Key_Escape)
-	{
-		event->accept();
-		reject();
-	}
+	if (key == Qt::Key_Up || key == Qt::Key_Down) { event->accept(); diffSelectProgRow(key == Qt::Key_Up ? -1 : 1); }
+	else if (key == Qt::Key_Return || key == Qt::Key_Enter) { event->accept(); accept(); }
+	else if (key == Qt::Key_Escape) { event->accept(); reject(); }
+	else { QDialog::keyPressEvent(event); }
 }
 
-void PatchesDialog::diffSelectProgRow(int offset)
+void PatchesDialog::stabilizeForm()
 {
-	QItemSelectionModel* selectionModel = m_progListView->selectionModel();
-
-	int curRow = selectionModel->currentIndex().row();
-	int newRow = curRow + offset;
-	int rowCount = m_progListView->model()->rowCount();
-	newRow = qBound(0, newRow, rowCount - 1);
-
-	constexpr auto selMask = QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows;
-	const auto idx = m_progListView->model()->index(newRow, 0);
-	selectionModel->setCurrentIndex(idx, selMask);
-	m_progListView->scrollTo(idx);
+	ViewGuard view(this); if (!view.ready()) { view.refuse(); return; } int bank = 0, program = 0; const bool valid = selectedProgram(bank, program);
+	m_okButton->setEnabled(valid); if (!view.ready()) { view.refuse(); }
 }
 
+void PatchesDialog::accept()
+{
+	ViewGuard view(this); if (!view.ready()) { view.refuse(); return; } int bank = 0, program = 0; if (!selectedProgram(bank, program)) { return; }
+	const QPointer<PatchesDialog> owner(this); const auto epoch = m_epoch; const auto native = m_instrument; m_committing = true;
+	const auto committing = qScopeGuard([owner, epoch] { if (owner && owner->m_epoch == epoch) { owner->m_committing = false; } });
+	try
+	{
+		QString error; const bool accepted = native->selectProgram(bank, program, error);
+		if (!view.ready(false)) { view.refuse(); return; }
+		if (!accepted || !m_bankModel || !m_programModel || m_bankModel->storedValue() != bank || m_programModel->storedValue() != program) { invalidate(); return; }
+		m_previewToken.reset(); m_bank = bank; m_program = program; m_committing = false; m_closed = true; m_invalid = true; ++m_epoch; QDialog::accept();
+	}
+	catch (...) { view.refuse(); }
+}
+
+void PatchesDialog::invalidate()
+{
+	if (m_closed) { return; } const auto native = m_instrument; const auto token = std::move(m_previewToken); const QPointer<PatchesDialog> owner(this);
+	m_closed = true; m_invalid = true; const auto epoch = ++m_epoch; restorePreview(native, token);
+	if (owner && owner->m_epoch == epoch) { owner->QDialog::reject(); }
+}
+void PatchesDialog::reject() { invalidate(); }
 } // namespace lmms::gui

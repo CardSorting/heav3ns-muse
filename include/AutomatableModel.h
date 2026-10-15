@@ -26,8 +26,14 @@
 #define LMMS_AUTOMATABLE_MODEL_H
 
 #include <cmath>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <vector>
 #include <QMap>
 #include <QMutex>
+#include <QPointer>
+#include <QStringList>
 
 #include "JournallingObject.h"
 #include "Model.h"
@@ -71,6 +77,7 @@ namespace lmms
 
 
 
+class Controller;
 class ControllerConnection;
 
 class LMMS_EXPORT AutomatableModel : public Model, public JournallingObject
@@ -118,18 +125,30 @@ public:
 	}
 
 	bool isAutomated() const;
+	QDomElement saveJournalState(QDomDocument& document, QDomElement& parent) override;
+	bool restoreJournalState(const QDomElement& state, QString& error) override;
+	enum class ValueType { Number, Integer, Boolean };
+	//! Native parameter capabilities, including hosts whose FloatModels represent discrete controls.
+	virtual ValueType valueType() const { return ValueType::Number; }
+	virtual bool isWritable() const { return true; }
+	virtual bool supportsAutomation() const { return isWritable(); }
+	//! Native labels for discrete values; empty for continuous or unlabeled models.
+	virtual QMap<int, QString> valueLabels() const { return {}; }
 	bool isAutomatedOrControlled() const
 	{
-		return isAutomated() || m_controllerConnection != nullptr;
+		return isAutomated() || controllerConnection() != nullptr;
 	}
 
-	ControllerConnection* controllerConnection() const
-	{
-		return m_controllerConnection;
-	}
+	ControllerConnection* controllerConnection() const;
 
 
 	void setControllerConnection( ControllerConnection* c );
+	//! Detach before retiring the native connection; preserve manual/group state.
+	bool disconnectController(bool& changed, QString& error);
+	//! Prepare a connection-owned MIDI controller before replacing this binding.
+	bool connectMidiController(int channel, int control, bool readable, bool& changed, QString& error);
+	//! Bind to a registered shared controller, preserving an existing connection.
+	bool connectController(Controller* controller, bool& changed, QString& error);
 
 
 	template<class T>
@@ -156,7 +175,7 @@ public:
 
 		if (m_useControllerValue)
 		{
-			if (m_controllerConnection)
+			if (controllerConnection())
 			{
 				return castValue<T>(controllerValue(frameOffset));
 			}
@@ -229,6 +248,8 @@ public:
 	void setScaleType( ScaleType sc ) {
 		m_scaleType = sc;
 	}
+	ScaleType scaleType() const { return m_scaleType; }
+	float storedValue() const { return m_value; }
 	void setScaleLogarithmic( bool setToTrue = true )
 	{
 		setScaleType( setToTrue ? ScaleType::Logarithmic : ScaleType::Linear );
@@ -250,16 +271,27 @@ public:
 		m_centerValue = centerVal;
 	}
 
-	//! link this to @p model, copying the value from @p model
-	void linkToModel(AutomatableModel* model);
+	//! Link this group to @p model, copying its stored value. Reject feedback.
+	bool linkToModel(AutomatableModel* model);
+	//! Query native group membership while holding model ownership.
+	bool isLinkedToModel(AutomatableModel* model) const;
+	//! Native linked ring traversal; caller must hold model ownership.
+	const AutomatableModel* nextLinkedModel() const noexcept { return m_nextLink; }
 	//! @return number of other models linked to this
 	size_t countLinks() const;
+	//! All models in this native linked-value group, including this model.
+	std::vector<const AutomatableModel*> linkedModels() const
+	{
+		std::vector<const AutomatableModel*> result{this};
+		for (auto next = m_nextLink; next != this; next = next->m_nextLink) { result.push_back(next); }
+		return result;
+	}
 
 	//! @brief Saves settings of AutomatableModel into a DOM element
 	//!
 	//! Saves settings (value, automation links and controller connections) of AutomatableModel into DOM element
 	//! @p element using @p name as attribute/node name.
-	//! 
+	//!
 	//! @param doc TODO
 	//! @param element Where this option shall be saved. Depending on the model, this can be done in an attribute or in a
 	//! subnode.
@@ -313,6 +345,9 @@ public:
 	{
 		s_periodCounter = 0;
 	}
+	// Native model ownership required. Discard cached data after a DSP retry
+	// without changing the parameter period counter or persisted values.
+	static void invalidateValueBuffers() noexcept { ++s_bufferGeneration; }
 
 	bool useControllerValue() const
 	{
@@ -327,6 +362,13 @@ public slots:
 
 
 protected:
+	friend class NativeLinkedControls;
+	friend class NativeControlLinkJournal;
+	friend class StudioMidiLearn;
+	friend class NativeTrackSaveSnapshot;
+	friend class NativeProjectSaveSnapshot;
+	friend class ModelValueNotificationTestAccess;
+	void notifyValueData(bool changed = true);
 	AutomatableModel(
 						const float val = 0,
 						const float min = 0,
@@ -343,6 +385,8 @@ protected:
 
 
 private:
+	using ValueNotificationProbe = std::function<void(AutomatableModel*, bool)>;
+	static const ValueNotificationProbe* exchangeValueNotificationProbe(const ValueNotificationProbe* probe);
 	// dynamicCast implementation
 	template<class Target>
 	struct DCastVisitor : public ModelVisitor
@@ -372,15 +416,21 @@ private:
 	}
 
 	void setValueInternal(const float value);
+	struct ControllerState;
+	bool assignMidiController(int channel, int control, bool readable, bool& changed, QString& error,
+		const QStringList* learnedInputs, int learnedValue, const std::function<void(bool)>& validate,
+		const std::function<void()>& beforePublish);
+	std::shared_ptr<ControllerState> captureControllerState() const;
+	bool controllerStateMatches(const ControllerState& source, bool bindingChanged,
+		ControllerConnection* replacement = nullptr, bool activate = false, bool compareInterpolation = true) const;
+	void invalidateLinkedValueBuffers() noexcept;
+	static void invalidateLinkedTopology() noexcept { ++s_linkGeneration; }
 
 	//! linking is stored in a linked list ring
 	//! @return the model whose `m_nextLink` is `this`,
 	//! or `this` if there are no linked models
 	AutomatableModel* getLastLinkedModel() const;
 
-	//! @return true if the `model` is in the linked list
-	bool isLinkedToModel(AutomatableModel* model) const;
-	
 	//! @brief Scales @p value from linear to logarithmic.
 	//! @param value A linear value. Should be within [0,1].
 	template<class T> T logToLinearScale(T value) const;
@@ -413,12 +463,16 @@ private:
 
 
 	//! NULL if not appended to controller, otherwise connection info
-	ControllerConnection* m_controllerConnection;
+	QPointer<ControllerConnection> m_controllerConnection;
+	std::uint64_t m_controllerConnectionGeneration = 0;
 
 
 	ValueBuffer m_valueBuffer;
 	long m_lastUpdatedPeriod;
+	std::uint64_t m_bufferGeneration;
 	static long s_periodCounter;
+	static std::uint64_t s_bufferGeneration;
+	static std::uint64_t s_linkGeneration;
 
 	bool m_hasSampleExactData;
 
@@ -426,6 +480,8 @@ private:
 	QMutex m_valueBufferMutex;
 
 	bool m_useControllerValue;
+	const std::uint64_t m_journalIdentity;
+	bool m_restoringValueJournal = false;
 
 signals:
 	void initValueChanged( float val );
@@ -495,6 +551,11 @@ public:
 	{
 	}
 	QString displayValue( const float val ) const override;
+	ValueType valueType() const override { return ValueType::Integer; }
+	QMap<int, QString> valueLabels() const override { return m_valueLabels; }
+	void setValueLabels(const QMap<int, QString>& labels) { m_valueLabels = labels; emit propertiesChanged(); }
+private:
+	QMap<int, QString> m_valueLabels;
 } ;
 
 
@@ -511,6 +572,7 @@ public:
 	{
 	}
 	QString displayValue( const float val ) const override;
+	ValueType valueType() const override { return ValueType::Boolean; }
 } ;
 
 using AutomatedValueMap = QMap<AutomatableModel*, float>;

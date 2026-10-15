@@ -26,6 +26,7 @@
 #include <QDomElement>
 
 #include <cmath>
+#include <memory>
 
 #include "Note.h"
 #include "DetuningHelper.h"
@@ -90,14 +91,21 @@ Note& Note::operator=(const Note& note)
 }
 
 
+std::shared_ptr<const void> Note::selectionIdentity() const
+{
+	if (!m_selectionIdentity) { m_selectionIdentity = std::make_shared<const char>(0); }
+	return m_selectionIdentity;
+}
+
+
 Note* Note::clone() const
 {
-	Note* newNote = new Note(*this);
+	auto newNote = std::make_unique<Note>(*this);
 	if (newNote->m_detuning != nullptr)
 	{
 		newNote->m_detuning = std::make_shared<DetuningHelper>(*newNote->m_detuning);
 	}
-	return newNote;
+	return newNote.release();
 }
 
 
@@ -194,7 +202,7 @@ void Note::saveSettings( QDomDocument & doc, QDomElement & parent )
 	parent.setAttribute( "pos", m_pos );
 	parent.setAttribute("type", static_cast<int>(m_type));
 
-	if( m_detuning && m_length )
+	if( m_detuning )
 	{
 		m_detuning->saveSettings( doc, parent );
 	}

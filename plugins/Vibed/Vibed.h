@@ -51,6 +51,16 @@ class Vibed : public Instrument
 {
 	Q_OBJECT
 public:
+	std::vector<GraphResource> graphResources() override
+	{
+		std::vector<GraphResource> result;
+		for (int index = 0; index < s_stringCount; ++index)
+		{
+			result.push_back({QString("string%1").arg(index + 1), tr("String %1 waveform").arg(index + 1), "amplitude", m_graphModels[index].get()});
+		}
+		return result;
+	}
+
 	Vibed(InstrumentTrack* instrumentTrack);
 	~Vibed() override = default;
 

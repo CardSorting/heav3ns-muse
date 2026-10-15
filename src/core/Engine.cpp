@@ -26,6 +26,8 @@
 #include "Engine.h"
 #include "AudioEngine.h"
 #include "ConfigManager.h"
+#include "FileResourceSnapshot.h"
+#include "SampleRecordHandle.h"
 #include "Mixer.h"
 #include "Ladspa2LMMS.h"
 #include "Lv2Manager.h"
@@ -96,6 +98,9 @@ void Engine::destroy()
 {
 	s_projectJournal->stopAllJournalling();
 	s_audioEngine->stopProcessing();
+	s_audioEngine->finishSampleRecordings();
+	QString recordingError;
+	if (!SampleRecordHandle::finalizePendingRecordings(recordingError)) { s_song->collectError(recordingError); }
 
 	PresetPreviewPlayHandle::cleanup();
 
@@ -105,6 +110,9 @@ void Engine::destroy()
 
 	deleteHelper( &s_mixer );
 	deleteHelper( &s_audioEngine );
+	// Audio workers and voices have stopped. Process-owned file cleanup must
+	// finish here as shutdown may run after the application event loop exits.
+	FileResourceSnapshot::drainDeferredRemovals();
 
 #ifdef LMMS_HAVE_LV2
 	deleteHelper( &s_lv2Manager );
@@ -128,8 +136,7 @@ void Engine::destroy()
 
 float Engine::framesPerTick(sample_rate_t sampleRate)
 {
-	return sampleRate * 60.0f * 4 /
-			DefaultTicksPerBar / s_song->getTempo();
+	return sampleRate * 60.0f / TicksPerQuarterNote / s_song->getTempo();
 }
 
 
@@ -137,7 +144,7 @@ float Engine::framesPerTick(sample_rate_t sampleRate)
 
 void Engine::updateFramesPerTick()
 {
-	s_framesPerTick = s_audioEngine->outputSampleRate() * 60.0f * 4 / DefaultTicksPerBar / s_song->getTempo();
+	s_framesPerTick = framesPerTick(s_audioEngine->outputSampleRate());
 }
 
 

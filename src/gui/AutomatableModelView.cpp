@@ -26,6 +26,8 @@
 #include <QMouseEvent>
 
 #include "AutomatableModelView.h"
+#include "AudioEngine.h"
+#include "Engine.h"
 #include "AutomationClip.h"
 #include "ControllerConnectionDialog.h"
 #include "ControllerConnection.h"
@@ -37,6 +39,8 @@
 #include "Clipboard.h"
 
 #include "AutomationEditor.h"
+#include "NativeControlLinkJournal.h"
+#include "Song.h"
 
 
 namespace lmms::gui
@@ -87,8 +91,9 @@ void AutomatableModelView::addDefaultActions( QMenu* menu )
 	if (model->isLinked())
 	{
 		menu->addAction(embed::getIconPixmap("edit_unlink"),
-							AutomatableModel::tr("Remove all linked controls"),
-							model, SLOT(unlink()));
+			AutomatableModel::tr("Remove all linked controls"), model, [model] {
+				QString error; if (!NativeControlLinkJournal::unlink(model, error)) { Engine::getSong()->collectError(error); }
+			});
 		menu->addSeparator();
 	}
 

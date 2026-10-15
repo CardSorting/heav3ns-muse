@@ -25,6 +25,9 @@
 
 #include "PatternStore.h"
 
+#include <algorithm>
+#include <limits>
+#include "AudioEngine.h"
 #include "Clip.h"
 #include "Engine.h"
 #include "PatternTrack.h"
@@ -39,6 +42,7 @@ PatternStore::PatternStore() :
 	m_patternComboBoxModel(this)
 {
 	setType(Type::Pattern);
+	connect(Engine::getSong(), &Song::timeSignatureChanged, this, &PatternStore::fixIncorrectPositions);
 }
 
 
@@ -48,16 +52,19 @@ bool PatternStore::play(TimePos start, f_cnt_t frames, f_cnt_t offset, int clipN
 {
 	bool notePlayed = false;
 
-	if (lengthOfPattern(clipNum) <= 0)
+	if (clipNum < 0 || clipNum >= numOfPatterns()) { return false; }
+	const auto length = static_cast<qint64>(lengthOfPattern(clipNum)) * TimePos::ticksPerBar();
+	if (length <= 0 || length > std::numeric_limits<tick_t>::max())
 	{
 		return false;
 	}
 
-	start = start % (lengthOfPattern(clipNum) * TimePos::ticksPerBar());
+	start = start % static_cast<tick_t>(length);
 
 	const TrackList& tl = tracks();
 	for (Track * t : tl)
 	{
+		if (clipNum >= t->numOfClips() || !t->getClips()[clipNum]) { continue; }
 		if (t->play(start, frames, offset, clipNum))
 		{
 			notePlayed = true;
@@ -83,20 +90,25 @@ void PatternStore::updateAfterTrackAdd()
 
 bar_t PatternStore::lengthOfPattern(int pattern) const
 {
-	TimePos maxLength = TimePos::ticksPerBar();
+	const auto meter = TimePos::ticksPerBar();
+	if (meter <= 0) { return 0; }
+	// Retain the one-bar metadata fallback for absent patterns. Reading a
+	// missing or negative column must never invoke the lazy cell accessor.
+	if (pattern < 0 || pattern >= numOfPatterns()) { return 1; }
+	qint64 maxLength = meter;
 
 	const TrackList & tl = tracks();
 	for (Track * t : tl)
 	{
 		// Don't create Clips here if they don't exist, and only takes into account MIDI clips
 		// because the length of Automation / Sample clips is defined based on this method's output.
-		if (pattern < t->numOfClips() && t->type() == Track::Type::Instrument)
+		if (pattern < t->numOfClips() && t->type() == Track::Type::Instrument && t->getClips()[pattern])
 		{
-			maxLength = std::max(maxLength, t->getClip(pattern)->length());
+			maxLength = std::max(maxLength, static_cast<qint64>(t->getClips()[pattern]->length().getTicks()));
 		}
 	}
 
-	return maxLength.nextFullBar();
+	return static_cast<bar_t>((maxLength + meter - 1) / meter);
 }
 
 
@@ -112,11 +124,15 @@ int PatternStore::numOfPatterns() const
 
 void PatternStore::removePattern(int pattern)
 {
+	if (pattern < 0 || pattern >= numOfPatterns()) { return; }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
 	const TrackList& tl = tracks();
 	for (Track * t : tl)
 	{
-		delete t->getClip(pattern);
-		t->removeBar(pattern * DefaultTicksPerBar);
+		// Columns are owned by their native indices, not by a fixed 4/4 time.
+		// Do not create a missing clip while retiring a sparse loaded pattern.
+		if (pattern < t->numOfClips()) { delete t->getClips()[pattern]; }
+		for (int i = 0; i < t->numOfClips(); ++i) { t->getClips()[i]->movePosition(TimePos(i, 0)); }
 	}
 	if (pattern <= currentPattern())
 	{
@@ -142,7 +158,11 @@ void PatternStore::swapPattern(int pattern1, int pattern2)
 
 void PatternStore::updatePatternTrack(Clip* clip)
 {
-	PatternTrack * t = PatternTrack::findPatternTrack(clip->startPosition() / DefaultTicksPerBar);
+	if (!clip || !clip->getTrack() || clip->getTrack()->trackContainer() != this) { return; }
+	const auto& clips = clip->getTrack()->getClips();
+	const auto found = std::find(clips.begin(), clips.end(), clip);
+	if (found == clips.end()) { return; }
+	PatternTrack * t = PatternTrack::findPatternTrack(static_cast<int>(found - clips.begin()));
 	if (t != nullptr)
 	{
 		t->dataChanged();
@@ -155,6 +175,7 @@ void PatternStore::updatePatternTrack(Clip* clip)
 
 void PatternStore::fixIncorrectPositions()
 {
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
 	const TrackList& tl = tracks();
 	for (Track * t : tl)
 	{
@@ -219,17 +240,17 @@ void PatternStore::createClipsForPattern(int pattern)
 
 AutomatedValueMap PatternStore::automatedValuesAt(TimePos time, int clipNum) const
 {
-	Q_ASSERT(clipNum >= 0);
-	Q_ASSERT(time.getTicks() >= 0);
-
-	auto lengthBars = lengthOfPattern(clipNum);
-	auto lengthTicks = lengthBars * TimePos::ticksPerBar();
+	if (clipNum < 0 || clipNum >= numOfPatterns() || time.getTicks() < 0) { return {}; }
+	const auto lengthTicks = static_cast<qint64>(lengthOfPattern(clipNum)) * TimePos::ticksPerBar();
+	if (lengthTicks <= 0 || lengthTicks > std::numeric_limits<tick_t>::max()) { return {}; }
 	if (time > lengthTicks)
 	{
-		time = lengthTicks;
+		time = static_cast<tick_t>(lengthTicks);
 	}
 
-	return TrackContainer::automatedValuesAt(time + (TimePos::ticksPerBar() * clipNum), clipNum);
+	// TrackContainer evaluates an explicitly selected column in pattern-local
+	// time. The editor column's placement must not advance its automation.
+	return TrackContainer::automatedValuesAt(time, clipNum);
 }
 
 

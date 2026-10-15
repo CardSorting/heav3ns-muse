@@ -39,6 +39,19 @@ public:
 	JournallingObject();
 	~JournallingObject() override;
 
+	//! Deserializing settings for a duplicate must retain each new object's ID.
+	//! Normal project and journal restoration continue to load saved identities.
+	class LMMS_EXPORT KeepIdentityScope
+	{
+	public:
+		KeepIdentityScope();
+		~KeepIdentityScope();
+		KeepIdentityScope(const KeepIdentityScope&) = delete;
+		KeepIdentityScope& operator=(const KeepIdentityScope&) = delete;
+	private:
+		bool m_previous;
+	};
+
 	inline jo_id_t id() const
 	{
 		return m_id;
@@ -59,6 +72,11 @@ public:
 	}
 
 	void addJournalCheckPoint();
+	// A compound native edit may use a different journal representation from
+	// project XML. Returning null suppresses derived, non-user checkpoints.
+	virtual JournallingObject* journalTarget() { return this; }
+	virtual QDomElement saveJournalState(QDomDocument& document, QDomElement& parent);
+	virtual bool restoreJournalState(const QDomElement& state, QString& error);
 
 	QDomElement saveState( QDomDocument & _doc,
 									QDomElement & _parent ) override;
@@ -92,6 +110,7 @@ protected:
 
 
 private:
+	static thread_local bool s_keepIdentity;
 	jo_id_t m_id;
 
 	bool m_journalling;

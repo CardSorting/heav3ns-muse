@@ -29,6 +29,10 @@
 
 #include <QMap>
 #include <QPointer>
+#include <functional>
+#include <optional>
+#include <memory>
+#include <cstdint>
 
 #include "AutomationNode.h"
 #include "Clip.h"
@@ -63,11 +67,34 @@ public:
 	using objectVector = std::vector<QPointer<AutomatableModel>>;
 
 	using TimemapIterator = timeMap::const_iterator;
+	struct PointEdit
+	{
+		int position = 0;
+		float value = 0, outValue = 0;
+		std::optional<float> inTangent, outTangent;
+		std::optional<bool> locked;
+	};
+	struct CurveEdit
+	{
+		std::optional<ProgressionType> progression;
+		std::optional<float> tension;
+		std::optional<PointEdit> point;
+		std::optional<int> removePoint;
+		bool clear = false;
+	};
+	// Control-thread curve edit prepared with native node math. Raw GUI
+	// setters retain their existing notification and journal contract.
+	bool editCurve(const CurveEdit& options, bool& changed, QString& error);
+	// Checked control-thread binding edit. A first binding and its initial
+	// native point become visible together; changed reports membership only.
+	bool editBinding(AutomatableModel* object, bool connected, bool& changed, QString& error);
 
 	AutomationClip( AutomationTrack * _auto_track );
 	~AutomationClip() override = default;
 
 	bool addObject( AutomatableModel * _obj, bool _search_dup = true );
+	//! Disconnect a native target without discarding the curve.
+	bool removeObject(AutomatableModel* object);
 
 	const AutomatableModel * firstObject() const;
 	const objectVector& objects() const;
@@ -84,6 +111,7 @@ public:
 		return m_tension;
 	}
 	void setTension( QString _new_tension );
+	void setTension(float tension);
 
 	TimePos timeMapLength() const;
 	void updateLength() override;
@@ -135,8 +163,20 @@ public:
 	//! @param tick0 first tick of the range
 	//! @param tick1 second tick of the range
 	void resetTangents(const int tick0, const int tick1);
+	//! Set manual tangents, or regenerate this node's tangents when unlocked.
+	bool setNodeTangents(const TimePos& time, float inTangent, float outTangent, bool locked);
 
 	void recordValue(TimePos time, float value);
+	// A reserved take follows native overdub semantics in detached curve data.
+	// Call these control-thread methods under the engine model guard.
+	void reserveRecordingTake(std::size_t maximumPoints, int quantization);
+	// Disarm before committing. Reservation pins source curve/context and target
+	// ranges; checkpoints run outside the clip mutex. Final signals remain native.
+	void commitRecordingTake(const std::function<void()>& checkpoint = {});
+	void discardRecordingTake();
+	bool hasReservedRecording() const { return m_recordingTake != nullptr; }
+	QString recordingError() const { return m_recordingError; }
+	std::uint64_t recordingSamples() const { return m_recordingSamples; }
 
 	//! @brief Set the position of the point that is being dragged.
 	//!
@@ -216,6 +256,8 @@ public:
 
 
 	static bool isAutomated( const AutomatableModel * _m );
+	//! Whether a native curve targets this model, including empty curves.
+	static bool isConnected(const AutomatableModel* model);
 
 	//! @brief Returns a list of all the automation clips that are connected to a specific model
 	//! @param _m The model we want to look for
@@ -232,10 +274,13 @@ public:
 
 	AutomationClip* clone() override
 	{
-		return new AutomationClip(*this);
+		// Note detuning owns inline curves without a track and copies them
+		// during native DSP too; retain that constructor path and threading.
+		if (!getTrack()) { return new AutomationClip(*this); }
+		return static_cast<AutomationClip*>(cloneNative());
 	}
 
-	void clearObjects() { m_objects.clear(); }
+	void clearObjects();
 
 public slots:
 	void clear();
@@ -246,8 +291,12 @@ public slots:
 
 protected:
 	AutomationClip( const AutomationClip & _clip_to_copy );
+	AutomationClip(const AutomationClip& other, AutomationTrack* destination);
+	friend class Clip;
 
 private:
+	friend class InlineAutomation;
+	void bindInlineObject(AutomatableModel* model);
 	void cleanObjects();
 	void generateTangents();
 	void generateTangents(timeMap::iterator it, int numToGenerate);
@@ -284,6 +333,15 @@ private:
 
 	bool m_isRecording;
 	float m_lastRecordedValue;
+	struct RecordingSource;
+	std::shared_ptr<RecordingSource> captureSource() const;
+	bool recordingSourceMatches(const RecordingSource& source, bool contents) const;
+	std::shared_ptr<const RecordingSource> m_recordingSource;
+	std::unique_ptr<AutomationClip> m_recordingTake;
+	std::size_t m_recordingMaximumPoints = 0;
+	int m_recordingQuantization = 0;
+	std::uint64_t m_recordingSamples = 0;
+	QString m_recordingError;
 
 	static int s_quantization;
 

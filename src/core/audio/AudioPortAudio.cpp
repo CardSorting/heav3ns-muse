@@ -24,6 +24,10 @@
  */
 
 #include <iostream>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
 
 #include "lmmsconfig.h"
 
@@ -33,6 +37,8 @@
 #include "AudioPortAudio.h"
 #include "ConfigManager.h"
 #include "LcdSpinBox.h"
+#include "PortAudioCallback.h"
+#include "lmms_constants.h"
 
 namespace {
 enum class Direction
@@ -95,7 +101,13 @@ int maxChannels(const PaDeviceInfo* info, Direction direction)
 namespace lmms {
 AudioPortAudio::AudioPortAudio(bool& successful, AudioEngine* engine)
 	: AudioDevice(DEFAULT_CHANNELS, engine)
+	, m_initGuard(false)
 {
+	successful = false;
+	if (m_initGuard.error() != paNoError)
+	{
+		std::cerr << "Pa_Initialize() failed: " << Pa_GetErrorText(m_initGuard.error()) << '\n'; return;
+	}
 	const auto numDevices = Pa_GetDeviceCount();
 	if (numDevices < 0)
 	{
@@ -118,9 +130,28 @@ AudioPortAudio::AudioPortAudio(bool& successful, AudioEngine* engine)
 	for (auto i = 0; i < numDevices && (inputDeviceIndex == paNoDevice || outputDeviceIndex == paNoDevice); ++i)
 	{
 		const auto deviceInfo = Pa_GetDeviceInfo(i);
+		if (!deviceInfo) { continue; }
 		const auto hostApiInfo = Pa_GetHostApiInfo(deviceInfo->hostApi);
-		if (deviceInfo->name == inputDeviceName && hostApiInfo->name == backend) { inputDeviceIndex = i; }
-		if (deviceInfo->name == outputDeviceName && hostApiInfo->name == backend) { outputDeviceIndex = i; }
+		if (!hostApiInfo) { continue; }
+		if (hostApiInfo->name != backend) { continue; }
+		if (deviceInfo->name == inputDeviceName && inputDeviceChannels > 0
+			&& inputDeviceChannels <= deviceInfo->maxInputChannels
+			&& inputDeviceChannels < std::numeric_limits<ch_cnt_t>::max()) { inputDeviceIndex = i; }
+		if (deviceInfo->name == outputDeviceName && outputDeviceChannels > 0
+			&& outputDeviceChannels <= deviceInfo->maxOutputChannels
+			&& outputDeviceChannels < std::numeric_limits<ch_cnt_t>::max()) { outputDeviceIndex = i; }
+	}
+	const auto validChannels = [](PaDeviceIndex index, int count, Direction direction) {
+		if (index == paNoDevice) { return true; }
+		const auto info = Pa_GetDeviceInfo(index);
+		return info && count > 0 && count <= maxChannels(info, direction)
+			&& count < std::numeric_limits<ch_cnt_t>::max();
+	};
+	if ((inputDeviceIndex == paNoDevice && outputDeviceIndex == paNoDevice)
+		|| !validChannels(inputDeviceIndex, inputDeviceChannels, Direction::Input)
+		|| !validChannels(outputDeviceIndex, outputDeviceChannels, Direction::Output))
+	{
+		std::cerr << "PortAudio: invalid or unavailable native device/channel selection\n"; return;
 	}
 
 	const auto sampleRate = engine->baseSampleRate();
@@ -167,42 +198,129 @@ AudioPortAudio::AudioPortAudio(bool& successful, AudioEngine* engine)
 		return;
 	}
 
-	successful = true;
+	err = Pa_SetStreamFinishedCallback(m_paStream, &AudioPortAudio::streamFinished);
+	if (err != paNoError)
+	{
+		std::cerr << "Pa_SetStreamFinishedCallback() failed: " << Pa_GetErrorText(err) << '\n'; return;
+	}
+	m_inputChannels = inputParametersPtr ? static_cast<ch_cnt_t>(inputDeviceChannels) : 0;
+	m_outputChannels = outputParametersPtr ? static_cast<ch_cnt_t>(outputDeviceChannels) : 0;
+	m_supportsCapture = m_inputChannels != 0;
 	setSampleRate(sampleRate);
-	setChannels(outputDeviceChannels);
+	setChannels(m_outputChannels == 0 ? DEFAULT_CHANNELS : m_outputChannels);
+	successful = true;
 }
 
 AudioPortAudio::~AudioPortAudio()
 {
 	stopProcessing();
-	Pa_CloseStream(m_paStream);
+	if (m_paStream)
+	{
+		const auto error = Pa_CloseStream(m_paStream);
+		if (error != paNoError) { std::cerr << "Pa_CloseStream() failed: " << Pa_GetErrorText(error) << '\n'; }
+	}
 }
 
 void AudioPortAudio::startProcessingImpl()
 {
-	Pa_StartStream(m_paStream);
+	if (!m_paStream) { reportProcessingFailure(ProcessingFailure::Start, paBadStreamPtr); return; }
+	const auto error = Pa_StartStream(m_paStream);
+	if (error != paNoError) { reportProcessingFailure(ProcessingFailure::Start, error); }
 }
 
 void AudioPortAudio::stopProcessingImpl()
 {
-	Pa_StopStream(m_paStream);
+	if (!m_paStream) { return; }
+	const auto error = Pa_StopStream(m_paStream);
+	if (error != paNoError && error != paStreamIsStopped) { reportProcessingFailure(ProcessingFailure::Stop, error); }
 }
 
-int AudioPortAudio::processCallback(const void*, void* output, unsigned long frameCount,
-	const PaStreamCallbackTimeInfo*, PaStreamCallbackFlags, void* userData)
+void AudioPortAudio::streamFinished(void* userData)
 {
 	const auto device = static_cast<AudioPortAudio*>(userData);
-	const auto channels = device->channels();
+	if (device->isRunning()) { device->reportProcessingFailure(ProcessingFailure::Disconnected); }
+}
+
+int detail::processPortAudioBuffer(AudioEngine& engine, ch_cnt_t inputChannels, ch_cnt_t outputChannels,
+	const void* input, void* output, unsigned long frames, bool inputLost)
+{
+	if (frames == 0) { return paContinue; }
+	if ((inputChannels == 0 && outputChannels == 0) || inputChannels == DynamicChannelCount
+		|| outputChannels == DynamicChannelCount || frames > static_cast<unsigned long>(std::numeric_limits<int>::max())
+		|| (outputChannels && !output)) { return paAbort; }
+	const auto maximumSamples = static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(float);
+	const auto widest = std::max(inputChannels, outputChannels);
+	if (frames > maximumSamples / widest) { return paAbort; }
+	const auto source = static_cast<const float*>(input);
+	bool invalid = inputChannels && (inputLost || !source);
+	if (inputChannels && !invalid)
+	{
+		for (std::size_t sample = 0, count = static_cast<std::size_t>(frames) * inputChannels; sample < count; ++sample)
+		{
+			if (!std::isfinite(source[sample])) { invalid = true; break; }
+		}
+	}
+	std::array<SampleFrame, DEFAULT_BUFFER_SIZE> scratch;
+	if (invalid) { engine.pushInputFrames(nullptr, frames); }
+	else if (inputChannels)
+	{
+		for (unsigned long start = 0; start < frames;)
+		{
+			const auto count = std::min<unsigned long>(scratch.size(), frames - start);
+			for (unsigned long frame = 0; frame < count; ++frame)
+			{
+				const auto index = static_cast<std::size_t>(start + frame) * inputChannels;
+				scratch[frame] = SampleFrame(source[index], source[index + (inputChannels > 1 ? 1 : 0)]);
+			}
+			engine.pushInputFrames(scratch.data(), count); start += count;
+		}
+	}
+	if (outputChannels) { engine.renderNextBuffer({static_cast<float*>(output), outputChannels, frames}); }
+	else
+	{
+		// Input-only streams still drive the authoritative native DSP clock.
+		for (unsigned long rendered = 0; rendered < frames;)
+		{
+			const auto count = std::min<unsigned long>(scratch.size(), frames - rendered);
+			engine.renderNextBuffer(InterleavedBufferView<float, DEFAULT_CHANNELS>{scratch.data(), count}); rendered += count;
+		}
+	}
+	return paContinue;
+}
+
+int AudioPortAudio::processCallback(const void* input, void* output, unsigned long frameCount,
+	const PaStreamCallbackTimeInfo*, PaStreamCallbackFlags flags, void* userData)
+{
+	const auto device = static_cast<AudioPortAudio*>(userData);
+	const auto channels = device->m_outputChannels;
 	const auto outputBuffer = reinterpret_cast<float*>(output);
+	const auto silenceOutput = [&] {
+		if (outputBuffer && channels && channels != DynamicChannelCount
+			&& frameCount <= static_cast<unsigned long>(std::numeric_limits<int>::max())
+			&& frameCount <= static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(float) / channels)
+		{
+			std::fill_n(outputBuffer, static_cast<std::size_t>(frameCount) * channels, 0.f);
+		}
+	};
 
 	if (!device->isRunning())
 	{
-		std::fill_n(outputBuffer, frameCount * channels, 0.f);
+		silenceOutput();
 		return paComplete;
 	}
-
-	device->audioEngine()->renderNextBuffer({outputBuffer, channels, frameCount});
-	return paContinue;
+	try
+	{
+		const auto result = detail::processPortAudioBuffer(*device->audioEngine(), device->m_inputChannels, channels,
+			input, output, frameCount, flags & (paInputUnderflow | paInputOverflow));
+		if (result == paAbort) { silenceOutput(); device->reportProcessingFailure(ProcessingFailure::InvalidCallback); }
+		return result;
+	}
+	catch (...)
+	{
+		device->reportProcessingFailure(ProcessingFailure::Exception);
+		silenceOutput();
+		return paAbort;
+	}
 }
 } // namespace lmms
 

@@ -28,6 +28,7 @@
 #define LMMS_GUI_PIANO_ROLL_H
 
 #include <QWidget>
+#include <QPointer>
 
 #include <vector>
 
@@ -35,6 +36,7 @@
 #include "ComboBoxModel.h"
 #include "SerializingObject.h"
 #include "Note.h"
+#include "MidiNoteRecorder.h"
 #include "LmmsTypes.h"
 #include "Song.h"
 #include "StepRecorder.h"
@@ -126,10 +128,7 @@ public:
 	void loadGhostNotes( const QDomElement & de );
 	void loadMarkedSemiTones(const QDomElement & de);
 
-	inline void stopRecording()
-	{
-		m_recording = false;
-	}
+	void stopRecording();
 
 	inline bool isRecording() const
 	{
@@ -210,6 +209,7 @@ protected slots:
 
 	void startRecordNote( const lmms::Note & n );
 	void finishRecordNote( const lmms::Note & n );
+	void recordNotePitch(const lmms::Note& n, float pitchCents);
 
 	void horScrolled( int new_pos );
 	void verScrolled( int new_pos );
@@ -394,7 +394,10 @@ private:
 	TimePos m_currentPosition;
 	bool m_recording;
 	bool m_doAutoQuantization{false};
-	QList<Note> m_recordingNotes;
+	MidiNoteRecorder m_noteRecorder;
+	QPointer<Track> m_recordingTrack;
+	float m_recordingPitchBaseline = 0;
+	bool m_restoreRecordingPitch = false;
 
 	Note * m_currentNote;
 	Action m_action;
@@ -458,7 +461,7 @@ private:
 	TimeLineWidget * m_timeLine;
 	bool m_scrollBack;
 
-	void copyToClipboard(const NoteVector & notes ) const;
+	bool copyToClipboard(const NoteVector& notes) const;
 
 	void drawDetuningInfo( QPainter & _p, const Note * _n, int _x, int _y ) const;
 	bool mouseOverNote();

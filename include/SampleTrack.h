@@ -41,12 +41,13 @@ class SampleTrackWindow;
 } // namespace gui
 
 
-class SampleTrack : public Track
+class LMMS_EXPORT SampleTrack : public Track
 {
 	Q_OBJECT
 public:
 	SampleTrack( TrackContainer* tc );
 	~SampleTrack() override;
+	void setName(const QString& name) override;
 
 	bool play( const TimePos & _start, const f_cnt_t _frames,
 						const f_cnt_t _frame_base, int _clip_num = -1 ) override;

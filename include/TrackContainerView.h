@@ -29,6 +29,7 @@
 #include <QScrollArea>
 #include <QWidget>
 #include <QThread>
+#include <QPointer>
 
 #include "JournallingObject.h"
 #include "ModelView.h"
@@ -55,7 +56,7 @@ public:
 	void run() override;
 
 private:
-	InstrumentTrack *m_it;
+	QPointer<InstrumentTrack> m_it;
 	QString m_name;
 	QThread *m_containerThread;
 };
@@ -153,6 +154,7 @@ public:
 
 public slots:
 	void realignTracks();
+	void syncTrackOrder();
 	lmms::gui::TrackView * createTrackView( lmms::Track * _t );
 	void deleteTrackView( lmms::gui::TrackView * _tv );
 

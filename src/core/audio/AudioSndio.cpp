@@ -27,7 +27,13 @@
 
 #ifdef LMMS_HAVE_SNDIO
 
-#include <cstdlib>
+#include <algorithm>
+#include <cerrno>
+#include <cmath>
+#include <cstdio>
+#include <limits>
+#include <stdexcept>
+#include <QScopeGuard>
 #include <QFormLayout>
 #include <QLineEdit>
 
@@ -36,121 +42,238 @@
 #include "AudioEngine.h"
 
 #include "ConfigManager.h"
+#include "FileResourceIO.h"
+#include "SndioApi.h"
 
 
 namespace lmms
 {
 
-AudioSndio::AudioSndio(bool& _success_ful, AudioEngine* _audioEngine)
-	: AudioDevice(std::clamp<ch_cnt_t>(ConfigManager::inst()->value("audiosndio", "channels").toInt(), DEFAULT_CHANNELS,
-					  DEFAULT_CHANNELS),
-		  _audioEngine)
+namespace
 {
-	_success_ful = false;
-
-	QString dev = ConfigManager::inst()->value( "audiosndio", "device" );
-
-	if (dev == "")
-	{
-		m_hdl = sio_open( nullptr, SIO_PLAY, 0 );
-	}
-	else
-	{
-		m_hdl = sio_open( dev.toLatin1().constData(), SIO_PLAY, 0 );
-	}
-
-	if( m_hdl == nullptr )
-	{
-		printf( "sndio: failed opening audio-device\n" );
-		return;
-	}
-
-	sio_initpar(&m_par);
-
-	m_par.pchan = channels();
-	m_par.bits = sizeof(int_sample_t) * 8;
-	m_par.sig = 1; // int_sample_t must be signed
-	m_par.le = SIO_LE_NATIVE;
-	m_par.rate = sampleRate();
-	m_par.round = audioEngine()->framesPerAudioBuffer();
-	m_par.appbufsz = m_par.round * 2;
-
-	struct sio_par reqpar = m_par;
-
-	if (!sio_setpar(m_hdl, &m_par))
-	{
-		printf( "sndio: sio_setpar failed\n" );
-		return;
-	}
-	if (!sio_getpar(m_hdl, &m_par))
-	{
-		printf( "sndio: sio_getpar failed\n" );
-		return;
-	}
-
-	if (reqpar.pchan != m_par.pchan ||
-		reqpar.bits != m_par.bits ||
-		reqpar.le != m_par.le ||
-		(::abs(static_cast<int>(reqpar.rate) - static_cast<int>(m_par.rate)) * 100)/reqpar.rate > 2)
-	{
-		printf( "sndio: returned params not as requested\n" );
-		return;
-	}
-
-	if (!sio_start(m_hdl))
-	{
-		printf( "sndio: sio_start failed\n" );
-		return;
-	}
-
-	_success_ful = true;
+const detail::SndioApi nativeApi;
+constexpr int ProgressTimeoutMs = 10000;
+constexpr int PollIntervalMs = 25;
+class OperationCancelled : public std::runtime_error
+{
+public:
+	using std::runtime_error::runtime_error;
+};
+void checkWork()
+{
+	QString error;
+	if (!FileResourceIO::check(error)) { throw OperationCancelled(error.toStdString()); }
+}
 }
 
+AudioSndio::AudioSndio(bool& successful, AudioEngine* engine)
+	: AudioSndio(successful, engine, nativeApi, ProgressTimeoutMs)
+{
+}
+
+AudioSndio::AudioSndio(bool& successful, AudioEngine* engine, const detail::SndioApi& api, int timeoutMs)
+	: AudioDevice(DEFAULT_CHANNELS, engine), m_api(api), m_timeoutMs(timeoutMs)
+	, m_device(ConfigManager::inst()->value("audiosndio", "device").toUtf8())
+{
+	successful = false;
+	successful = configureDevice(false);
+}
+
+bool AudioSndio::configureDevice(bool preserveRate)
+{
+	bool successful = false;
+	const auto cleanup = qScopeGuard([&] { if (!successful) { closeDevice(); } });
+	checkWork();
+	m_hdl = m_api.open(m_device.isEmpty() ? SIO_DEVANY : m_device.constData(), SIO_PLAY, 1);
+	if (!m_hdl) { std::fprintf(stderr, "sndio: could not open playback device\n"); return false; }
+	checkWork();
+	m_api.initParameters(&m_par);
+	m_par.pchan = channels(); m_par.bits = sizeof(int_sample_t) * 8; m_par.bps = sizeof(int_sample_t);
+	m_par.sig = 1; m_par.le = SIO_LE_NATIVE; m_par.rate = sampleRate();
+	if (m_par.rate == 0) { return false; }
+	m_par.round = audioEngine()->framesPerAudioBuffer();
+	if (m_par.round == 0 || m_par.round > std::numeric_limits<unsigned int>::max() / 2) { return false; }
+	m_par.appbufsz = m_par.round * 2;
+	const auto requested = m_par;
+	if (!m_api.setParameters(m_hdl, &m_par) || !m_api.getParameters(m_hdl, &m_par)) { return false; }
+	checkWork();
+	const auto difference = m_par.rate > requested.rate ? m_par.rate - requested.rate : requested.rate - m_par.rate;
+	if (m_par.pchan != requested.pchan || m_par.bits != requested.bits || m_par.bps != requested.bps
+		|| m_par.sig != requested.sig || m_par.le != requested.le || m_par.rate == 0
+		|| m_par.round == 0 || m_par.appbufsz == 0
+		// Preserve the existing integer-percent tolerance without signed overflow.
+		|| static_cast<std::uint64_t>(difference) * 100 / requested.rate > 2
+		|| (preserveRate && m_par.rate != requested.rate))
+	{
+		std::fprintf(stderr, "sndio: negotiated playback format is incompatible\n"); return false;
+	}
+	if (m_api.eof(m_hdl)) { return false; }
+	setSampleRate(m_par.rate); successful = true; return true;
+}
 
 AudioSndio::~AudioSndio()
 {
-	if (m_hdl != nullptr)
-	{
-		sio_close( m_hdl );
-		m_hdl = nullptr;
-	}
+	AudioDevice::stopProcessing(); closeDevice();
 }
 
+void AudioSndio::closeDevice() noexcept
+{
+	if (m_hdl) { m_api.close(m_hdl); m_hdl = nullptr; }
+}
+
+bool AudioSndio::processing() const
+{
+	return !m_stopRequested.load(std::memory_order_acquire) && AudioDevice::isRunning();
+}
+
+void AudioSndio::requestStop()
+{
+	m_stopRequested.store(true, std::memory_order_release); m_stopSemaphore.release();
+}
+
+void AudioSndio::fail(ProcessingFailure failure, int error) noexcept
+{
+	if (m_stopRequested.exchange(true, std::memory_order_acq_rel)) { return; }
+	reportProcessingFailure(failure, error); m_startupSemaphore.release();
+}
 
 void AudioSndio::startProcessingImpl()
 {
-	start(QThread::HighPriority);
+	requestStop(); wait();
+	while (m_startupSemaphore.tryAcquire()) { }
+	while (m_stopSemaphore.tryAcquire()) { }
+	const bool reopen = m_cleanupFailure != ProcessingFailure::None;
+	m_cleanupFailure = ProcessingFailure::None; m_cleanupError = 0;
+	m_started.store(false, std::memory_order_release); m_stopRequested.store(false, std::memory_order_release);
+	try
+	{
+		checkWork();
+		// EOF permanently poisons a sndio handle. Reopen the same configured sink
+		// after joining; a different rate needs normal backend selection so the
+		// engine can deliver its rate/quality notifications before starting DSP.
+		if (reopen || !m_hdl || m_api.eof(m_hdl))
+		{
+			closeDevice();
+			if (!configureDevice(true)) { fail(ProcessingFailure::Start, -EIO); return; }
+		}
+		QElapsedTimer deadline; deadline.start(); start(QThread::HighPriority);
+		for (;;)
+		{
+			checkWork();
+			if (!AudioDevice::isRunning() || m_started.load(std::memory_order_acquire)) { break; }
+			if (deadline.elapsed() >= m_timeoutMs) { fail(ProcessingFailure::Start, -ETIMEDOUT); break; }
+			m_startupSemaphore.tryAcquire(1, PollIntervalMs);
+		}
+	}
+	catch (const OperationCancelled&)
+	{
+		fail(ProcessingFailure::Start, -ECANCELED); requestStop(); wait(); throw;
+	}
+	catch (...)
+	{
+		fail(ProcessingFailure::Exception, -EIO); requestStop(); wait(); throw;
+	}
+	if (!AudioDevice::isRunning()) { requestStop(); wait(); }
 }
-
 
 void AudioSndio::stopProcessingImpl()
 {
-	stopProcessingThread( this );
+	requestStop(); wait(); reportProcessingFailure(m_cleanupFailure, m_cleanupError);
+}
+
+bool AudioSndio::waitWritable(std::vector<pollfd>& descriptors, QElapsedTimer& progress)
+{
+	while (processing())
+	{
+		if (progress.elapsed() >= m_timeoutMs) { fail(ProcessingFailure::Disconnected, -ETIMEDOUT); return false; }
+		std::fill(descriptors.begin(), descriptors.end(), pollfd{});
+		const auto count = m_api.descriptors(m_hdl, descriptors.data(), POLLOUT);
+		if (count < 0 || static_cast<std::size_t>(count) > descriptors.size())
+		{ fail(ProcessingFailure::InvalidCallback, -EOVERFLOW); return false; }
+		if (m_api.eof(m_hdl)) { fail(ProcessingFailure::Disconnected, -EIO); return false; }
+		if (count == 0) { m_stopSemaphore.tryAcquire(1, PollIntervalMs); continue; }
+		errno = 0;
+		const auto ready = m_api.poll(descriptors.data(), static_cast<nfds_t>(count), PollIntervalMs);
+		const auto error = errno;
+		if (!processing()) { return false; }
+		if (ready < 0)
+		{
+			if (error == EINTR) { m_stopSemaphore.tryAcquire(1, 1); continue; }
+			fail(ProcessingFailure::Disconnected, error ? -error : -EIO); return false;
+		}
+		if (ready > count) { fail(ProcessingFailure::InvalidCallback, -EOVERFLOW); return false; }
+		// revents also processes sndiod control messages. OS readiness alone is
+		// not evidence that the audio stream can accept another byte.
+		const auto events = m_api.events(m_hdl, descriptors.data());
+		if (events < 0 || (events & (POLLHUP | POLLERR | POLLNVAL)) || m_api.eof(m_hdl))
+		{ fail(ProcessingFailure::Disconnected, -EIO); return false; }
+		if (events & POLLOUT) { return processing(); }
+		if (ready > 0) { m_stopSemaphore.tryAcquire(1, 1); }
+	}
+	return false;
+}
+
+bool AudioSndio::writeBuffer(const int_sample_t* data, std::size_t samples, std::vector<pollfd>& descriptors)
+{
+	const auto bytes = samples * sizeof(int_sample_t);
+	const auto source = reinterpret_cast<const unsigned char*>(data);
+	std::size_t offset = 0;
+	QElapsedTimer progress; progress.start();
+	while (offset < bytes && processing())
+	{
+		const auto written = m_api.write(m_hdl, source + offset, bytes - offset);
+		if (!processing()) { return false; }
+		if (written > bytes - offset) { fail(ProcessingFailure::InvalidCallback, -EOVERFLOW); return false; }
+		if (m_api.eof(m_hdl)) { fail(ProcessingFailure::Disconnected, -EIO); return false; }
+		if (written > 0) { offset += written; progress.restart(); continue; }
+		if (!waitWritable(descriptors, progress)) { return false; }
+		// A ready stream which accepts zero bytes must not spin or render ahead.
+		m_stopSemaphore.tryAcquire(1, 1);
+	}
+	return offset == bytes && processing();
 }
 
 void AudioSndio::run()
 {
-	const auto framesPerAudioBuffer = audioEngine()->framesPerAudioBuffer();
-	const auto samplesPerAudioBuffer = framesPerAudioBuffer * channels();
-	auto fbuf = std::vector<sample_t>(samplesPerAudioBuffer);
-	auto ibuf = std::vector<int_sample_t>(samplesPerAudioBuffer);
-
-	while (AudioDevice::isRunning())
+	bool started = false;
+	const auto cleanup = qScopeGuard([&]
 	{
-		audioEngine()->renderNextBuffer({fbuf.data(), channels(), framesPerAudioBuffer});
-
-		// Sndio doesn't speak float, so convert samples to signed int.
-		// While convertToS16() exists, it is intentionally not used
-		// here. There is no need to convert endian-ness since sndio was
-		// initialized with SIO_LE_NATIVE, and there's no reason to
-		// also convert to SampleFrame.
-		for (auto i = 0u; i < samplesPerAudioBuffer; ++i)
+		if (started)
 		{
-			ibuf[i] = static_cast<int_sample_t>(AudioEngine::clip(fbuf[i]) * OUTPUT_SAMPLE_MULTIPLIER);
+			try
+			{
+				if (!m_api.stop(m_hdl)) { m_cleanupFailure = ProcessingFailure::Stop; m_cleanupError = -EIO; }
+			}
+			catch (...) { m_cleanupFailure = ProcessingFailure::Exception; m_cleanupError = -EIO; }
 		}
-
-		sio_write(m_hdl, ibuf.data(), ibuf.size() * sizeof(int_sample_t));
+		m_startupSemaphore.release();
+	});
+	try
+	{
+		const auto frames = audioEngine()->framesPerAudioBuffer();
+		const auto samples = static_cast<std::size_t>(frames) * channels();
+		auto floats = std::vector<float>(samples); auto integers = std::vector<int_sample_t>(samples);
+		const auto count = m_api.descriptorCount(m_hdl);
+		if (count <= 0) { fail(ProcessingFailure::Start, -EINVAL); return; }
+		auto descriptors = std::vector<pollfd>(static_cast<std::size_t>(count));
+		if (!processing()) { return; }
+		if (!m_api.start(m_hdl)) { fail(ProcessingFailure::Start, -EIO); return; }
+		started = true;
+		if (!processing()) { return; }
+		if (m_api.eof(m_hdl)) { fail(ProcessingFailure::Start, -EIO); return; }
+		m_started.store(true, std::memory_order_release); m_startupSemaphore.release();
+		while (processing())
+		{
+			audioEngine()->renderNextBuffer({floats.data(), channels(), frames});
+			for (std::size_t i = 0; i < samples; ++i)
+			{
+				if (!std::isfinite(floats[i])) { fail(ProcessingFailure::InvalidCallback, -EDOM); return; }
+				integers[i] = static_cast<int_sample_t>(AudioEngine::clip(floats[i]) * OUTPUT_SAMPLE_MULTIPLIER);
+			}
+			if (!writeBuffer(integers.data(), integers.size(), descriptors)) { break; }
+		}
 	}
+	catch (...) { fail(ProcessingFailure::Exception, -EIO); }
 }
 
 
@@ -159,7 +282,7 @@ AudioSndio::setupWidget::setupWidget( QWidget * _parent ) :
 {
 	QFormLayout * form = new QFormLayout(this);
 
-	m_device = new QLineEdit( "", this );
+	m_device = new QLineEdit(ConfigManager::inst()->value("audiosndio", "device"), this);
 	form->addRow(tr("Device"), m_device);
 
 	gui::LcdSpinBoxModel * m = new gui::LcdSpinBoxModel( /* this */ );

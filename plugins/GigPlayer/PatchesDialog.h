@@ -27,72 +27,54 @@
 #define PATCHES_DIALOG_H
 
 #include "ui_PatchesDialog.h"
-#include "LcdSpinBox.h"
 #include "GigPlayer.h"
+#include <QPointer>
+#include <QVector>
+#include <cstdint>
+#include <memory>
+#include <vector>
 
-#include <QWidget>
-#include <QLabel>
-
-//----------------------------------------------------------------------------
-// qsynthPresetForm -- UI wrapper form.
-
+namespace lmms { class InstrumentTrack; class TrackContainer; class Song; class Mixer; class AudioEngine; }
 namespace lmms::gui
 {
-
-
 class PatchesDialog : public QDialog, private Ui::PatchesDialog
 {
 	Q_OBJECT
-
 public:
-
-	// Constructor.
-	PatchesDialog(QWidget * pParent = 0, Qt::WindowFlags wflags = QFlag(0));
-
-	// Destructor.
+	PatchesDialog(QWidget* parent = nullptr, Qt::WindowFlags flags = {});
 	~PatchesDialog() override = default;
-
-
-	void setup( GigInstance * pSynth, int iChan, const QString & chanName,
-			LcdSpinBoxModel * bankModel, LcdSpinBoxModel * progModel, QLabel * patchLabel );
-
+	bool setup(GigInstrument* instrument, const QString& channelName);
 public slots:
-
 	void stabilizeForm();
 	void bankChanged();
-	void progChanged( QTreeWidgetItem * curr, QTreeWidgetItem * prev );
-
+	void progChanged(QTreeWidgetItem* current, QTreeWidgetItem* previous);
 protected slots:
-
 	void accept() override;
 	void reject() override;
-
-protected:
-
-	void setBankProg( int iBank, int iProg );
-
-	QTreeWidgetItem * findBankItem( int iBank );
-	QTreeWidgetItem * findProgItem( int iProg );
-
-	bool validateForm();
-
 private:
-
-	// Instance variables.
-	GigInstance * m_pSynth;
-
-	int m_iChan;
-	int m_iBank;
-	int m_iProg;
-
-	int m_dirty;
-
-	LcdSpinBoxModel * m_bankModel;
-	LcdSpinBoxModel * m_progModel;
-	QLabel * m_patchLabel;
+	class ViewGuard;
+	bool actorsValid() const;
+	bool contextValid(bool controls = true);
+	bool fillPrograms(int bank, int preferredProgram);
+	bool selectedProgram(int& bank, int& program) const;
+	void invalidate();
+	QPointer<QTreeWidget> m_banksView, m_programsView;
+	QPointer<QPushButton> m_acceptButton;
+	QPointer<GigInstrument> m_instrument;
+	QPointer<InstrumentTrack> m_track;
+	QPointer<TrackContainer> m_container;
+	QPointer<Song> m_song;
+	QPointer<Mixer> m_mixer;
+	QPointer<AudioEngine> m_engine;
+	QPointer<AutomatableModel> m_bankModel, m_programModel;
+	std::shared_ptr<const void> m_identity;
+	QString m_path, m_projectPath;
+	std::vector<Instrument::Program> m_programs;
+	QVector<QMetaObject::Connection> m_connections;
+	std::uint64_t m_project = 0, m_routing = 0, m_epoch = 0;
+	sample_rate_t m_rate = 0;
+	float m_bank = 0, m_program = 0;
+	bool m_invalid = true, m_closed = false, m_preparing = false, m_committing = false;
 };
-
-
 } // namespace lmms::gui
-
 #endif

@@ -13,7 +13,7 @@ class HydrogenImport : public ImportFilter
 {
 public:
 	HydrogenImport( const QString & _file );
-        bool readSong();
+	bool readSong();
 
 	~HydrogenImport() override = default;
 
@@ -22,7 +22,9 @@ public:
 		return( nullptr );
 	}
 private:
+	using ImportFilter::tryImport;
 	bool tryImport( TrackContainer* tc ) override;
+	friend class HydrogenImportTest;
 };
 
 

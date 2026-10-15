@@ -27,17 +27,22 @@
 #define LMMS_DATA_FILE_H
 
 #include <map>
+#include <memory>
+#include <functional>
 #include <QDomDocument>
 #include <vector>
 
+#include "FileResourceSnapshot.h"
 #include "lmms_export.h"
 
 class QTextStream;
+class QJsonArray;
 
 namespace lmms
 {
 
 class ProjectVersion;
+class SampleBuffer;
 
 
 class LMMS_EXPORT DataFile : public QDomDocument
@@ -70,12 +75,67 @@ public:
 
 	QString nameWithExtension( const QString& fn ) const;
 
+	// A transient DOM diagnostic follows copies and nested native serializers.
+	// Failed documents cannot be published by the native DataFile writers.
+	static void recordSerializationError(QDomDocument& document, const QString& error);
+	static QString serializationError(const QDomDocument& document);
+	QString serializationError() const { return serializationError(*this); }
+	QString toString(int indent = 1) const;
+
 	void write( QTextStream& strm );
 	bool writeFile(const QString& fn, bool withResources = false);
+	// Validation may throw; it runs before backup publication and immediately
+	// before atomic replacement, after the final cooperative work check.
+	bool writeFile(const QString& fn, bool withResources, const std::function<void()>& beforeCommit);
 
 	//! @brief Copies resources to @p resourcesDir and changes the
 	//! DataFile to use local paths to them
-	bool copyResources(const QString& resourcesDir);
+	bool copyResources(const QString& resourcesDir, QJsonArray* checkpointAssets = nullptr);
+	bool matchesAssetReferences(const QJsonArray& assets) const;
+
+	// Native serializers can provide accepted source bytes without replacing the
+	// project's original path/name. Only a resource-enabled save collects them.
+	class LMMS_EXPORT ResourceSourceScope
+	{
+	public:
+		explicit ResourceSourceScope(DataFile& document, bool enabled = true, bool retainSamples = false);
+		~ResourceSourceScope();
+		ResourceSourceScope(const ResourceSourceScope&) = delete;
+		ResourceSourceScope& operator=(const ResourceSourceScope&) = delete;
+	private:
+		DataFile* m_previous;
+		bool m_previousRetainSamples;
+	};
+	// Cloning reads accepted resources from the same DOM nodes that saved them.
+	// Ordinary project/preset loading continues to resolve its declared files.
+	class LMMS_EXPORT ResourceReadScope
+	{
+	public:
+		explicit ResourceReadScope(const DataFile& document);
+		~ResourceReadScope();
+		ResourceReadScope(const ResourceReadScope&) = delete;
+		ResourceReadScope& operator=(const ResourceReadScope&) = delete;
+	private:
+		const DataFile* m_previous;
+	};
+	class LMMS_EXPORT ResourceReferenceScope
+	{
+	public:
+		ResourceReferenceScope(const QDomElement& element, const QString& attribute);
+		ResourceReferenceScope(const ResourceReferenceScope&) = delete;
+		ResourceReferenceScope& operator=(const ResourceReferenceScope&) = delete;
+	private:
+		std::unique_ptr<FileResourceSnapshot::ReadScope> m_scope;
+	};
+	static void registerResourceSource(const QDomDocument& document, const QDomElement& element,
+		const QString& attribute, const QString& source);
+	static void registerResourceSnapshot(const QDomDocument& document, const QDomElement& element,
+		const QString& attribute, std::shared_ptr<const FileResourceSnapshot> snapshot,
+		std::shared_ptr<const SampleBuffer> sample = {});
+
+	// Checkpoints may live away from a bundle; resolve its asset references
+	// against the current native project's directory before writing them.
+	bool makeLocalResourcePathsAbsolute();
 
 	//! @brief Checks whether the XML tree of a @ref DataFile has (potentially unsafe) local paths
 	//!
@@ -89,6 +149,10 @@ public:
 	bool hasLocalPlugins(QDomElement parent = QDomElement(), bool firstCall = true) const;
 
 	QDomElement& content()
+	{
+		return m_content;
+	}
+	const QDomElement& content() const
 	{
 		return m_content;
 	}
@@ -173,10 +237,23 @@ private:
 
 	void loadData( const QByteArray & _data, const QString & _sourceFile );
 
+	struct ResourceSource
+	{
+		QDomElement element;
+		QString attribute;
+		QString path;
+		QString declaredValue;
+		std::shared_ptr<const FileResourceSnapshot> snapshot;
+		std::shared_ptr<const SampleBuffer> sample;
+	};
+	static void bindResourceSource(const QDomDocument& document, const QDomElement& element,
+		const QString& attribute, const QString& source, std::shared_ptr<const FileResourceSnapshot> snapshot,
+		std::shared_ptr<const SampleBuffer> sample = {});
+	std::vector<ResourceSource> m_resourceSources;
 	QString m_fileName; //!< The origin file name or "" if this DataFile didn't originate from a file
 	QDomElement m_content;
 	QDomElement m_head;
-	Type m_type;
+	Type m_type = Type::Unknown;
 	unsigned int m_fileVersion;
 } ;
 

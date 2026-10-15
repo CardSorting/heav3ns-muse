@@ -1,4 +1,6 @@
 #include "TemplatesMenu.h"
+#include <QPointer>
+#include <exception>
 
 #include "ConfigManager.h"
 #include "Engine.h"
@@ -28,10 +30,14 @@ TemplatesMenu::TemplatesMenu(QWidget *parent) :
 
 void TemplatesMenu::createNewProjectFromTemplate(QAction * _action)
 {
-	if( getGUI()->mainWindow()->mayChangeProject(true) )
+	const QPointer<TemplatesMenu> owner(this); const QPointer<Song> song(Engine::getSong());
+	const QString templateFilePath = _action ? _action->data().toString() : QString{};
+	if (templateFilePath.isEmpty()) { return; }
+	if (getGUI()->mainWindow()->mayChangeProject(true) && owner && song && Engine::getSong() == song.data())
 	{
-		const QString& templateFilePath = _action->data().toString();
-		Engine::getSong()->createNewProjectFromTemplate(templateFilePath);
+		try { song->createNewProjectFromTemplate(templateFilePath); }
+		catch (const std::exception& error) { if (song) { song->collectError(QString::fromUtf8(error.what())); } }
+		catch (...) { if (song) { song->collectError("Native template creation failed"); } }
 	}
 }
 

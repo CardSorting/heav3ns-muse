@@ -42,6 +42,7 @@
 #include "KeyboardShortcuts.h"
 #include "lmms_math.h"
 #include "MidiClipView.h"
+#include "NativeClipTransfer.h"
 #include "PatternClip.h"
 #include "PatternStore.h"
 #include "Song.h"
@@ -199,7 +200,7 @@ void ClipView::updateLength()
 	}
 	else
 	{
-		// this std::max function is needed for clips that do not start or end on the beat, otherwise, they "disappear" when zooming to min 
+		// this std::max function is needed for clips that do not start or end on the beat, otherwise, they "disappear" when zooming to min
 		// 3 is the minimum width needed to make a clip visible
 		setFixedWidth(std::max(static_cast<int>(m_clip->length() * pixelsPerBar() / TimePos::ticksPerBar() + 1), 3));
 	}
@@ -366,48 +367,11 @@ void ClipView::updateCursor(QMouseEvent * me)
 DataFile ClipView::createClipDataFiles(
     				const QVector<ClipView *> & clipViews) const
 {
-	Track * t = m_trackView->getTrack();
-	TrackContainer * tc = t->trackContainer();
-	DataFile dataFile( DataFile::Type::DragNDropData );
-	QDomElement clipParent = dataFile.createElement("clips");
-
-	for (const auto& clipView : clipViews)
-	{
-		// Insert into the dom under the "clips" element
-		Track* clipTrack = clipView->m_trackView->getTrack();
-		const auto trackIt = std::find(tc->tracks().begin(), tc->tracks().end(), clipTrack);
-		assert(trackIt != tc->tracks().end());
-		int trackIndex = std::distance(tc->tracks().begin(), trackIt);
-		QDomElement clipElement = dataFile.createElement("clip");
-		clipElement.setAttribute( "trackIndex", trackIndex );
-		clipElement.setAttribute( "trackType", static_cast<int>(clipTrack->type()) );
-		clipElement.setAttribute( "trackName", clipTrack->name() );
-		clipView->m_clip->saveState(dataFile, clipElement);
-		clipParent.appendChild( clipElement );
-	}
-
-	dataFile.content().appendChild( clipParent );
-
-	// Add extra metadata needed for calculations later
-
-	const auto initialTrackIt = std::find(tc->tracks().begin(), tc->tracks().end(), t);
-	if (initialTrackIt == tc->tracks().end())
-	{
-		printf("Failed to find selected track in the TrackContainer.\n");
-		return dataFile;
-	}
-
-	const int initialTrackIndex = std::distance(tc->tracks().begin(), initialTrackIt);
-	QDomElement metadata = dataFile.createElement( "copyMetadata" );
-	// initialTrackIndex is the index of the track that was touched
-	metadata.setAttribute( "initialTrackIndex", initialTrackIndex );
-	metadata.setAttribute( "trackContainerId", tc->id() );
-	// grabbedClipPos is the pos of the bar containing the Clip we grabbed
-	metadata.setAttribute( "grabbedClipPos", m_clip->startPosition() );
-
-	dataFile.content().appendChild( metadata );
-
-	return dataFile;
+	DataFile document(DataFile::Type::DragNDropData); QList<Clip*> clips;
+	for (auto view : clipViews) { clips.append(view ? view->m_clip : nullptr); }
+	QString error;
+	if (!NativeClipTransfer::save(clips, m_clip, document, error)) { Engine::getSong()->collectError("Native clip selection could not be copied: " + error); }
+	return document;
 }
 
 void ClipView::paintTextLabel(QString const & text, QPainter & painter)
@@ -633,6 +597,7 @@ void ClipView::mouseMoveEvent( QMouseEvent * me )
 
 			// Write the Clips to the DataFile for copying
 			DataFile dataFile = createClipDataFiles( clipViews );
+			if (!dataFile.serializationError().isEmpty()) { return; }
 
 			// TODO -- thumbnail for all selected
 			QPixmap thumbnail = grab().scaled(
@@ -1004,23 +969,25 @@ void ClipView::remove( QVector<ClipView *> clipvs )
 	}
 }
 
-void ClipView::copy( QVector<ClipView *> clipvs )
+bool ClipView::copy( QVector<ClipView *> clipvs )
 {
 	// For copyStringPair()
 	using namespace Clipboard;
 
 	// Write the Clips to a DataFile for copying
 	DataFile dataFile = createClipDataFiles( clipvs );
+	if (!dataFile.serializationError().isEmpty()) { return false; }
 
 	// Copy the Clip type as a key and the Clip data file to the clipboard
 	copyStringPair( QString( "clip_%1" ).arg( static_cast<int>(m_clip->getTrack()->type()) ),
 		dataFile.toString() );
+	return true;
 }
 
 void ClipView::cut( QVector<ClipView *> clipvs )
 {
 	// Copy the selected Clips
-	copy( clipvs );
+	if (!copy(clipvs)) { return; }
 
 	// Now that the Clips are copied we can delete them, since we are cutting
 	remove( clipvs );
@@ -1230,28 +1197,7 @@ auto ClipView::hasCustomColor() const -> bool
 
 bool ClipView::splitClip(const TimePos pos)
 {
-	const TimePos splitPos = m_initialClipPos + pos;
-
-	// Don't split if we slid off the Clip or if we're on the clip's start/end
-	// Cutting at exactly the start/end position would create a zero length
-	// clip (bad), and a clip the same length as the original one (pointless).
-	if (splitPos <= m_initialClipPos || splitPos >= m_initialClipEnd) { return false; }
-
-	m_clip->getTrack()->addJournalCheckPoint();
-	m_clip->getTrack()->saveJournallingState(false);
-
-	auto rightClip = m_clip->clone();
-
-	m_clip->changeLength(splitPos - m_initialClipPos);
-	m_clip->setAutoResize(false);
-
-	rightClip->movePosition(splitPos);
-	rightClip->changeLength(m_initialClipEnd - splitPos);
-	rightClip->setStartTimeOffset(m_clip->startTimeOffset() - m_clip->length());
-	rightClip->setAutoResize(false);
-
-	m_clip->getTrack()->restoreJournallingState();
-	return true;
+	return m_clip->splitAt(pos) != nullptr;
 }
 
 } // namespace lmms::gui

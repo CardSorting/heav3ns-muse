@@ -30,6 +30,8 @@
 #define LMMS_CONTROLLER_CONNECTION_H
 
 #include <QObject>
+#include <QPointer>
+#include <cstdint>
 
 #include "Controller.h"
 #include "JournallingObject.h"
@@ -58,10 +60,11 @@ public:
 	ControllerConnection( int _controllerId );
 
 	~ControllerConnection() override;
+	bool isRetiring() const noexcept { return m_retiring; }
 
 	inline Controller * getController()
 	{
-		return m_controller;
+		return m_controller.data();
 	}
 
 	void setController( Controller * _controller );
@@ -110,15 +113,20 @@ public slots:
 
 protected:
 	//virtual controllerDialog * createDialog( QWidget * _parent );
-	Controller * m_controller;
+	QPointer<Controller> m_controller;
 	QString m_targetName;
 	int m_controllerId;
 	
 	bool m_ownsController;
+	bool m_controllerCounted = false;
+	std::uint64_t m_controllerGeneration = 0;
+	bool m_retiring = false;
 
 	static ControllerConnectionVector s_connections;
 
 signals:
+	// Emitted before native resource callbacks, even for a blocked connection.
+	void retiring();
 	// The value changed while the audio engine isn't running (i.e: MIDI CC)
 	void valueChanged();
 

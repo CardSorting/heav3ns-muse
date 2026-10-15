@@ -23,6 +23,9 @@
  */
 
 #include <QDomElement>
+#include <QPointer>
+#include <QObject>
+#include <stdexcept>
 
 #include "SerializingObject.h"
 
@@ -50,14 +53,19 @@ SerializingObject::~SerializingObject()
 
 QDomElement SerializingObject::saveState( QDomDocument& doc, QDomElement& parent )
 {
+	const QPointer<QObject> receiver(dynamic_cast<QObject*>(this)); const bool observable = !receiver.isNull();
+	const auto ready = [&] { if (observable && !receiver) { throw std::runtime_error("Native serializing object retired during save"); } };
 	QDomElement element = doc.createElement( nodeName() );
+	ready();
 	parent.appendChild( element );
 
 	saveSettings( doc, element );
+	ready();
 
 	if( hook() )
 	{
 		hook()->saveSettings( doc, element );
+		ready();
 	}
 
 	return element;
@@ -68,11 +76,15 @@ QDomElement SerializingObject::saveState( QDomDocument& doc, QDomElement& parent
 
 void SerializingObject::restoreState( const QDomElement& element )
 {
+	const QPointer<QObject> receiver(dynamic_cast<QObject*>(this)); const bool observable = !receiver.isNull();
+	const auto ready = [&] { if (observable && !receiver) { throw std::runtime_error("Native serializing object retired during restore"); } };
 	loadSettings( element );
+	ready();
 
 	if( hook() )
 	{
 		hook()->loadSettings( element );
+		ready();
 	}
 }
 

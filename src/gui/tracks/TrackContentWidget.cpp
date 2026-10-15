@@ -37,6 +37,7 @@
 #include "GuiApplication.h"
 #include "PatternEditor.h"
 #include "PatternStore.h"
+#include "NativeClipTransfer.h"
 #include "Song.h"
 #include "SongEditor.h"
 #include "StringPairDrag.h"
@@ -87,7 +88,7 @@ TrackContentWidget::TrackContentWidget( TrackView * parent ) :
 
 
 void TrackContentWidget::updateBackground()
-{		
+{
 	// use snapSize to determine number of lines to draw
 	float snapSize = getGUI()->songEditor()->m_editor->getSnapSize();
 
@@ -100,7 +101,7 @@ void TrackContentWidget::updateBackground()
 	float coarseGridResolution = (snapSize >= 1) ? snapSize : 1;
 	// Fine grid appears within bars
 	float fineGridResolution = snapSize;
-	// Increase fine grid resolution (size between lines) if it results in less than	
+	// Increase fine grid resolution (size between lines) if it results in less than
 	// 4 pixels between each line to avoid cluttering
 	float pixelsBetweenLines = ppb * snapSize;
 	if (pixelsBetweenLines < MIN_PIXELS_BETWEEN_LINES) {
@@ -302,21 +303,26 @@ bool TrackContentWidget::canPasteSelection( TimePos clipPos, const QMimeData* md
 	// value contains XML needed to reconstruct Clips and place them
 	DataFile dataFile( value.toUtf8() );
 
+	if (dataFile.type() != DataFile::Type::DragNDropData && dataFile.type() != DataFile::Type::ClipboardData) { return false; }
 	// Extract the metadata and which Clip was grabbed
 	QDomElement metadata = dataFile.content().firstChildElement( "copyMetadata" );
 	QDomAttr clipPosAttr = metadata.attributeNode( "grabbedClipPos" );
-	TimePos grabbedClipPos = clipPosAttr.value().toInt();
+	bool valid = false; const int sourcePosition = clipPosAttr.value().toInt(&valid);
+	if (!valid || sourcePosition < 0 || sourcePosition > MaxSongLength || clipPos.getTicks() < 0 || clipPos.getTicks() > MaxSongLength) { return false; }
+	TimePos grabbedClipPos = sourcePosition;
 	TimePos grabbedClipBar = TimePos( grabbedClipPos.getBar(), 0 );
 
 	// Extract the track index that was originally clicked
 	QDomAttr tiAttr = metadata.attributeNode( "initialTrackIndex" );
-	const int initialTrackIndex = tiAttr.value().toInt();
+	const int initialTrackIndex = tiAttr.value().toInt(&valid);
+	if (!valid || initialTrackIndex < 0) { return false; }
 
 	// Get the current track's index
 	const TrackContainer::TrackList& tracks = t->trackContainer()->tracks();
 	const auto currentTrackIt = std::find(tracks.begin(), tracks.end(), t);
 	const int currentTrackIndex = currentTrackIt != tracks.end() ? std::distance(tracks.begin(), currentTrackIt) : -1;
 
+	if (currentTrackIndex < 0) { return false; }
 	// Don't paste if we're on the same bar and allowSameBar is false
 	auto sourceTrackContainerId = metadata.attributeNode( "trackContainerId" ).value().toUInt();
 	if( !allowSameBar && sourceTrackContainerId == t->trackContainer()->id() &&
@@ -341,8 +347,11 @@ bool TrackContentWidget::canPasteSelection( TimePos clipPos, const QMimeData* md
 	for( int i = 0; i < clipNodes.length(); i++ )
 	{
 		QDomElement clipElement = clipNodes.item( i ).toElement();
-		int trackIndex = clipElement.attributeNode( "trackIndex" ).value().toInt();
-		int finalTrackIndex = trackIndex + currentTrackIndex - initialTrackIndex;
+		int trackIndex = clipElement.attribute("trackIndex").toInt(&valid);
+		if (!valid || trackIndex < 0) { return false; }
+		const qint64 finalTrackIndex = static_cast<qint64>(trackIndex) + currentTrackIndex - initialTrackIndex;
+		const int position = clipElement.firstChildElement().attribute("pos").toInt(&valid);
+		if (!valid || position < 0 || position > MaxSongLength) { return false; }
 
 		// Track must be in TrackContainer's tracks
 		if (finalTrackIndex < 0 || static_cast<std::size_t>(finalTrackIndex) >= tracks.size())
@@ -372,7 +381,7 @@ bool TrackContentWidget::pasteSelection( TimePos clipPos, QDropEvent * de )
 		return false;
 	}
 
-	// We set skipSafetyCheck to true because we already called canPasteSelection
+	// Preserve the drag admission's same-bar decision while rechecking model bounds
 	return pasteSelection( clipPos, mimeData, true );
 }
 
@@ -382,8 +391,9 @@ bool TrackContentWidget::pasteSelection( TimePos clipPos, const QMimeData * md, 
 	// For decodeKey() and decodeValue()
 	using namespace Clipboard;
 
-	// When canPasteSelection was already called before, skipSafetyCheck will skip this
-	if( !skipSafetyCheck && canPasteSelection( clipPos, md ) == false )
+	// Recheck model/type bounds even after drag admission. That path allows
+	// the already-approved same-bar transfer instead of bypassing validation.
+	if (!canPasteSelection(clipPos, md, skipSafetyCheck))
 	{
 		return false;
 	}
@@ -414,15 +424,6 @@ bool TrackContentWidget::pasteSelection( TimePos clipPos, const QMimeData * md, 
 
 	bool wasSelection = m_trackView->trackContainerView()->rubberBand()->selectedObjects().count();
 
-	// Unselect the old group
-		const QVector<selectableObject *> so =
-			m_trackView->trackContainerView()->selectedObjects();
-		for (const auto& obj : so)
-		{
-			obj->setSelected(false);
-		}
-
-
 	// TODO -- Need to draw the hovericon either way, or ghost the Clips
 	// onto their final position.
 
@@ -448,31 +449,38 @@ bool TrackContentWidget::pasteSelection( TimePos clipPos, const QMimeData * md, 
 	// Fix offset if it sets the left most Clip to a negative position
 	offset = std::max(offset.getTicks(), -leftmostPos.getTicks());
 
+	QList<NativeClipTransfer::Target> targets;
 	for( int i = 0; i<clipNodes.length(); i++ )
 	{
 		QDomElement outerClipElement = clipNodes.item( i ).toElement();
 		QDomElement clipElement = outerClipElement.firstChildElement();
 
 		int trackIndex = outerClipElement.attributeNode( "trackIndex" ).value().toInt();
-		int finalTrackIndex = trackIndex + ( currentTrackIndex - initialTrackIndex );
+		const qint64 finalTrackIndex = static_cast<qint64>(trackIndex) + currentTrackIndex - initialTrackIndex;
 		Track * t = tracks.at( finalTrackIndex );
 
 		// The new position is the old position plus the offset.
-		TimePos pos = clipElement.attributeNode( "pos" ).value().toInt() + offset;
+		qint64 position = static_cast<qint64>(clipElement.attribute("pos").toInt()) + offset.getTicks();
 		// If we land on ourselves, offset by one snap
 		TimePos shift = TimePos::ticksPerBar() * getGUI()->songEditor()->m_editor->getSnapSize();
-		if (offset == 0 && initialTrackIndex == currentTrackIndex) { pos += shift; }
-
-		Clip * clip = t->createClip( pos );
-		clip->restoreState( clipElement );
-		clip->movePosition(pos); // Because we restored the state, we need to move the Clip again.
-		if( wasSelection )
-		{
-			clip->selectViewOnCreate( true );
-		}
+		if (offset == 0 && initialTrackIndex == currentTrackIndex) { position += shift.getTicks(); }
+		if (position < 0 || position > MaxSongLength) { return false; }
+		targets.append({t, TimePos(static_cast<int>(position))});
 	}
 
-	AutomationClip::resolveAllIDs();
+	QList<Clip*> pasted; QString error;
+	if (!NativeClipTransfer::load(dataFile, targets, pasted, error))
+	{ Engine::getSong()->collectError("Native clip selection could not be pasted: " + error); return false; }
+	// Unselect the old group
+		const QVector<selectableObject *> so =
+			m_trackView->trackContainerView()->selectedObjects();
+		for (const auto& obj : so)
+		{
+			obj->setSelected(false);
+		}
+
+
+	for (auto clip : pasted) { if (wasSelection) { clip->selectViewOnCreate(true); } }
 
 	return true;
 }

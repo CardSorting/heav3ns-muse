@@ -28,6 +28,8 @@
 #include "AudioFileProcessorWaveView.h"
 
 #include <QPainter>
+#include <QPointer>
+#include "InstrumentTrack.h"
 
 #include "ComboBox.h"
 #include "DataFile.h"
@@ -256,12 +258,17 @@ void AudioFileProcessorView::sampleUpdated()
 
 void AudioFileProcessorView::openAudioFile()
 {
+	const QPointer<AudioFileProcessorView> owner(this); const QPointer<AudioFileProcessor> native(castModel<AudioFileProcessor>());
+	const QPointer<InstrumentTrack> track(native ? native->instrumentTrack() : nullptr); const QPointer<Song> song(Engine::getSong());
+	const QPointer<QObject> waveform(m_waveView);
 	QString af = FileDialog::openAudioFile();
-	if (af.isEmpty()) { return; }
+	if (af.isEmpty() || !owner || !native || !track || !song || Engine::getSong() != song.data() || castModel<AudioFileProcessor>() != native.data() || track->instrument() != native.data()) { return; }
 
-	castModel<AudioFileProcessor>()->setAudioFile(af);
-	Engine::getSong()->setModified();
-	m_waveView->updateSampleRange();
+	native->setAudioFile(af);
+	if (!owner || !native || !track || !song || Engine::getSong() != song.data() || track->instrument() != native.data()) { return; }
+	song->setModified();
+	if (owner && native && track && song && Engine::getSong() == song.data() && track->instrument() == native.data()
+		&& castModel<AudioFileProcessor>() == native.data() && waveform && waveform.data() == m_waveView) { m_waveView->updateSampleRange(); }
 }
 
 void AudioFileProcessorView::modelChanged()

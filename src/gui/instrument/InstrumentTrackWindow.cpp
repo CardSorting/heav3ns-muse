@@ -31,12 +31,17 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QPushButton>
+#include <QPointer>
+#include <QScopeGuard>
+#include <stdexcept>
 #include <QVBoxLayout>
 
 #include "AutomatableButton.h"
+#include "AudioEngine.h"
 #include "ComboBox.h"
 #include "ConfigManager.h"
 #include "DataFile.h"
+#include "NativeTrackSaveSnapshot.h"
 #include "EffectRackView.h"
 #include "embed.h"
 #include "Engine.h"
@@ -404,40 +409,26 @@ void InstrumentTrackWindow::modelChanged()
 
 void InstrumentTrackWindow::saveSettingsBtnClicked()
 {
-	FileDialog sfd(this, tr("Save preset"), "", tr("XML preset file (*.xpf)"));
-
-	QString presetRoot = ConfigManager::inst()->userPresetsDir();
-	if(!QDir(presetRoot).exists())
+	const QPointer<InstrumentTrackWindow> owner(this); const QPointer<InstrumentTrack> target(m_track); if (!target) { return; }
+	const QString instrument = target->instrumentName(); if (!owner || !target) { return; }
+	const QPointer<FileDialog> dialog(new FileDialog(this, tr("Save preset"), "", tr("XML preset file (*.xpf)")));
+	const auto cleanup = qScopeGuard([&] { delete dialog.data(); });
+	const QString presetRoot = ConfigManager::inst()->userPresetsDir();
+	if (!QDir(presetRoot).exists()) { QDir().mkdir(presetRoot); }
+	if (!QDir(presetRoot + instrument).exists()) { QDir(presetRoot).mkdir(instrument); }
+	dialog->setAcceptMode(FileDialog::AcceptSave); dialog->setDirectory(presetRoot + instrument); dialog->setFileMode(FileDialog::AnyFile);
+	QString name = target->name(); dialog->selectFile(name.remove(QRegularExpression(FILENAME_FILTER))); dialog->setDefaultSuffix("xpf");
+	dialog->exec();
+	if (!owner || !target || !dialog || owner->m_track != target.data() || dialog->result() != QDialog::Accepted || dialog->selectedFiles().isEmpty() || dialog->selectedFiles().first().isEmpty()) { return; }
+	const QString path = dialog->selectedFiles().first(); DataFile file(DataFile::Type::InstrumentTrackSettings);
+	try
 	{
-		QDir().mkdir(presetRoot);
+		const auto changes = Engine::audioEngine()->requestChangesGuard(); NativeTrackSaveSnapshot source(target.data(), false);
+		target->savePreset(file, file.content()); source.validate();
+		file.writeFile(path, false, [&] { source.validate(); if (!owner || owner->m_track != target.data()) { throw std::runtime_error("The instrument changed while saving its preset"); } });
 	}
-	if(!QDir(presetRoot + m_track->instrumentName()).exists())
-	{
-		QDir(presetRoot).mkdir(m_track->instrumentName());
-	}
-
-	sfd.setAcceptMode(FileDialog::AcceptSave);
-	sfd.setDirectory(presetRoot + m_track->instrumentName());
-	sfd.setFileMode( FileDialog::AnyFile );
-	QString fname = m_track->name();
-	sfd.selectFile(fname.remove(QRegularExpression(FILENAME_FILTER)));
-	sfd.setDefaultSuffix( "xpf");
-
-	if( sfd.exec() == QDialog::Accepted &&
-		!sfd.selectedFiles().isEmpty() &&
-		!sfd.selectedFiles().first().isEmpty() )
-	{
-		DataFile dataFile(DataFile::Type::InstrumentTrackSettings);
-		QDomElement& content(dataFile.content());
-
-		m_track->savePreset(dataFile, content);
-		//We don't want to save muted & solo settings when we're saving a preset
-		content.setAttribute("muted", 0);
-		content.setAttribute("solo", 0);
-		content.setAttribute("mutedBeforeSolo", 0);
-		QString f = sfd.selectedFiles()[0];
-		dataFile.writeFile(f);
-	}
+	catch (const std::exception& error) { DataFile::recordSerializationError(file, QString::fromUtf8(error.what())); file.writeFile(path); }
+	catch (...) { DataFile::recordSerializationError(file, "The native instrument preset could not be serialized"); file.writeFile(path); }
 }
 
 
@@ -572,14 +563,18 @@ void InstrumentTrackWindow::dragEnterEvent( QDragEnterEvent* event )
 
 void InstrumentTrackWindow::dropEvent( QDropEvent* event )
 {
+	const QPointer<InstrumentTrackWindow> owner(this); const QPointer<InstrumentTrack> target(m_track);
+	if (!target) { return; }
 	QString type = StringPairDrag::decodeKey( event );
 	QString value = StringPairDrag::decodeValue( event );
 
 	if( type == "instrument" )
 	{
-		m_track->loadInstrument( value, nullptr, true /* DnD */ );
+		target->loadInstrument(value, nullptr, true /* DnD */);
+		if (!owner || !target) { return; }
 
 		Engine::getSong()->setModified();
+		if (!owner || !target) { return; }
 
 		event->accept();
 		setFocus();
@@ -588,6 +583,7 @@ void InstrumentTrackWindow::dropEvent( QDropEvent* event )
 	{
 		DataFile dataFile(value);
 		m_track->replaceInstrument(dataFile);
+		if (!owner || !target) { return; }
 		event->accept();
 		setFocus();
 	}
@@ -596,14 +592,16 @@ void InstrumentTrackWindow::dropEvent( QDropEvent* event )
 		const QString ext = FileItem::extension( value );
 		Instrument * i = m_track->instrument();
 
-		if( !i->descriptor()->supportsFileType( ext ) )
+		if( !i || !i->descriptor()->supportsFileType( ext ) )
 		{
 			PluginFactory::PluginInfoAndKey piakn =
 				getPluginFactory()->pluginSupportingExtension(ext);
 			i = m_track->loadInstrument(piakn.info.name(), &piakn.key);
 		}
 
-		i->loadFile( value );
+		if (!owner || !target || !i) { return; }
+		i->loadFile(value);
+		if (!owner || !target) { return; }
 
 		event->accept();
 		setFocus();

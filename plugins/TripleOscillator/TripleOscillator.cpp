@@ -25,11 +25,24 @@
 
 #include <QDomElement>
 #include <QFileInfo>
+#include <QCoreApplication>
+#include <QPointer>
+#include <QThread>
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <stdexcept>
 
 #include "TripleOscillator.h"
 #include "AudioEngine.h"
 #include "AutomatableButton.h"
+#include "DataFile.h"
 #include "Engine.h"
+#include "FileResourceIO.h"
+#include "FileResourceSnapshot.h"
+#include "Mixer.h"
+#include "TrackContainer.h"
 #include "FileDialog.h"
 #include "InstrumentTrack.h"
 #include "Knob.h"
@@ -91,7 +104,7 @@ OscillatorObject::OscillatorObject( Model * _parent, int _idx ) :
 	m_modulationAlgoModel( static_cast<int>(Oscillator::ModulationAlgo::SignalMix), 0,
 				Oscillator::NumModulationAlgos-1, this,
 				tr( "Modulation type %1" ).arg( _idx+1 ) ),
-	m_useWaveTableModel(true),
+	m_useWaveTableModel(true, this, tr("Osc %1 anti-aliasing").arg(_idx + 1)),
 
 	m_sampleBuffer( new SampleBuffer ),
 	m_volumeLeft( 0.0f ),
@@ -103,6 +116,8 @@ OscillatorObject::OscillatorObject( Model * _parent, int _idx ) :
 	m_useWaveTable( true )
 {
 	// Connect knobs with Oscillators' inputs
+	m_waveShapeModel.setValueLabels(Oscillator::waveShapeLabels());
+	m_modulationAlgoModel.setValueLabels(Oscillator::modulationAlgoLabels());
 	connect( &m_volumeModel, SIGNAL( dataChanged() ),
 					this, SLOT( updateVolume() ), Qt::DirectConnection );
 	connect( &m_panModel, SIGNAL( dataChanged() ),
@@ -134,19 +149,97 @@ OscillatorObject::OscillatorObject( Model * _parent, int _idx ) :
 
 }
 
+// One native instrument owns the three resource transitions. All rosters/backing
+// are observed through weak actors and retained values after returned work.
+class TripleOscillator::ResourceGuard
+{
+public:
+	explicit ResourceGuard(TripleOscillator* owner, bool freezeControls = true) : m_owner(owner), m_freeze(freezeControls)
+	{
+		if (!QCoreApplication::instance() || QThread::currentThread() != QCoreApplication::instance()->thread()
+			|| !owner || owner->thread() != QThread::currentThread() || !Engine::audioEngine() || !Engine::getSong() || !Engine::mixer())
+		{ throw std::logic_error("TripleOscillator resource work requires the native application thread"); }
+		if (owner->m_changingResources) { throw std::logic_error("TripleOscillator resources/settings cannot reenter"); }
+		m_track = owner->instrumentTrack(); m_selected = m_track ? m_track->instrument() : nullptr; m_selection = m_selected.data();
+		m_container = m_track ? m_track->trackContainer() : nullptr; m_engine = Engine::audioEngine(); m_song = Engine::getSong(); m_mixer = Engine::mixer();
+		m_project = m_song->replacementGeneration(); m_routing = m_mixer->replacementGeneration(); m_filename = m_song->projectFileName();
+		for (int i = 0; i < NUM_OF_OSCILLATORS; ++i)
+		{
+			m_oscillators[i] = owner->m_osc[i]; if (!m_oscillators[i]) { throw std::logic_error("TripleOscillator has no native oscillator"); }
+			adopted(i); m_values[i] = values(m_oscillators[i].data());
+		}
+		m_captured = true; check(); m_changes.emplace(m_engine->requestChangesGuard()); owner->m_changingResources = true;
+	}
+	~ResourceGuard() { if (m_owner) { m_owner->m_changingResources = false; } }
+	void actors() const
+	{
+		if (!m_owner || m_owner->thread() != QThread::currentThread() || !m_track || m_track->isRetiring() || m_track->thread() != QThread::currentThread()
+			|| !m_owner->isFromTrack(m_track.data()) || m_selected.data() != m_selection || m_track->instrument() != m_selection
+			|| !m_container || m_track->trackContainer() != m_container.data() || std::find(m_container->tracks().begin(), m_container->tracks().end(), m_track.data()) == m_container->tracks().end()
+			|| !m_engine || Engine::audioEngine() != m_engine.data() || !m_song || Engine::getSong() != m_song.data() || !m_mixer || Engine::mixer() != m_mixer.data()
+			|| m_song->replacementGeneration() != m_project || m_mixer->replacementGeneration() != m_routing || m_song->projectFileName() != m_filename)
+		{ throw std::runtime_error("TripleOscillator native resource context changed"); }
+		for (int i = 0; i < NUM_OF_OSCILLATORS; ++i)
+		{ if (!m_oscillators[i] || m_owner->m_osc[i] != m_oscillators[i].data() || m_oscillators[i]->parent() != m_owner.data() || m_oscillators[i]->thread() != QThread::currentThread()) { throw std::runtime_error("Native oscillator retired or changed owner"); } }
+	}
+	void check() const
+	{
+		actors(); for (int i = 0; i < NUM_OF_OSCILLATORS; ++i)
+		{ const auto oscillator = m_oscillators[i].data(); if (oscillator->m_sampleBuffer != m_buffers[i] || oscillator->m_userAntiAliasWaveTable != m_tables[i] || oscillator->m_unresolvedWave != m_missing[i] || (m_freeze && values(oscillator) != m_values[i])) { throw std::runtime_error("Native oscillator state changed during resource work"); } }
+	}
+	void poll() const { check(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } check(); }
+	void adopted(int index)
+	{
+		// Constructor fills the roster incrementally; no virtual/cooperative work here.
+		const auto oscillator = m_oscillators[index].data(); const auto buffer = oscillator->m_sampleBuffer; const auto table = oscillator->m_userAntiAliasWaveTable; const QString missing = oscillator->m_unresolvedWave;
+		m_buffers[index] = buffer; m_tables[index] = table; m_missing[index] = missing; if (m_captured) { check(); }
+	}
+	void freezeControls() { check(); for (int i = 0; i < NUM_OF_OSCILLATORS; ++i) { m_values[i] = values(m_oscillators[i].data()); } m_freeze = true; }
+	void thawControls() { check(); m_freeze = false; }
+	int index(const OscillatorObject* oscillator) const
+	{ actors(); for (int i = 0; i < NUM_OF_OSCILLATORS; ++i) { if (m_oscillators[i].data() == oscillator) { return i; } } throw std::invalid_argument("Unknown native oscillator"); }
+private:
+	static std::array<float, 10> values(const OscillatorObject* o)
+	{ return {o->m_volumeModel.storedValue(), o->m_panModel.storedValue(), o->m_coarseModel.storedValue(), o->m_fineLeftModel.storedValue(), o->m_fineRightModel.storedValue(), o->m_phaseOffsetModel.storedValue(), o->m_stereoPhaseDetuningModel.storedValue(), o->m_waveShapeModel.storedValue(), o->m_modulationAlgoModel.storedValue(), o->m_useWaveTableModel.storedValue()}; }
+	QPointer<TripleOscillator> m_owner; QPointer<InstrumentTrack> m_track; QPointer<Instrument> m_selected; Instrument* m_selection = nullptr; QPointer<TrackContainer> m_container;
+	QPointer<AudioEngine> m_engine; QPointer<Song> m_song; QPointer<Mixer> m_mixer; std::uint64_t m_project = 0, m_routing = 0; QString m_filename;
+	std::array<QPointer<OscillatorObject>, NUM_OF_OSCILLATORS> m_oscillators;
+	std::array<std::shared_ptr<const SampleBuffer>, NUM_OF_OSCILLATORS> m_buffers;
+	std::array<std::shared_ptr<const OscillatorConstants::waveform_t>, NUM_OF_OSCILLATORS> m_tables;
+	std::array<QString, NUM_OF_OSCILLATORS> m_missing; std::array<std::array<float, 10>, NUM_OF_OSCILLATORS> m_values{}; bool m_freeze, m_captured = false;
+	std::optional<AudioEngine::RequestChangesGuard> m_changes; FileResourceIO::EventSuspension m_events;
+};
+
 void OscillatorObject::oscUserDefWaveDblClick()
 {
-	auto af = gui::FileDialog::openWaveformFile();
-	if( af != "" )
-	{
-		m_sampleBuffer = SampleBuffer::fromFile(af);
-		m_userAntiAliasWaveTable = Oscillator::generateAntiAliasUserWaveTable(m_sampleBuffer.get());
-		// TODO:
-		//m_usrWaveBtn->setToolTip(m_sampleBuffer->audioFile());
-	}
+	const QPointer<OscillatorObject> owner(this); const QPointer<TripleOscillator> instrument(dynamic_cast<TripleOscillator*>(parent()));
+	const QPointer<Song> song(Engine::getSong()); const auto generation = song ? song->replacementGeneration() : 0;
+	const QPointer<InstrumentTrack> track(instrument ? instrument->instrumentTrack() : nullptr);
+	const auto path = gui::FileDialog::openWaveformFile();
+	if (path.isEmpty() || !owner || !instrument || owner->parent() != instrument.data() || !track || track->isRetiring() || track->instrument() != instrument.data() || !song || Engine::getSong() != song.data() || song->replacementGeneration() != generation) { return; }
+	try { QString error; if (!owner->setUserWave(path, error) && song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError(error); } }
+	catch (const std::exception& error) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError(QString::fromUtf8(error.what())); } }
+	catch (...) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError("Native oscillator waveform loading failed"); } }
 }
 
+bool OscillatorObject::setUserWave(const QString& path, QString& error)
+{
+	const QString requested(path); auto instrument = dynamic_cast<TripleOscillator*>(parent());
+	if (!instrument) { throw std::logic_error("A native TripleOscillator must own the waveform"); }
+	TripleOscillator::ResourceGuard work(instrument); return instrument->setUserWaveImpl(this, requested, error, work);
+}
 
+bool TripleOscillator::setUserWaveImpl(OscillatorObject* oscillator, const QString& path, QString& error, ResourceGuard& work)
+{
+	const QString requested(path); const int index = work.index(oscillator); work.poll();
+	const auto buffer = SampleBuffer::fromFile(requested); work.check();
+	if (!buffer || (!requested.isEmpty() && buffer->empty()))
+	{ error = tr("The oscillator waveform could not be decoded: %1").arg(requested); return false; }
+	std::shared_ptr<const OscillatorConstants::waveform_t> table;
+	work.poll(); if (!buffer->empty()) { table = Oscillator::generateAntiAliasUserWaveTable(buffer.get()); } work.poll();
+	oscillator->m_sampleBuffer = buffer; oscillator->m_userAntiAliasWaveTable = std::move(table); oscillator->m_unresolvedWave.clear(); work.adopted(index);
+	error.clear(); emit oscillator->dataChanged(); work.check(); return true;
+}
 
 
 void OscillatorObject::updateVolume()
@@ -228,72 +321,86 @@ TripleOscillator::TripleOscillator( InstrumentTrack * _instrument_track ) :
 
 
 
-void TripleOscillator::saveSettings( QDomDocument & _doc, QDomElement & _this )
+void TripleOscillator::saveSettings(QDomDocument& document, QDomElement& element)
 {
-	for( int i = 0; i < NUM_OF_OSCILLATORS; ++i )
+	ResourceGuard work(this);
+	for (int i = 0; i < NUM_OF_OSCILLATORS; ++i)
 	{
-		QString is = QString::number( i );
-		m_osc[i]->m_volumeModel.saveSettings( _doc, _this, "vol" + is );
-		m_osc[i]->m_panModel.saveSettings( _doc, _this, "pan" + is );
-		m_osc[i]->m_coarseModel.saveSettings( _doc, _this, "coarse"
-									+ is );
-		m_osc[i]->m_fineLeftModel.saveSettings( _doc, _this, "finel" +
-									is );
-		m_osc[i]->m_fineRightModel.saveSettings( _doc, _this, "finer" +
-									is );
-		m_osc[i]->m_phaseOffsetModel.saveSettings( _doc, _this,
-							"phoffset" + is );
-		m_osc[i]->m_stereoPhaseDetuningModel.saveSettings( _doc, _this,
-							"stphdetun" + is );
-		m_osc[i]->m_waveShapeModel.saveSettings( _doc, _this,
-							"wavetype" + is );
-		m_osc[i]->m_modulationAlgoModel.saveSettings( _doc, _this,
-					"modalgo" + QString::number( i+1 ) );
-		m_osc[i]->m_useWaveTableModel.saveSettings( _doc, _this,
-					"useWaveTable" + QString::number (i+1 ) );
-		_this.setAttribute( "userwavefile" + is,
-					m_osc[i]->m_sampleBuffer->audioFile() );
+		work.poll(); const auto oscillator = m_osc[i]; const auto buffer = oscillator->m_sampleBuffer; const QString missing = oscillator->m_unresolvedWave;
+		oscillator->m_volumeModel.saveSettings(document, element, "vol" + QString::number(i)); work.check();
+		oscillator->m_panModel.saveSettings(document, element, "pan" + QString::number(i)); work.check();
+		oscillator->m_coarseModel.saveSettings(document, element, "coarse" + QString::number(i)); work.check();
+		oscillator->m_fineLeftModel.saveSettings(document, element, "finel" + QString::number(i)); work.check();
+		oscillator->m_fineRightModel.saveSettings(document, element, "finer" + QString::number(i)); work.check();
+		oscillator->m_phaseOffsetModel.saveSettings(document, element, "phoffset" + QString::number(i)); work.check();
+		oscillator->m_stereoPhaseDetuningModel.saveSettings(document, element, "stphdetun" + QString::number(i)); work.check();
+		oscillator->m_waveShapeModel.saveSettings(document, element, "wavetype" + QString::number(i)); work.check();
+		oscillator->m_modulationAlgoModel.saveSettings(document, element, "modalgo" + QString::number(i + 1)); work.check();
+		oscillator->m_useWaveTableModel.saveSettings(document, element, "useWaveTable" + QString::number(i + 1)); work.check();
+		const auto attribute = "userwavefile" + QString::number(i), marker = "userwaveunresolved" + QString::number(i);
+		element.setAttribute(attribute, missing.isEmpty() ? buffer->audioFile() : missing);
+		if (!missing.isEmpty()) { element.setAttribute(marker, 1); }
+		else { element.removeAttribute(marker); buffer->registerResourceSource(document, element, attribute, buffer); work.check(); }
 	}
 }
 
-
-
-
-void TripleOscillator::loadSettings( const QDomElement & _this )
+void TripleOscillator::loadSettings(const QDomElement& element)
 {
-	for( int i = 0; i < NUM_OF_OSCILLATORS; ++i )
+	const QDomElement settings(element); ResourceGuard work(this, false);
+	for (int i = 0; i < NUM_OF_OSCILLATORS; ++i)
 	{
-		const QString is = QString::number( i );
-		m_osc[i]->m_volumeModel.loadSettings( _this, "vol" + is );
-		m_osc[i]->m_panModel.loadSettings( _this, "pan" + is );
-		m_osc[i]->m_coarseModel.loadSettings( _this, "coarse" + is );
-		m_osc[i]->m_fineLeftModel.loadSettings( _this, "finel" + is );
-		m_osc[i]->m_fineRightModel.loadSettings( _this, "finer" + is );
-		m_osc[i]->m_phaseOffsetModel.loadSettings( _this,
-							"phoffset" + is );
-		m_osc[i]->m_stereoPhaseDetuningModel.loadSettings( _this,
-							"stphdetun" + is );
-		m_osc[i]->m_waveShapeModel.loadSettings( _this, "wavetype" +
-									is );
-		m_osc[i]->m_modulationAlgoModel.loadSettings( _this,
-					"modalgo" + QString::number( i+1 ) );
-		m_osc[i]->m_useWaveTableModel.loadSettings( _this,
-							"useWaveTable" + QString::number (i+1 ) );
-
-		if (auto userWaveFile = _this.attribute("userwavefile" + is); !userWaveFile.isEmpty())
+		work.poll(); const auto oscillator = m_osc[i]; const auto attribute = "userwavefile" + QString::number(i);
+		const QString filename = settings.attribute(attribute); const bool pending = settings.attribute("userwaveunresolved" + QString::number(i)) == "1";
+		DataFile::ResourceReferenceScope resource(settings, attribute); work.check();
+		if (filename.contains(QChar::Null) || (pending && filename.isEmpty())) { throw std::invalid_argument("An unresolved oscillator wave requires one valid filename"); }
+		QString absolute; bool absent = false;
+		if (!filename.isEmpty())
 		{
-			if (QFileInfo(PathUtil::toAbsolute(userWaveFile)).exists())
-			{
-				m_osc[i]->m_sampleBuffer = SampleBuffer::fromFile(userWaveFile);
-				m_osc[i]->m_userAntiAliasWaveTable = Oscillator::generateAntiAliasUserWaveTable(m_osc[i]->m_sampleBuffer.get());
-			}
-			else { Engine::getSong()->collectError(QString("%1: %2").arg(tr("Sample not found"), userWaveFile)); }
+			bool pathError = false; absolute = PathUtil::toAbsolute(filename, &pathError);
+			if (pathError || absolute.isEmpty()) { throw std::invalid_argument("Invalid native oscillator waveform source path"); }
+			if (pending && FileResourceSnapshot::hasRetainedSource(absolute)) { throw std::invalid_argument("An unresolved oscillator waveform cannot discard an accepted resource"); }
+			absent = !pending && !QFileInfo(FileResourceSnapshot::readableSourcePath(absolute)).exists(); work.check();
 		}
+		oscillator->m_volumeModel.loadSettings(settings, "vol" + QString::number(i)); work.check();
+		oscillator->m_panModel.loadSettings(settings, "pan" + QString::number(i)); work.check();
+		oscillator->m_coarseModel.loadSettings(settings, "coarse" + QString::number(i)); work.check();
+		oscillator->m_fineLeftModel.loadSettings(settings, "finel" + QString::number(i)); work.check();
+		oscillator->m_fineRightModel.loadSettings(settings, "finer" + QString::number(i)); work.check();
+		oscillator->m_phaseOffsetModel.loadSettings(settings, "phoffset" + QString::number(i)); work.check();
+		oscillator->m_stereoPhaseDetuningModel.loadSettings(settings, "stphdetun" + QString::number(i)); work.check();
+		oscillator->m_waveShapeModel.loadSettings(settings, "wavetype" + QString::number(i)); work.check();
+		oscillator->m_modulationAlgoModel.loadSettings(settings, "modalgo" + QString::number(i + 1)); work.check();
+		oscillator->m_useWaveTableModel.loadSettings(settings, "useWaveTable" + QString::number(i + 1)); work.check();
+		work.freezeControls();
+		if (pending || absent)
+		{
+			oscillator->m_sampleBuffer = SampleBuffer::emptyBuffer(); oscillator->m_userAntiAliasWaveTable.reset(); oscillator->m_unresolvedWave = absolute; work.adopted(i);
+			Engine::getSong()->collectUnresolvedResource(absolute); work.check();
+		}
+		else { QString error; if (!setUserWaveImpl(oscillator, filename, error, work)) { Engine::getSong()->collectError(error); work.check(); } }
+		work.thawControls();
 	}
 }
 
+std::vector<Plugin::FileResource> TripleOscillator::fileResources() const
+{
+	std::vector<FileResource> result;
+	for (int i = 0; i < NUM_OF_OSCILLATORS; ++i)
+	{
+		result.push_back({QString("oscillator%1").arg(i + 1), tr("Oscillator %1 waveform").arg(i + 1),
+			m_osc[i]->userWaveFile(), {}, &m_osc[i]->m_waveShapeModel,
+			static_cast<float>(Oscillator::WaveShape::UserDefined), true, m_osc[i]->m_sampleBuffer, m_osc[i]->userWaveUnresolved()});
+	}
+	return result;
+}
 
-
+bool TripleOscillator::setFileResource(const QString& key, const QString& path, QString& error)
+{
+	const QString requestedKey(key), requestedPath(path); ResourceGuard work(this);
+	for (int i = 0; i < NUM_OF_OSCILLATORS; ++i)
+	{ if (requestedKey == QString("oscillator%1").arg(i + 1)) { return setUserWaveImpl(m_osc[i], requestedPath, error, work); } }
+	error = tr("Unknown TripleOscillator resource: %1").arg(requestedKey); return false;
+}
 
 QString TripleOscillator::nodeName() const
 {
@@ -725,6 +832,7 @@ void TripleOscillatorView::modelChanged()
 		m_oscKnobs[i].m_multiBandWaveTableButton->setModel(
 					&t->m_osc[i]->m_useWaveTableModel );
 
+		m_oscKnobs[i].m_userWaveButton->setToolTip(t->m_osc[i]->userWaveFile());
 		connect( m_oscKnobs[i].m_userWaveButton,
 						SIGNAL( doubleClicked() ),
 				t->m_osc[i], SLOT( oscUserDefWaveDblClick() ) );

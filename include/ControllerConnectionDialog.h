@@ -52,6 +52,7 @@ class TabWidget;
 class LcdSpinBox;
 class LedCheckBox;
 class MidiPortMenu;
+class ToolButton;
 
 
 class ControllerConnectionDialog : public QDialog
@@ -88,6 +89,7 @@ private:
 	LcdSpinBox * m_midiControllerSpinBox;
 	LedCheckBox * m_midiAutoDetectCheckBox;
 	MidiPortMenu * m_readablePorts;
+	ToolButton* m_portsButton = nullptr;
 	BoolModel m_midiAutoDetect;
 
 	// User

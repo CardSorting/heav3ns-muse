@@ -24,11 +24,18 @@
 
 
 #include "VstEffect.h"
+#include "AudioEngine.h"
+#include "Engine.h"
 
 #include "GuiApplication.h"
 #include "Song.h"
 #include "TextFloat.h"
 #include "VstPlugin.h"
+#include "FileResourceIO.h"
+#include <QScopeGuard>
+#include <QScopedValueRollback>
+#include <memory>
+#include <stdexcept>
 #include "VstSubPluginFeatures.h"
 
 #include "embed.h"
@@ -62,7 +69,7 @@ VstEffect::VstEffect( Model * _parent,
 			const Descriptor::SubPluginFeatures::Key * _key ) :
 	Effect( &vsteffect_plugin_descriptor, _parent, _key ),
 	m_pluginMutex(),
-	m_key( *_key ),
+	m_key( _key ? *_key : EffectKey{} ),
 	m_vstControls( this )
 {
 	bool loaded = false;
@@ -73,6 +80,7 @@ VstEffect::VstEffect( Model * _parent,
 	setDisplayName( m_key.attributes["file"].section( ".dll", 0, 0 ).isEmpty()
 		? m_key.name : m_key.attributes["file"].section( ".dll", 0, 0 ) );
 
+	setOkay(loaded);
 	setDontRun(!loaded);
 }
 
@@ -87,8 +95,8 @@ Effect::ProcessStatus VstEffect::processImpl(SampleFrame* buf, const f_cnt_t fra
 	std::memcpy(tempBuf.data(), buf, sizeof(SampleFrame) * frames);
 	if (m_pluginMutex.tryLock(Engine::getSong()->isExporting() ? -1 : 0))
 	{
+		const auto unlock = qScopeGuard([this] { m_pluginMutex.unlock(); });
 		m_plugin->process(tempBuf.data(), tempBuf.data());
-		m_pluginMutex.unlock();
 	}
 
 	const float w = wetLevel();
@@ -107,32 +115,36 @@ Effect::ProcessStatus VstEffect::processImpl(SampleFrame* buf, const f_cnt_t fra
 
 bool VstEffect::openPlugin(const QString& plugin)
 {
-	gui::TextFloat* tf = nullptr;
-	if( gui::getGUI() != nullptr )
+	m_vstControls.m_parameters.checkOwner();
+	if (m_vstControls.m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+	QScopedValueRollback<bool> operation(m_vstControls.m_parameterOperation, true);
+	FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	std::unique_ptr<gui::TextFloat> loading;
+	if (gui::getGUI())
 	{
-		tf = gui::TextFloat::displayMessage(
-			VstPlugin::tr( "Loading plugin" ),
-			VstPlugin::tr( "Please wait while loading VST plugin..." ),
-				PLUGIN_NAME::getIconPixmap( "logo", 24, 24 ), 0 );
+		loading.reset(gui::TextFloat::displayMessage(VstPlugin::tr("Loading plugin"),
+			VstPlugin::tr("Please wait while loading VST plugin..."), PLUGIN_NAME::getIconPixmap("logo", 24, 24), 0));
 	}
-
-	QMutexLocker ml( &m_pluginMutex ); Q_UNUSED( ml );
-	m_plugin = QSharedPointer<VstPlugin>(new VstPlugin(plugin));
-	if( m_plugin->failed() )
+	try
 	{
+		{
+			QMutexLocker lock(&m_pluginMutex);
+			m_plugin = QSharedPointer<VstPlugin>(new VstPlugin(plugin));
+			if (m_plugin->failed()) { throw std::runtime_error(VstPlugin::tr("The VST plugin %1 could not be loaded.").arg(plugin).toStdString()); }
+			m_vstControls.m_parameters.synchronize(m_plugin->parameterDump());
+		}
+		m_key.attributes["file"] = plugin;
+		return true;
+	}
+	catch (const std::exception& error)
+	{
+		m_vstControls.m_parameters.clear();
 		m_plugin.clear();
-		delete tf;
-		collectErrorForUI(VstPlugin::tr("The VST plugin %1 could not be loaded.").arg(plugin));
+		collectErrorForUI(QString::fromUtf8(error.what()));
 		return false;
 	}
-
-	delete tf;
-
-	m_key.attributes["file"] = plugin;
-	return true;
 }
-
-
 
 
 extern "C"

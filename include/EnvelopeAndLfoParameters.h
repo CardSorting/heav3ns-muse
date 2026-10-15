@@ -145,7 +145,11 @@ public:
 	const TempoSyncKnobModel& getLfoSpeedModel() const { return m_lfoSpeedModel; }
 	const BoolModel& getX100Model() const { return m_x100Model; }
 	const IntModel& getLfoWaveModel() const { return m_lfoWaveModel; }
+	IntModel& getLfoWaveModel() { return m_lfoWaveModel; }
 	std::shared_ptr<const SampleBuffer> getLfoUserWave() const { return m_userWave; }
+	QString lfoUserWaveFile() const { return m_unresolvedWave.isEmpty() ? m_userWave->audioFile() : m_unresolvedWave; }
+	bool lfoUserWaveUnresolved() const { return !m_unresolvedWave.isEmpty(); }
+	bool setLfoUserWave(const QString& path, QString& error, bool select = false);
 
 public slots:
 	void updateSampleVars();
@@ -156,6 +160,10 @@ protected:
 
 
 private:
+	class ResourceGuard;
+	bool setLfoUserWaveImpl(const QString& path, QString& error, bool select, ResourceGuard& work);
+	QString m_unresolvedWave;
+	bool m_changingResource = false;
 	static LfoInstances * s_lfoInstances;
 	bool m_used;
 

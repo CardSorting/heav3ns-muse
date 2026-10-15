@@ -68,7 +68,9 @@ public:
 
 	void addTrack( Track * _track );
 	void removeTrack( Track * _track );
-	void moveTrack(Track* track, int indexTo);
+	// Move to a final zero-based row, preserving native pattern-column ownership.
+	// Invalid, foreign-thread or reentrant requests leave the container unchanged.
+	bool moveTrack(Track* track, int indexTo);
 
 	virtual void updateAfterTrackAdd();
 
@@ -110,6 +112,10 @@ protected:
 
 private:
 	TrackList m_tracks;
+	bool m_movingTrack = false;
+	bool m_updatingTrackSolo = false;
+	bool m_savingTracks = false;
+	bool m_loadingTracks = false;
 
 	Type m_TrackContainerType;
 

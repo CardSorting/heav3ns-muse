@@ -33,6 +33,8 @@
 
 #include "MidiClient.h"
 #include "MidiPort.h"
+#include <atomic>
+#include <QSet>
 
 
 class QLineEdit;
@@ -41,6 +43,7 @@ class QLineEdit;
 namespace lmms
 {
 
+namespace detail { struct WinMmMidiApi; }
 
 class MidiWinMM : public QObject, public MidiClient
 {
@@ -48,6 +51,12 @@ class MidiWinMM : public QObject, public MidiClient
 public:
 	MidiWinMM();
 	virtual ~MidiWinMM();
+	bool hasQueuedInputDelivery() const override { return true; }
+	InputBackendStatus inputBackendStatus() const override;
+	OutputBackendStatus outputBackendStatus() const override;
+	void retainFailedOutputCleanup(const MidiPort* port, std::uint16_t channels) noexcept override;
+	bool isAvailable() const;
+	static NativeRetirementStatus retiredHandleStatus();
 
 	inline static QString probeDevice()
 	{
@@ -78,12 +87,14 @@ public:
 	// list devices as ports
 	virtual QStringList readablePorts() const
 	{
+		const auto lock = std::lock_guard{m_devicesMutex};
 		return m_inputDevices.values();
 	}
 
 	virtual QStringList writablePorts() const
 	{
-		return m_outputDevices.values();
+		const auto lock = std::lock_guard{m_devicesMutex};
+		QStringList names; for (const auto& output : m_outputDevices) { names.append(output.name); } return names;
 	}
 
 	// return name of port which specified MIDI event came from
@@ -121,17 +132,49 @@ private:// slots:
 
 
 private:
+	friend class MidiWinMMTestAccess;
+	friend class WinMmMidiIoTestAccess;
+	explicit MidiWinMM(bool openPhysicalDevices);
+	MidiWinMM(const detail::WinMmMidiApi& api, bool openPhysicalDevices);
+	bool readyForPortTransfer() const override;
+	void finishPortTransferOutput(const std::function<bool()>& cancelled) override;
+	// Caller holds output lifetime, never the device-table mutex, during native calls.
+	MMRESULT submitShortMessage(HMIDIOUT handle, DWORD message) noexcept;
+	MMRESULT flushOutputCleanup(HMIDIOUT handle, const std::function<bool()>& cancelled);
+	void flushAllOutputCleanup(const std::function<bool()>& cancelled);
 	void openDevices();
 	void closeDevices();
+	DWORD_PTR registerInput(HMIDIIN handle);
+	void removeInputToken(DWORD_PTR token);
+	void recordError(MMRESULT result) noexcept;
+	void recordOutputError(MMRESULT result) noexcept;
+	void handleInputFailure(HMIDIIN handle, bool closed);
 
 	static void WINAPI CALLBACK inputCallback( HMIDIIN _hm, UINT _msg,
 						DWORD_PTR _inst,
 						DWORD_PTR _param1,
-							DWORD_PTR _param2 );
+							DWORD_PTR _param2 ) noexcept;
 	void handleInputEvent( HMIDIIN _hm, DWORD _ev );
 
+	const detail::WinMmMidiApi& m_api;
+	std::uint64_t m_nativeOwnerId = 0;
 	QMap<HMIDIIN, QString> m_inputDevices;
-	QMap<HMIDIOUT, QString> m_outputDevices;
+	mutable std::mutex m_devicesMutex;
+	std::mutex m_outputMutex;
+	struct OutputDevice
+	{
+		QString name;
+		MMRESULT result = MMSYSERR_NOERROR;
+		std::uint16_t cleanupChannels = 0; // Owns no retired MidiPort pointer.
+		// Possible activations since the last complete channel cleanup. Ordinary
+		// note releases cannot prove that another source/pedal on the channel ended.
+		std::uint16_t usedChannels = 0;
+	};
+	QMap<HMIDIOUT, OutputDevice> m_outputDevices;
+	bool m_closing = false; // Device-table mutex; remains true after close until open.
+	QSet<HMIDIIN> m_startedInputs;
+	std::atomic<int> m_nativeError{0};
+	std::atomic<int> m_lastOutputError{0};
 
 	// subscriptions
 	using SubMap = QMap<QString, MidiPortList>;

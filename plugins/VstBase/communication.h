@@ -86,7 +86,15 @@ enum VstRemoteMessageIDs
 	IdVstPluginUniqueID,
 	IdVstSetParameter,
 	IdVstParameterCount,
-	IdVstParameterDump
+	IdVstParameterDump,
+	// Appended to retain the existing native message numbering.
+	IdVstProgramPage,
+	IdVstSelectProgram,
+	IdVstPresetFile,
+	IdVstSetParameterDumpChecked,
+	IdVstParameterPage,
+	IdVstParameterTextPage,
+	IdVstParameterRestore
 
 } ;
 

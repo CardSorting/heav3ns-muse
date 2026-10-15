@@ -29,11 +29,13 @@
 #include <QPointer>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 
 #include "Knob.h"
 #include "JournallingObject.h"
 #include "RemotePlugin.h"
+#include "Plugin.h"
 
 #include "vstbase_export.h"
 
@@ -87,7 +89,7 @@ public:
 		return m_currentProgramName;
 	}
 
-	inline const QString& allProgramNames() const
+	inline const QStringList& allProgramNames() const
 	{
 		return m_allProgramNames;
 	}
@@ -103,6 +105,10 @@ public:
 	}
 
 	int currentProgram();
+	Plugin::NativeProgramPage programPage(int offset, int limit);
+	Plugin::NativePresetInfo inspectPresetFile(const QString& path);
+	Plugin::NativePresetInfo loadPresetFile(const QString& path);
+	Plugin::NativePresetInfo savePresetFile(const QString& path, bool bank);
 
 	const QMap<QString, QString> & parameterDump();
 	void setParameterDump( const QMap<QString, QString> & _pdump );
@@ -127,7 +133,7 @@ public:
 public slots:
 	void setTempo( lmms::bpm_t _bpm );
 	void updateSampleRate();
-	void openPreset();
+	QString presetOpenPath();
 	void setProgram( int index );
 	void rotateProgram( int offset );
 	void loadProgramNames();
@@ -135,7 +141,7 @@ public slots:
 	void loadParameterDisplays();
 	void updateParameterLabel(int index);
 	void updateParameterDisplay(int index);
-	void savePreset();
+	QString presetSavePath();
 	void setParam( int i, float f );
 	void idleUpdate();
 
@@ -146,8 +152,13 @@ public slots:
 	void handleClientEmbed();
 
 private:
+	void requestParameterText(int messageId, int index = -1);
+	void presetFileRequest(const QString& path, const char* operation);
+	Plugin::NativePresetInfo readPresetFile(const QString& path, bool apply);
 	void loadChunk( const QByteArray & _chunk );
 	QByteArray saveChunk();
+	QByteArray saveNativePresetState();
+	void loadNativePresetState(const QByteArray& bytes);
 
 	void toggleEditorVisibility(int visible = -1);
 
@@ -162,13 +173,14 @@ private:
 	QString m_vendorString;
 	QString m_productString;
 	QString m_currentProgramName;
-	QString m_allProgramNames;
+	QStringList m_allProgramNames;
 	std::vector<QString> m_allParameterLabels;
 	std::vector<QString> m_allParameterDisplays;
 
 	QString p_name;
 
 	QMap<QString, QString> m_parameterDump;
+	int m_parameterCount = -1;
 
 	int m_currentProgram;
 

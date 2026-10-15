@@ -91,9 +91,6 @@ TrackView::TrackView(Track* track, TrackContainerView* tcv)
 	connect(&m_track->m_mutedModel, SIGNAL(dataChanged()),
 			this, SLOT(muteChanged()));
 
-	connect( &m_track->m_soloModel, SIGNAL(dataChanged()),
-			m_track, SLOT(toggleSolo()), Qt::DirectConnection );
-	
 	auto trackGrip = m_trackOperationsWidget.getTrackGrip();
 	connect(trackGrip, &TrackGrip::grabbed, this, &TrackView::onTrackGripGrabbed);
 	connect(trackGrip, &TrackGrip::released, this, &TrackView::onTrackGripReleased);

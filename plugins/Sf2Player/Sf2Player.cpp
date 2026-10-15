@@ -24,15 +24,36 @@
  */
 
 #include "Sf2Player.h"
+#include "Sf2BankSnapshot.h"
+#include "Sf2SynthState.h"
 
+#include <algorithm>
+#include <exception>
+#include <limits>
+#include <memory>
+#include <new>
 #include <fluidsynth.h>
+#include <QFileInfo>
+#include <QCoreApplication>
+#include <QDir>
+#include <QPointer>
+#include <QThread>
+#include <optional>
+#include <stdexcept>
+#include "FileResourceIO.h"
+#include "AudioFileDevice.h"
+#include "RemotePlugin.h"
+#include "TrackRenderScope.h"
+#include "Mixer.h"
+#include "TrackContainer.h"
+#include <QScopeGuard>
 #include <QDebug>
 #include <QDomElement>
 #include <QLabel>
 
-#include "ArrayVector.h"
 #include "AudioEngine.h"
 #include "ConfigManager.h"
+#include "DataFile.h"
 #include "FileDialog.h"
 #include "Engine.h"
 #include "InstrumentTrack.h"
@@ -62,6 +83,23 @@
 namespace lmms
 {
 
+
+namespace
+{
+// Called only after native application-thread resource admission.
+bool soundFontRenderConsuming()
+{
+	const auto engine = Engine::audioEngine(); const auto song = Engine::getSong();
+	return RemotePlugin::hasActiveRenderContext() || (engine && dynamic_cast<AudioFileDevice*>(engine->audioDev()))
+		|| (song && (song->isExporting() || song->hasPendingExportCleanup()));
+}
+
+bool soundFontRenderBusy()
+{
+	const auto engine = Engine::audioEngine();
+	return soundFontRenderConsuming() || TrackRenderScope::hasActiveSelection() || (engine && engine->hasStoredAudioDevice());
+}
+}
 
 extern "C"
 {
@@ -115,32 +153,85 @@ private:
 
 struct Sf2PluginData
 {
-	int midiNote;
-	int lastPanning;
-	float lastVelocity;
-	// The soundfonts I checked used at most two voices per note, so space for
-	// four should be safe. This may need to be increased if a soundfont with
-	// more voices per note is found.
-	ArrayVector<FluidVoice, 4> fluidVoices;
-	bool isNew;
-	f_cnt_t offset;
-	bool noteOffSent;
-	panning_t panning;
+	int midiNote = 0;
+	int velocity = 0;
+	std::vector<FluidVoice> fluidVoices;
+	std::uint64_t generation = 0;
+	bool isNew = true;
+	bool started = false;
+	f_cnt_t offset = 0;
+	bool noteOffSent = false;
+	panning_t panning = PanningCenter;
+	float detuning = 0;
 };
 
 
+
+// Model signal suppression must survive a callback retiring the native owner.
+class Sf2ModelSignals
+{
+public:
+	Sf2ModelSignals(QObject* bank, QObject* patch) : m_bank(bank), m_patch(patch), m_bankBlocked(bank->blockSignals(true)), m_patchBlocked(patch->blockSignals(true)) { }
+	~Sf2ModelSignals() { if (m_bank) { m_bank->blockSignals(m_bankBlocked); } if (m_patch) { m_patch->blockSignals(m_patchBlocked); } }
+private:
+	QPointer<QObject> m_bank, m_patch; bool m_bankBlocked, m_patchBlocked;
+};
+
+class Sf2Instrument::ResourceGuard
+{
+public:
+	explicit ResourceGuard(Sf2Instrument* owner, bool freeze = true, bool admit = true) : m_owner(owner), m_freeze(freeze), m_admit(admit)
+	{
+		if (!QCoreApplication::instance() || QThread::currentThread() != QCoreApplication::instance()->thread() || !owner || owner->thread() != QThread::currentThread()
+			|| !Engine::audioEngine() || !Engine::getSong() || !Engine::mixer()) { throw std::logic_error("SoundFont resource work requires the native application thread"); }
+		if (admit && owner->m_changingResources) { throw std::logic_error("SoundFont settings/resources cannot reenter"); }
+		m_track = owner->instrumentTrack(); m_selected = m_track ? m_track->instrument() : nullptr; m_selection = m_selected.data(); m_container = m_track ? m_track->trackContainer() : nullptr;
+		m_engine = Engine::audioEngine(); m_song = Engine::getSong(); m_mixer = Engine::mixer(); m_project = m_song->replacementGeneration(); m_routing = m_mixer->replacementGeneration(); m_filename = m_song->projectFileName(); m_rate = m_engine->outputSampleRate();
+		m_values = values(owner); adopted(); m_changes.emplace(m_engine->requestChangesGuard()); if (admit) { owner->m_changingResources = true; }
+	}
+	~ResourceGuard() { if (m_admit && m_owner) { m_owner->m_changingResources = false; } }
+	void actors() const
+	{
+		if (!m_owner || m_owner->thread() != QThread::currentThread() || !m_track || m_track->isRetiring() || !m_owner->isFromTrack(m_track.data()) || m_track->thread() != QThread::currentThread()
+			|| m_selected.data() != m_selection || m_track->instrument() != m_selection || !m_container || m_track->trackContainer() != m_container.data()
+			|| std::find(m_container->tracks().begin(), m_container->tracks().end(), m_track.data()) == m_container->tracks().end()
+			|| !m_engine || Engine::audioEngine() != m_engine.data() || m_engine->outputSampleRate() != m_rate || !m_song || Engine::getSong() != m_song.data()
+			|| !m_mixer || Engine::mixer() != m_mixer.data() || m_song->replacementGeneration() != m_project || m_mixer->replacementGeneration() != m_routing || m_song->projectFileName() != m_filename)
+		{ throw std::runtime_error("Native SoundFont resource context changed"); }
+	}
+	void check() const
+	{ actors(); if (m_owner->m_synth != m_synth || m_owner->m_settings != m_settings || m_owner->m_synthGeneration != m_generation || m_owner->m_font != m_font || m_owner->m_fontId != m_fontId
+		|| m_owner->m_bankSnapshot != m_snapshot || m_owner->m_filename != m_file || m_owner->m_unresolvedBank != m_unresolved || (m_freeze && values(m_owner.data()) != m_values)) { throw std::runtime_error("Native SoundFont synth/resource/controls changed"); } }
+	void poll() const { check(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } check(); }
+	void adopted()
+	{
+		actors(); const auto snapshot = m_owner->m_bankSnapshot; const QString file = m_owner->m_filename; const bool unresolved = m_owner->m_unresolvedBank; auto synth = m_owner->m_synth; auto settings = m_owner->m_settings; auto font = m_owner->m_font; const auto fontId = m_owner->m_fontId; const auto generation = m_owner->m_synthGeneration;
+		m_snapshot = snapshot; m_file = file; m_unresolved = unresolved; m_synth = synth; m_settings = settings; m_font = font; m_fontId = fontId; m_generation = generation; check();
+	}
+	void freezeControls() { check(); m_values = values(m_owner.data()); m_freeze = true; }
+	void thawControls() { check(); m_freeze = false; }
+	void selectModels(int bank, int patch)
+	{ check(); m_values[0] = bank; m_owner->m_bankNum.setValue(bank); check(); m_values[1] = patch; m_owner->m_patchNum.setValue(patch); check(); }
+private:
+	static std::array<float, 13> values(const Sf2Instrument* p)
+	{ return {p->m_bankNum.storedValue(), p->m_patchNum.storedValue(), p->m_gain.storedValue(), p->m_reverbOn.storedValue(), p->m_reverbRoomSize.storedValue(), p->m_reverbDamping.storedValue(), p->m_reverbWidth.storedValue(), p->m_reverbLevel.storedValue(), p->m_chorusOn.storedValue(), p->m_chorusNum.storedValue(), p->m_chorusLevel.storedValue(), p->m_chorusSpeed.storedValue(), p->m_chorusDepth.storedValue()}; }
+	QPointer<Sf2Instrument> m_owner; QPointer<InstrumentTrack> m_track; QPointer<Instrument> m_selected; Instrument* m_selection = nullptr; QPointer<TrackContainer> m_container;
+	QPointer<AudioEngine> m_engine; QPointer<Song> m_song; QPointer<Mixer> m_mixer; std::uint64_t m_project = 0, m_routing = 0, m_generation = 0; sample_rate_t m_rate = 0;
+	fluid_synth_t* m_synth = nullptr; fluid_settings_t* m_settings = nullptr; fluid_sfont_t* m_font = nullptr; int m_fontId = -1; QString m_filename, m_file; std::shared_ptr<Sf2BankSnapshot> m_snapshot;
+	std::array<float, 13> m_values{}; bool m_unresolved = false; bool m_freeze, m_admit; std::optional<AudioEngine::RequestChangesGuard> m_changes; FileResourceIO::EventSuspension m_events;
+};
 
 Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
 	Instrument(_instrument_track, &sf2player_plugin_descriptor, nullptr, Flag::IsSingleStreamed),
 	m_resampler(AudioResampler::Mode::Linear),
 	m_synth(nullptr),
 	m_font( nullptr ),
-	m_fontId( 0 ),
+	m_fontId( -1 ),
 	m_filename( "" ),
 	m_lastMidiPitch( -1 ),
 	m_lastMidiPitchRange( -1 ),
 	m_channel( 1 ),
-	m_bankNum( 0, 0, 999, this, tr("Bank") ),
+	m_bankNum( 0, 0, 16383, this, tr("Bank") ),
 	m_patchNum( 0, 0, 127, this, tr("Patch") ),
 	m_gain( 1.0f, 0.0f, 5.0f, 0.01f, this, tr( "Gain" ) ),
 	m_reverbOn( false, this, tr( "Reverb" ) ),
@@ -197,7 +288,17 @@ Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
 	connect( &m_bankNum, SIGNAL( dataChanged() ), this, SLOT( updatePatch() ) );
 	connect( &m_patchNum, SIGNAL( dataChanged() ), this, SLOT( updatePatch() ) );
 
-	connect(Engine::audioEngine(), SIGNAL(sampleRateChanged()), this, SLOT(reloadSynth()));
+	const QPointer<AudioEngine> engine(Engine::audioEngine());
+	connect(engine.data(), &AudioEngine::sampleRateChanged, this, [this, engine] {
+		try { reloadSynth(); }
+		catch (...)
+		{
+			// Do not unwind Qt dispatch. Native engine transitions propagate the
+			// retained failure after all connected notification slots return.
+			if (engine && !engine->reportDeviceNotificationFailure(std::current_exception()))
+			{ qWarning("SoundFont reload failed outside a native device notification frame"); }
+		}
+	});
 
 	// Gain
 	connect( &m_gain, SIGNAL( dataChanged() ), this, SLOT( updateGain() ) );
@@ -215,7 +316,7 @@ Sf2Instrument::Sf2Instrument( InstrumentTrack * _instrument_track ) :
 	connect( &m_chorusLevel, SIGNAL( dataChanged() ), this, SLOT( updateChorus() ) );
 	connect( &m_chorusSpeed, SIGNAL( dataChanged() ), this, SLOT( updateChorus() ) );
 	connect( &m_chorusDepth, SIGNAL( dataChanged() ), this, SLOT( updateChorus() ) );
-	
+
 	// Microtuning
 	connect(Engine::getSong(), &Song::scaleListChanged, this, &Sf2Instrument::updateTuning);
 	connect(Engine::getSong(), &Song::keymapListChanged, this, &Sf2Instrument::updateTuning);
@@ -243,101 +344,167 @@ Sf2Instrument::~Sf2Instrument()
 
 
 
-void Sf2Instrument::saveSettings( QDomDocument & _doc, QDomElement & _this )
+void Sf2Instrument::saveSettings(QDomDocument& document, QDomElement& element)
 {
-	_this.setAttribute( "src", m_filename );
-	m_patchNum.saveSettings( _doc, _this, "patch" );
-	m_bankNum.saveSettings( _doc, _this, "bank" );
-
-	m_gain.saveSettings( _doc, _this, "gain" );
-
-	m_reverbOn.saveSettings( _doc, _this, "reverbOn" );
-	m_reverbRoomSize.saveSettings( _doc, _this, "reverbRoomSize" );
-	m_reverbDamping.saveSettings( _doc, _this, "reverbDamping" );
-	m_reverbWidth.saveSettings( _doc, _this, "reverbWidth" );
-	m_reverbLevel.saveSettings( _doc, _this, "reverbLevel" );
-
-	m_chorusOn.saveSettings( _doc, _this, "chorusOn" );
-	m_chorusNum.saveSettings( _doc, _this, "chorusNum" );
-	m_chorusLevel.saveSettings( _doc, _this, "chorusLevel" );
-	m_chorusSpeed.saveSettings( _doc, _this, "chorusSpeed" );
-	m_chorusDepth.saveSettings( _doc, _this, "chorusDepth" );
+	ResourceGuard work(this); const QString filename = m_filename; const auto snapshot = m_bankSnapshot;
+	element.setAttribute("src", filename);
+	if (m_unresolvedBank) { element.setAttribute("unresolved", 1); } else { element.removeAttribute("unresolved"); }
+	if (snapshot) { DataFile::registerResourceSnapshot(document, element, "src", snapshot); work.check(); }
+	m_patchNum.saveSettings(document, element, "patch"); work.check();
+	m_bankNum.saveSettings(document, element, "bank"); work.check();
+	m_gain.saveSettings(document, element, "gain"); work.check();
+	m_reverbOn.saveSettings(document, element, "reverbOn"); work.check();
+	m_reverbRoomSize.saveSettings(document, element, "reverbRoomSize"); work.check();
+	m_reverbDamping.saveSettings(document, element, "reverbDamping"); work.check();
+	m_reverbWidth.saveSettings(document, element, "reverbWidth"); work.check();
+	m_reverbLevel.saveSettings(document, element, "reverbLevel"); work.check();
+	m_chorusOn.saveSettings(document, element, "chorusOn"); work.check();
+	m_chorusNum.saveSettings(document, element, "chorusNum"); work.check();
+	m_chorusLevel.saveSettings(document, element, "chorusLevel"); work.check();
+	m_chorusSpeed.saveSettings(document, element, "chorusSpeed"); work.check();
+	m_chorusDepth.saveSettings(document, element, "chorusDepth"); work.check();
 }
 
-
-
-
-void Sf2Instrument::loadSettings( const QDomElement & _this )
+void Sf2Instrument::loadSettings(const QDomElement& element)
 {
-	QString src = _this.attribute("src");
-	if (!src.isEmpty())
+	const QDomElement settings(element); const QString path = settings.attribute("src"); const bool pending = settings.attribute("unresolved") == "1"; ResourceGuard work(this, false);
+	work.poll(); DataFile::ResourceReferenceScope resource(settings, "src"); work.check();
+	if (path.contains(QChar::Null) || (pending && path.isEmpty())) { throw std::invalid_argument("An unresolved SoundFont requires one valid filename"); }
+	QString absolute; bool absent = false;
+	if (!path.isEmpty())
 	{
-		openFile(src, false);
-		m_patchNum.loadSettings(_this, "patch");
-		m_bankNum.loadSettings(_this, "bank");
+		bool invalid = false; absolute = PathUtil::toAbsolute(path, &invalid);
+		if (invalid || absolute.isEmpty()) { throw std::invalid_argument("Invalid native SoundFont source path"); }
+		if (pending && FileResourceSnapshot::hasRetainedSource(absolute)) { throw std::invalid_argument("An unresolved SoundFont cannot discard an accepted resource"); }
+		absent = !pending && !QFileInfo(FileResourceSnapshot::readableSourcePath(absolute)).exists(); work.check();
 	}
-	
-	m_gain.loadSettings( _this, "gain" );
-
-	m_reverbOn.loadSettings( _this, "reverbOn" );
-	m_reverbRoomSize.loadSettings( _this, "reverbRoomSize" );
-	m_reverbDamping.loadSettings( _this, "reverbDamping" );
-	m_reverbWidth.loadSettings( _this, "reverbWidth" );
-	m_reverbLevel.loadSettings( _this, "reverbLevel" );
-
-	m_chorusOn.loadSettings( _this, "chorusOn" );
-	m_chorusNum.loadSettings( _this, "chorusNum" );
-	m_chorusLevel.loadSettings( _this, "chorusLevel" );
-	m_chorusSpeed.loadSettings( _this, "chorusSpeed" );
-	m_chorusDepth.loadSettings( _this, "chorusDepth" );
-
-}
-
-
-
-
-void Sf2Instrument::loadFile( const QString & _file )
-{
-	if( !_file.isEmpty() && QFileInfo( _file ).exists() )
+	work.freezeControls(); emit fileLoading(); work.check(); QString error;
+	const bool loaded = loadSoundFont(pending || absent ? absolute : path, false, error, work, pending || absent ? BankLoad::Unresolved : BankLoad::Settings); work.check();
+	if (!loaded) { collectErrorForUI(error); work.check(); }
+	else if (pending || absent) { Engine::getSong()->collectUnresolvedResource(absolute); work.check(); }
+	emit fileChanged(); work.check(); work.thawControls();
 	{
-		openFile( _file, false );
+		Sf2ModelSignals blocked(&m_bankNum, &m_patchNum);
+		m_bankNum.loadSettings(settings, "bank"); work.check(); m_patchNum.loadSettings(settings, "patch"); work.check();
 	}
-
-	// setting the first bank and patch number that is found
-	auto sSoundCount = ::fluid_synth_sfcount( m_synth );
-	for ( int i = 0; i < sSoundCount; ++i ) {
-		int iBank = 0;
-		int iProg = 0;
-		fluid_sfont_t *pSoundFont = ::fluid_synth_get_sfont( m_synth, i );
-
-		if ( pSoundFont ) {
-#ifdef CONFIG_FLUID_BANK_OFFSET
-			int iBankOff = ::fluid_synth_get_bank_offset( m_synth, fluid_sfont_get_id( pSoundFont ) );
-#endif
-
-			fluid_sfont_iteration_start( pSoundFont );
-			fluid_preset_t* pCurPreset = nullptr;
-
-			if ((pCurPreset = fluid_sfont_iteration_next(pSoundFont)))
-			{
-				iBank = fluid_preset_get_banknum( pCurPreset );
-				iProg = fluid_preset_get_num( pCurPreset );
-
-#ifdef CONFIG_FLUID_BANK_OFFSET
-				iBank += iBankOff;
-#endif
-
-				::fluid_synth_bank_select( m_synth, 1, iBank );
-				::fluid_synth_program_change( m_synth, 1, iProg );
-				m_bankNum.setValue( iBank );
-				m_patchNum.setValue ( iProg );
-				break;
-			}
-		}
-	}
+	emit m_bankNum.dataChanged(); work.check(); emit m_patchNum.dataChanged(); work.check();
+	m_gain.loadSettings(settings, "gain"); work.check();
+	m_reverbOn.loadSettings(settings, "reverbOn"); work.check();
+	m_reverbRoomSize.loadSettings(settings, "reverbRoomSize"); work.check();
+	m_reverbDamping.loadSettings(settings, "reverbDamping"); work.check();
+	m_reverbWidth.loadSettings(settings, "reverbWidth"); work.check();
+	m_reverbLevel.loadSettings(settings, "reverbLevel"); work.check();
+	m_chorusOn.loadSettings(settings, "chorusOn"); work.check();
+	m_chorusNum.loadSettings(settings, "chorusNum"); work.check();
+	m_chorusLevel.loadSettings(settings, "chorusLevel"); work.check();
+	m_chorusSpeed.loadSettings(settings, "chorusSpeed"); work.check();
+	m_chorusDepth.loadSettings(settings, "chorusDepth"); work.check();
 }
 
 
+void Sf2Instrument::loadFile(const QString& path)
+{
+	QString error;
+	if (!setFileResource("soundfont", path, error)) { collectErrorForUI(error); }
+}
+
+std::vector<Plugin::FileResource> Sf2Instrument::fileResources() const
+{
+	return {{"soundfont", tr("SoundFont bank"), m_filename, {"sf2", "sf3"}, nullptr, 0, true, m_bankSnapshot, m_unresolvedBank}};
+}
+
+bool Sf2Instrument::setFileResource(const QString& key, const QString& path, QString& error)
+{
+	const QString requestedKey(key), requested(path); ResourceGuard work(this);
+	if (requestedKey != "soundfont") { error = tr("Unknown SoundFont resource"); return false; }
+	emit fileLoading(); work.check(); const bool loaded = loadSoundFont(requested, true, error, work); work.check(); emit fileChanged(); work.check(); return loaded;
+}
+
+bool Sf2Instrument::selectProgram(int bank, int program, QString& error)
+{
+	ResourceGuard work(this); if (!previewProgramImpl(bank, program, error, work)) { return false; }
+	{ Sf2ModelSignals blocked(&m_bankNum, &m_patchNum); work.selectModels(bank, program); }
+	updateProgramLabels(work); work.check(); emit m_bankNum.dataChanged(); work.check(); emit m_patchNum.dataChanged(); work.check(); emit patchChanged(); work.check(); error.clear(); return true;
+}
+
+std::vector<Instrument::Program> Sf2Instrument::programSnapshot()
+{
+	QMutexLocker lock(&m_synthMutex);
+	return m_programs;
+}
+
+MidiPatch Sf2Instrument::currentProgramModels()
+{
+	ResourceGuard work(this, true, false); const auto bank = m_bankNum.value(); work.check(); const auto program = m_patchNum.value(); work.check();
+	return {static_cast<std::uint16_t>(bank), static_cast<std::uint8_t>(program)};
+}
+
+struct Sf2Instrument::ProgramPreview { };
+
+bool Sf2Instrument::previewProgram(int bank, int program, QString& error)
+{ ProgramPreviewToken token; return previewProgram(bank, program, error, token); }
+
+bool Sf2Instrument::previewProgram(int bank, int program, QString& error, ProgramPreviewToken& token)
+{
+	// Refuse an export before waiting on a DSP period's model-change mutex.
+	if (RemotePlugin::hasActiveRenderContext()) { error = tr("SoundFont audition is unavailable during native export"); return false; }
+	ResourceGuard work(this);
+	if (soundFontRenderBusy()) { error = tr("SoundFont audition is unavailable during native export or device reservation"); return false; }
+	const auto candidate = std::make_shared<const ProgramPreview>();
+	if (!previewProgramImpl(bank, program, error, work)) { return false; }
+	work.check(); m_programPreview = candidate; token = candidate; return true;
+}
+
+bool Sf2Instrument::restoreProgramPreview(const ProgramPreviewToken& token, QString& error)
+{
+	if (RemotePlugin::hasActiveRenderContext()) { error = tr("SoundFont audition cleanup is unavailable during native export"); return false; }
+	const auto requested = token; ResourceGuard work(this, true, false);
+	if (soundFontRenderConsuming()) { error = tr("SoundFont audition cleanup is unavailable during native export"); return false; }
+	return restoreProgramPreviewImpl(requested, error, work);
+}
+
+bool Sf2Instrument::restoreProgramPreviewImpl(const ProgramPreviewToken& token, QString& error, ResourceGuard& work)
+{
+	const auto requested = token; work.check();
+	if (!requested || requested != m_programPreview) { error = tr("The SoundFont preview was superseded"); return false; }
+	const int bank = m_bankNum.value(); work.check(); const int program = m_patchNum.value(); work.check();
+	QMutexLocker lock(&m_synthMutex);
+	if (requested != m_programPreview) { error = tr("The SoundFont preview was superseded"); return false; }
+	const bool available = std::any_of(m_programs.begin(), m_programs.end(), [=](const Program& item) { return item.bank == bank && item.program == program; });
+	if (m_synth && m_font && available)
+	{
+		if (fluid_synth_program_select(m_synth, m_channel, m_fontId, bank, program) != FLUID_OK) { error = tr("FluidSynth rejected the current native program"); return false; }
+	}
+	else if (m_synth && fluid_synth_unset_program(m_synth, m_channel) != FLUID_OK) { error = tr("FluidSynth could not clear the current native program"); return false; }
+	m_programPreview.reset(); error.clear(); return true;
+}
+
+bool Sf2Instrument::previewProgramImpl(int bank, int program, QString& error, ResourceGuard& work)
+{
+	work.check();
+	QMutexLocker lock(&m_synthMutex);
+	const auto found = std::find_if(m_programs.begin(), m_programs.end(), [=](const Program& item) {
+		return item.bank == bank && item.program == program;
+	});
+	if (found == m_programs.end()) { error = tr("The loaded SoundFont has no bank %1 program %2").arg(bank).arg(program); return false; }
+	if (!m_synth || fluid_synth_program_select(m_synth, m_channel, m_fontId, bank, program) != FLUID_OK)
+	{
+		error = tr("FluidSynth rejected the requested native program"); return false;
+	}
+	m_programPreview.reset(); error.clear(); return true;
+}
+
+void Sf2Instrument::updateProgramLabels(ResourceGuard& work)
+{
+	work.check(); const auto available = m_programs; const auto bank = m_bankNum.value(); work.check();
+	QMap<int, QString> banks, patches;
+	for (const auto& item : available)
+	{
+		banks.insert(item.bank, tr("Bank %1").arg(item.bank));
+		if (item.bank == bank) { patches.insert(item.program, item.name); }
+	}
+	m_bankNum.setValueLabels(std::move(banks)); work.check(); m_patchNum.setValueLabels(std::move(patches)); work.check();
+}
 
 
 auto Sf2Instrument::midiPatch() const -> std::optional<MidiPatch>
@@ -392,125 +559,164 @@ void Sf2Instrument::freeFont()
 
 
 
-void Sf2Instrument::openFile( const QString & _sf2File, bool updateTrackName )
+bool Sf2Instrument::loadSoundFont(const QString& path, bool selectFirst, QString& error, ResourceGuard& work, BankLoad mode)
 {
-	emit fileLoading();
-
-	const auto filePath = PathUtil::toAbsolute(_sf2File).toStdString();
-	QString relativePath = PathUtil::toShortestRelative( _sf2File );
-
-	// free the soundfont if one is selected
-	freeFont();
-
-	m_synthMutex.lock();
-
-	bool loaded = false;
-	if (fluid_is_soundfont(filePath.c_str()))
+	const bool unresolved = mode == BankLoad::Unresolved;
+	const QString requested(path); if (requested.contains(QChar::Null)) { error = tr("SoundFont filename contains a null character"); return false; }
+	work.poll(); QString relativePath; std::shared_ptr<Sf2BankSnapshot> snapshot;
+	if (unresolved && (requested.isEmpty() || !QDir::isAbsolutePath(requested))) { error = tr("An unresolved SoundFont requires an absolute filename"); return false; }
+	if (!requested.isEmpty() && !unresolved)
 	{
-		m_fontId = fluid_synth_sfload(m_synth, filePath.c_str(), true);
+		bool invalid = false; const auto absolute = PathUtil::toAbsolute(requested, &invalid); const QFileInfo file(FileResourceSnapshot::readableSourcePath(absolute)); work.check();
+		if (invalid || !file.isFile() || !file.isReadable()) { error = tr("SoundFont path is not a readable file: %1").arg(requested); return false; }
+		relativePath = PathUtil::toShortestRelative(absolute); snapshot = Sf2BankSnapshot::capture(absolute, error); work.check(); if (!snapshot) { return false; }
+	}
+	// FileResourceIO callbacks run before either instance mutex is acquired.
+	const bool repairing = mode == BankLoad::File && m_unresolvedBank && !requested.isEmpty() && !unresolved;
+	const int currentBank = repairing ? m_bankNum.storedValue() : m_bankNum.value(); work.check();
+	const int currentPatch = repairing ? m_patchNum.storedValue() : m_patchNum.value(); work.check(); std::optional<Program> selectedProgram;
 
-		if (fluid_synth_sfcount(m_synth) > 0)
+	{
+		QMutexLocker loading(&m_loadMutex); QMutexLocker lock(&m_synthMutex);
+		if (!m_synth) { error = tr("The native FluidSynth synthesizer is unavailable"); return false; }
+		pruneRetiredBankSnapshots();
+		// Reserve before native state changes, including a rejected loaded candidate.
+		m_retiredBankSnapshots.reserve(m_retiredBankSnapshots.size() + 2);
+		if (requested.isEmpty() || unresolved)
 		{
-			// Grab this sf from the top of the stack and add to list
-			m_font = fluid_synth_get_sfont(m_synth, 0);
-			loaded = true;
+			if (m_synthGeneration == std::numeric_limits<std::uint64_t>::max())
+			{
+				error = tr("FluidSynth voice generation is exhausted"); return false;
+			}
+			if (m_font && fluid_synth_sfunload(m_synth, m_fontId, false) != FLUID_OK)
+			{
+				error = tr("FluidSynth could not unload the current SoundFont"); return false;
+			}
+			fluid_synth_unset_program(m_synth, m_channel);
+			fluid_synth_all_sounds_off(m_synth, m_channel);
+			++m_synthGeneration;
+			m_notesRunning.fill(0);
+			m_playingNotes.clear();
+			if (m_bankSnapshot) { m_retiredBankSnapshots.push_back({m_fontId, std::move(m_bankSnapshot)}); }
+			m_font = nullptr; m_fontId = -1; m_filename = unresolved ? requested : QString{}; m_unresolvedBank = unresolved; m_programs.clear();
 		}
+		else
+		{
+			int previousId = -1, previousBank = 0, previousProgram = 0;
+			fluid_synth_get_program(m_synth, m_channel, &previousId, &previousBank, &previousProgram);
+			const auto encoded = snapshot->path().toUtf8();
+			const int candidateId = fluid_synth_sfload(m_synth, encoded.constData(), false);
+			if (candidateId < 0) { error = tr("FluidSynth rejected SoundFont: %1").arg(path); return false; }
+			// Also retire a candidate on an exception while collecting its native programs.
+			auto discardCandidate = qScopeGuard([this, candidateId, previousId, previousBank, previousProgram, &snapshot] {
+				if (previousId >= 0) { fluid_synth_program_select(m_synth, m_channel, previousId, previousBank, previousProgram); }
+				else { fluid_synth_unset_program(m_synth, m_channel); }
+				fluid_synth_sfunload(m_synth, candidateId, false);
+				m_retiredBankSnapshots.push_back({candidateId, std::move(snapshot)});
+			});
+			auto candidate = fluid_synth_get_sfont_by_id(m_synth, candidateId);
+			std::vector<Program> available;
+			if (candidate)
+			{
+				fluid_sfont_iteration_start(candidate);
+				while (const auto preset = fluid_sfont_iteration_next(candidate))
+				{
+					const int bank = fluid_preset_get_banknum(preset), program = fluid_preset_get_num(preset);
+					if (bank < 0 || bank > m_bankNum.maxValue() || program < 0 || program > m_patchNum.maxValue()) { continue; }
+					available.push_back({bank, program, QString::fromUtf8(fluid_preset_get_name(preset))});
+				}
+			}
+			if (available.empty())
+			{
+				error = tr("SoundFont contains no native MIDI programs"); return false;
+			}
+			std::sort(available.begin(), available.end(), [](const Program& a, const Program& b) {
+				return a.bank < b.bank || (a.bank == b.bank && a.program < b.program);
+			});
+			const auto existing = std::find_if(available.begin(), available.end(), [currentBank, currentPatch](const Program& item) {
+				return item.bank == currentBank && item.program == currentPatch;
+			});
+			if (repairing && existing == available.end())
+			{
+				error = tr("The replacement SoundFont has no saved bank %1 program %2").arg(currentBank).arg(currentPatch); return false;
+			}
+			const auto selected = (repairing || !selectFirst) && existing != available.end() ? *existing : available.front();
+			if (fluid_synth_program_select(m_synth, m_channel, candidateId, selected.bank, selected.program) != FLUID_OK)
+			{
+				error = tr("FluidSynth could not select a program from the new SoundFont"); return false;
+			}
+			if (m_font && fluid_synth_sfunload(m_synth, m_fontId, false) != FLUID_OK)
+			{
+				error = tr("FluidSynth could not replace the previous SoundFont"); return false;
+			}
+			if (m_bankSnapshot) { m_retiredBankSnapshots.push_back({m_fontId, std::move(m_bankSnapshot)}); }
+			m_font = candidate; m_fontId = candidateId;
+			m_bankSnapshot = std::move(snapshot);
+			discardCandidate.dismiss();
+			m_filename = relativePath; m_unresolvedBank = false; m_programs = std::move(available);
+			selectedProgram = selected;
+		}
+		m_programPreview.reset(); m_bufferView = {}; m_resampler.reset();
+		pruneRetiredBankSnapshots();
 	}
-
-	if (!loaded)
-	{
-		collectErrorForUI(Sf2Instrument::tr("A soundfont %1 could not be loaded.").arg(QFileInfo(_sf2File).baseName()));
-	}
-
-	m_synthMutex.unlock();
-
-	if( m_fontId >= 0 )
-	{
-		// Don't reset patch/bank, so that it isn't cleared when
-		// someone resolves a missing file
-		//m_patchNum.setValue( 0 );
-		//m_bankNum.setValue( 0 );
-		m_filename = relativePath;
-
-		emit fileChanged();
-	}
-
-	if( updateTrackName || instrumentTrack()->displayName() == displayName() )
-	{
-		instrumentTrack()->setName( PathUtil::cleanName( _sf2File ) );
-	}
-
-	updatePatch();
+	work.adopted();
+	if (selectedProgram) { Sf2ModelSignals blocked(&m_bankNum, &m_patchNum); work.selectModels(selectedProgram->bank, selectedProgram->program); }
+	updateProgramLabels(work); work.check();
+	emit m_bankNum.dataChanged(); work.check(); emit m_patchNum.dataChanged(); work.check(); emit patchChanged(); work.check();
+	error.clear(); return true;
 }
 
-
+void Sf2Instrument::openFile(const QString& path, bool updateTrackName)
+{
+	const QString requested(path); ResourceGuard work(this); const QPointer<InstrumentTrack> track(instrumentTrack());
+	emit fileLoading(); work.check(); QString error;
+	if (loadSoundFont(requested, false, error, work))
+	{
+		if (!requested.isEmpty())
+		{
+			const auto trackName = track->displayName(); work.check(); const auto pluginName = displayName(); work.check();
+			if (updateTrackName || trackName == pluginName) { track->setName(PathUtil::cleanName(requested)); work.check(); }
+		}
+	}
+	else { collectErrorForUI(error); work.check(); }
+	emit fileChanged(); work.check();
+}
 
 
 void Sf2Instrument::updatePatch()
 {
-	if( m_bankNum.value() >= 0 && m_patchNum.value() >= 0 )
-	{
-		fluid_synth_program_select( m_synth, m_channel, m_fontId,
-				m_bankNum.value(), m_patchNum.value() );
-	}
+	ResourceGuard work(this, true, false); updateProgramLabels(work); work.check(); const auto bank = m_bankNum.value(); work.check(); const auto patch = m_patchNum.value(); work.check();
+	QMutexLocker lock(&m_synthMutex); m_programPreview.reset();
+	const bool available = std::any_of(m_programs.begin(), m_programs.end(), [=](const Program& item) { return item.bank == bank && item.program == patch; });
+	if (m_synth && m_font && available) { fluid_synth_program_select(m_synth, m_channel, m_fontId, bank, patch); }
+	else if (m_synth) { fluid_synth_unset_program(m_synth, m_channel); }
 }
-
-
-
 
 QString Sf2Instrument::getCurrentPatchName()
 {
-	int iBankSelected = m_bankNum.value();
-	int iProgSelected = m_patchNum.value();
-
-	// For all soundfonts (in reversed stack order) fill the available programs...
-	int cSoundFonts = ::fluid_synth_sfcount( m_synth );
-	for( int i = 0; i < cSoundFonts; i++ )
-	{
-		fluid_sfont_t *pSoundFont = fluid_synth_get_sfont( m_synth, i );
-		if ( pSoundFont )
-		{
-#ifdef CONFIG_FLUID_BANK_OFFSET
-			int iBankOffset =
-				fluid_synth_get_bank_offset(
-						m_synth, fluid_sfont_get_id(pSoundFont) );
-#endif
-			fluid_sfont_iteration_start( pSoundFont );
-			fluid_preset_t* pCurPreset = nullptr;
-
-			while ((pCurPreset = fluid_sfont_iteration_next(pSoundFont)))
-			{
-				int iBank = fluid_preset_get_banknum( pCurPreset );
-#ifdef CONFIG_FLUID_BANK_OFFSET
-				iBank += iBankOffset;
-#endif
-				int iProg = fluid_preset_get_num( pCurPreset );
-				if( iBank == iBankSelected && iProg ==
-								iProgSelected )
-				{
-					return fluid_preset_get_name( pCurPreset );
-				}
-			}
-		}
-	}
-	return "";
+	ResourceGuard work(this, true, false); const auto available = m_programs; const auto bank = m_bankNum.value(); work.check(); const auto patch = m_patchNum.value(); work.check();
+	for (const auto& item : available) { if (item.bank == bank && item.program == patch) { return item.name; } } return {};
 }
-
-
 
 
 void Sf2Instrument::updateGain()
 {
+	QMutexLocker lock(&m_synthMutex);
+	if (!m_synth) { return; }
 	fluid_synth_set_gain( m_synth, m_gain.value() );
 }
 
 void Sf2Instrument::updateReverbOn()
 {
+	QMutexLocker lock(&m_synthMutex);
+	if (!m_synth) { return; }
 	fluid_synth_reverb_on(m_synth, -1, m_reverbOn.value() ? 1 : 0);
 }
 
 void Sf2Instrument::updateReverb()
 {
+	QMutexLocker lock(&m_synthMutex);
+	if (!m_synth) { return; }
 	fluid_synth_set_reverb_group_roomsize(m_synth, -1, m_reverbRoomSize.value());
 	fluid_synth_set_reverb_group_damp(m_synth, -1, m_reverbDamping.value());
 	fluid_synth_set_reverb_group_width(m_synth, -1, m_reverbWidth.value());
@@ -519,11 +725,15 @@ void Sf2Instrument::updateReverb()
 
 void Sf2Instrument::updateChorusOn()
 {
+	QMutexLocker lock(&m_synthMutex);
+	if (!m_synth) { return; }
 	fluid_synth_chorus_on(m_synth, -1, m_chorusOn.value() ? 1 : 0);
 }
 
 void Sf2Instrument::updateChorus()
 {
+	QMutexLocker lock(&m_synthMutex);
+	if (!m_synth) { return; }
 	fluid_synth_set_chorus_group_nr(m_synth, -1, static_cast<int>(m_chorusNum.value()));
 	fluid_synth_set_chorus_group_level(m_synth, -1, m_chorusLevel.value());
 	fluid_synth_set_chorus_group_speed(m_synth, -1, m_chorusSpeed.value());
@@ -533,6 +743,9 @@ void Sf2Instrument::updateChorus()
 
 void Sf2Instrument::updateTuning()
 {
+	auto guard = Engine::audioEngine()->requestChangesGuard();
+	QMutexLocker lock(&m_synthMutex);
+	if (!m_synth) { return; }
 	if (instrumentTrack()->microtuner()->enabledModel()->value())
 	{
 		auto centArray = std::array<double, 128>{};
@@ -540,7 +753,7 @@ void Sf2Instrument::updateTuning()
 		for (int i = 0; i < 128; ++i)
 		{
 			// Get desired Hz of note
-			double noteHz = instrumentTrack()->microtuner()->keyToFreq(i, DefaultBaseKey);
+			double noteHz = instrumentTrack()->nominalFrequency(i + instrumentTrack()->baseNoteModel()->value() - DefaultBaseKey);
 			// Convert Hz to cents
 			centArray[i] = noteHz == 0. ? 0. : 1200. * log2(noteHz / lowestHz);
 		}
@@ -565,67 +778,135 @@ void Sf2Instrument::updateTuning()
 
 void Sf2Instrument::reloadSynth()
 {
-	double tempRate;
-
-	// Set & get, returns the true sample rate
-	fluid_settings_setnum( m_settings, (char *) "synth.sample-rate", Engine::audioEngine()->outputSampleRate() );
-	fluid_settings_getnum( m_settings, (char *) "synth.sample-rate", &tempRate );
-
-	m_internalSampleRate = static_cast<int>( tempRate );
-	m_resampler.setRatio(m_internalSampleRate, Engine::audioEngine()->outputSampleRate());
-
-	if( m_font )
+	ResourceGuard work(this);
+	// The engine has already published its output clock. Even an early resource
+	// cancellation, failed program getter or rejected bank verification can leave
+	// this synth in service, so prepare its conversion before fallible callbacks.
+	{ QMutexLocker synthLock(&m_synthMutex); updateResampling(); }
+	if (m_programPreview)
 	{
-		// Now, delete the old one and replace
-		m_synthMutex.lock();
-		fluid_synth_remove_sfont( m_synth, m_font );
-		delete_fluid_synth( m_synth );
-
-		// New synth
-		m_synth = new_fluid_synth( m_settings );
-		m_fontId = fluid_synth_add_sfont( m_synth, m_font );
-		m_synthMutex.unlock();
-
-		// synth program change (set bank and patch)
-		updatePatch();
+		const auto token = m_programPreview; QString error;
+		if (!restoreProgramPreviewImpl(token, error, work)) { throw std::runtime_error(error.toStdString()); }
+		work.check();
 	}
-	else
+	const bool rebuilt = reloadSynthImpl(work); work.check();
+	if (!rebuilt && soundFontRenderBusy()) { throw std::runtime_error("The native SoundFont synth could not prepare committed state for export"); }
+}
+
+bool Sf2Instrument::reloadSynthImpl(ResourceGuard& work)
+{
+	work.poll(); const auto snapshot = m_bankSnapshot;
+	if (m_font)
 	{
-		// Recreate synth with no soundfonts
-		m_synthMutex.lock();
-		if (m_synth != nullptr)
+		if (!snapshot) { collectErrorForUI(tr("The loaded SoundFont has no source snapshot for rebuilding")); work.check(); return false; }
+		QString error; const bool verified = snapshot->verify(error); work.check(); if (!verified) { collectErrorForUI(error); work.check(); return false; }
+	}
+	work.check(); const int bank = m_bankNum.value(); work.check(); const int patch = m_patchNum.value(); work.check();
+	QMutexLocker synthLock(&m_synthMutex);
+	const auto report = [&](const QString& error) { synthLock.unlock(); collectErrorForUI(error); work.check(); };
+	if (m_synthGeneration == std::numeric_limits<std::uint64_t>::max())
+	{
+		report(tr("FluidSynth voice generation is exhausted"));
+		return false;
+	}
+	// Keep the working synth, its settings, bank and voice pool intact until
+	// all replacement allocations have succeeded. Never share native settings
+	// between two synths: deleting one would also unregister the other's callbacks.
+	Sf2SynthState::Error stageError;
+	auto candidate = Sf2SynthState::create(m_settings, Engine::audioEngine()->outputSampleRate(), stageError);
+	if (!candidate)
+	{
+		switch (stageError)
 		{
-			delete_fluid_synth(m_synth);
+		case Sf2SynthState::Error::SettingsAllocation:
+			report(tr("FluidSynth could not allocate replacement settings")); break;
+		case Sf2SynthState::Error::SettingsCopy:
+			report(tr("FluidSynth could not preserve the synthesizer settings")); break;
+		case Sf2SynthState::Error::Polyphony:
+			report(tr("FluidSynth reported invalid native polyphony")); break;
+		case Sf2SynthState::Error::InvalidSampleRate:
+			report(tr("FluidSynth reported an invalid native sample rate")); break;
+		default: report(tr("FluidSynth could not allocate the replacement synthesizer"));
 		}
-		m_synth = new_fluid_synth( m_settings );
-		m_synthMutex.unlock();
+		return false;
 	}
-
-	m_synthMutex.lock();
-
-	if (m_internalSampleRate != Engine::audioEngine()->outputSampleRate())
+	std::vector<fluid_voice_t*> scratch;
+	try { scratch.resize(static_cast<std::size_t>(candidate->polyphony)); }
+	catch (const std::bad_alloc&)
 	{
-		// LMMS supports a sample rate of 192 kHZ, while FluidSynth only supports up to 96 kHZ.
-		// Because of this, the instrument is resampled using libsamplerate when necessary.
-		// This uses linear interpolation, so the instrument's interpolation is set to FLUID_INTERP_LINEAR
-		// to match. A better option might be to make the interpolation option modifiable by the user, as well as only
-		// supporting only up to 96 kHZ (though that may be a problem if theres a strong need for 192 kHZ).
-		fluid_synth_set_interp_method(m_synth, -1, FLUID_INTERP_LINEAR);
+		report(tr("Could not allocate replacement SoundFont voice storage"));
+		return false;
 	}
+	if (m_font)
+	{
+		const auto encoded = m_bankSnapshot->path().toUtf8();
+		if (!candidate->loadBank(encoded.constData(), m_channel, bank, patch, stageError))
+		{
+			report(stageError == Sf2SynthState::Error::BankSelection
+				? tr("FluidSynth could not select the current SoundFont program in the replacement synthesizer")
+				: tr("FluidSynth could not load the SoundFont snapshot into the replacement synthesizer"));
+			return false;
+		}
+	}
+	// No old note may dereference a voice after its owning synth is deleted.
+	m_programPreview.reset(); ++m_synthGeneration;
+	m_notesRunning.fill(0);
+	m_playingNotes.clear();
 
-	m_synthMutex.unlock();
+	if (m_synth) { delete_fluid_synth(m_synth); }
+	if (m_settings) { delete_fluid_settings(m_settings); }
+	m_synth = candidate->synth.release();
+	m_settings = candidate->settings.release();
+	m_fontId = candidate->fontId;
+	m_font = m_fontId >= 0 ? fluid_synth_get_sfont_by_id(m_synth, m_fontId) : nullptr;
+	// Every older bank was destroyed with its owning synth before cache cleanup.
+	m_retiredBankSnapshots.clear();
+	m_voiceScratch.swap(scratch);
+	m_internalSampleRate = candidate->sampleRate;
+	updateResampling();
 
-	updateReverb();
-	updateChorus();
-	updateReverbOn();
-	updateChorusOn();
-	updateGain();
-	updateTuning();
+	work.adopted(); synthLock.unlock();
+	updateReverb(); work.check();
+	updateChorus(); work.check();
+	updateReverbOn(); work.check();
+	updateChorusOn(); work.check();
+	updateGain(); work.check();
+	updateTuning(); work.check();
 
 	// Reset last MIDI pitch properties, which will be set to the correct values
 	// upon playing the next note
 	m_lastMidiPitch = -1;
 	m_lastMidiPitchRange = -1;
+	return true;
+}
+
+
+void Sf2Instrument::updateResampling()
+{
+	// The caller holds the synth mutex and the engine's model-change guard.
+	m_resampler.setRatio(m_internalSampleRate, Engine::audioEngine()->outputSampleRate());
+	m_bufferView = {}; m_resampler.reset();
+	if (m_synth && m_internalSampleRate != Engine::audioEngine()->outputSampleRate())
+	{
+		// Retain the native linear conversion pipeline for engine rates that this
+		// FluidSynth version cannot synthesize directly.
+		fluid_synth_set_interp_method(m_synth, -1, FLUID_INTERP_LINEAR);
+	}
+}
+
+
+void Sf2Instrument::pruneRetiredBankSnapshots()
+{
+	// Control operations hold both guards; filesystem cleanup stays out of play().
+	// An unloaded bank cannot receive new notes, and idle synthesis has no sample
+	// readers. Keep failed removals for a later retry or native-synth destruction.
+	if (!m_synth || fluid_synth_get_active_voice_count(m_synth) != 0) { return; }
+	m_retiredBankSnapshots.erase(std::remove_if(m_retiredBankSnapshots.begin(), m_retiredBankSnapshots.end(),
+		[this](const auto& retired) {
+			return retired.snapshot.use_count() == 1 && !fluid_synth_get_sfont_by_id(m_synth, retired.fontId)
+				&& retired.snapshot->remove();
+		}),
+		m_retiredBankSnapshots.end());
 }
 
 
@@ -633,6 +914,7 @@ void Sf2Instrument::reloadSynth()
 
 void Sf2Instrument::playNote( NotePlayHandle * _n, SampleFrame* )
 {
+	QMutexLocker lock(&m_synthMutex);
 	if( _n->isMasterNote() || ( _n->hasParent() && _n->isReleased() ) )
 	{
 		return;
@@ -645,82 +927,82 @@ void Sf2Instrument::playNote( NotePlayHandle * _n, SampleFrame* )
 	// out of range?
 	if (midiNote < 0 || midiNote >= 128)
 	{
+		if (const auto data = static_cast<Sf2PluginData*>(_n->m_pluginData)) { noteOff(data); }
+		m_playingNotes.removeAll(_n);
 		return;
 	}
 
 	if (!_n->m_pluginData)
 	{
-		const int baseVelocity = instrumentTrack()->midiPort()->baseVelocity();
-
-		auto pluginData = new Sf2PluginData;
+		auto pluginData = std::make_unique<Sf2PluginData>();
+		pluginData->fluidVoices.reserve(m_voiceScratch.size());
 		pluginData->midiNote = midiNote;
-		pluginData->lastPanning = 0;
-		pluginData->lastVelocity = _n->midiVelocity( baseVelocity );
-		pluginData->isNew = true;
 		pluginData->offset = _n->offset();
-		pluginData->noteOffSent = false;
-		pluginData->panning = _n->getPanning();
-
-		_n->m_pluginData = pluginData;
-
-		// insert the nph to the playing notes vector
-		m_playingNotesMutex.lock();
-		m_playingNotes.append( _n );
-		m_playingNotesMutex.unlock();
+		pluginData->generation = m_synthGeneration;
+		_n->m_pluginData = pluginData.release();
 	}
-	else if( _n->isReleased() && ! _n->instrumentTrack()->isSustainPedalPressed() ) // note is released during this period
+	auto data = static_cast<Sf2PluginData*>(_n->m_pluginData);
+	if (data->generation != m_synthGeneration)
 	{
-		auto pluginData = static_cast<Sf2PluginData*>(_n->m_pluginData);
-		pluginData->offset = _n->framesBeforeRelease();
-		pluginData->isNew = false;
-
-		m_playingNotesMutex.lock();
-		m_playingNotes.append( _n );
-		m_playingNotesMutex.unlock();
+		// The pointers belong to a retired synth. Clear them without asking
+		// FluidSynth about their IDs or state, even if an allocator reused them.
+		data->fluidVoices.clear();
+		data->generation = m_synthGeneration;
+		data->started = false;
+		data->noteOffSent = _n->isReleased() && !instrumentTrack()->isSustainPedalPressed();
+		data->offset = 0;
 	}
-
-	// Update the pitch of all the voices
-	if (const auto data = static_cast<Sf2PluginData*>(_n->m_pluginData)) {
-		const auto detuning = _n->currentDetuning();
-		for (const auto& voice : data->fluidVoices) {
-			if (voice.isValid()) {
-				fluid_voice_gen_set(voice.get(), GEN_COARSETUNE, voice.coarseTune() + detuning);
-				fluid_voice_update_param(voice.get(), GEN_COARSETUNE);
-			}
-		}
+	data->velocity = std::clamp(_n->midiVelocity(instrumentTrack()->midiPort()->baseVelocity()), 0, 127);
+	data->panning = std::clamp(_n->getPanning(), PanningLeft, PanningRight);
+	data->detuning = _n->currentDetuning();
+	if (!data->started && !data->noteOffSent && m_synth && m_font && data->velocity > 0)
+	{
+		data->midiNote = midiNote;
+		data->isNew = true;
+		if (!m_playingNotes.contains(_n)) { m_playingNotes.append(_n); }
 	}
+	else if (data->started && !data->noteOffSent && _n->isReleased() && !instrumentTrack()->isSustainPedalPressed())
+	{
+		data->offset = _n->framesBeforeRelease();
+		data->isNew = false;
+		if (!m_playingNotes.contains(_n)) { m_playingNotes.append(_n); }
+	}
+	updateVoices(data);
 }
 
 
 void Sf2Instrument::noteOn( Sf2PluginData * n )
 {
-	m_synthMutex.lock();
-
-	// get list of current voice IDs so we can easily spot the new
-	// voice after the fluid_synth_noteon() call
-	const int poly = fluid_synth_get_polyphony( m_synth );
-#ifndef _MSC_VER
-	fluid_voice_t* voices[poly];
-#else
-	const auto voices = static_cast<fluid_voice_t**>(_alloca(poly * sizeof(fluid_voice_t*)));
-#endif
-
-	fluid_synth_noteon( m_synth, m_channel, n->midiNote, n->lastVelocity );
+	QMutexLocker lock(&m_synthMutex);
+	if (!m_synth || !m_font || n->generation != m_synthGeneration || n->started
+		|| n->noteOffSent || n->midiNote < 0 || n->midiNote >= 128 || n->velocity <= 0
+		|| m_notesRunning[n->midiNote] == std::numeric_limits<int>::max()) { return; }
+	if (fluid_synth_noteon(m_synth, m_channel, n->midiNote, n->velocity) != FLUID_OK) { return; }
+	n->started = true;
+	++m_notesRunning[n->midiNote];
+	n->fluidVoices.clear();
 
 	// Get any new voices and store them in the plugin data
-	fluid_synth_get_voicelist(m_synth, voices, poly, -1);
-	for (int i = 0; i < poly && voices[i] && !n->fluidVoices.full(); ++i)
+	fluid_synth_get_voicelist(m_synth, m_voiceScratch.data(), static_cast<int>(m_voiceScratch.size()), -1);
+	for (const auto voice : m_voiceScratch)
 	{
-		const auto voice = voices[i];
+		if (!voice) { break; }
 		// FluidSynth stops voices with the same channel and pitch upon note-on,
 		// so voices with the current channel and pitch are playing this note.
 		if (fluid_voice_get_channel(voice) == m_channel
 			&& fluid_voice_get_key(voice) == n->midiNote
 			&& fluid_voice_is_on(voice)
 		) {
-			n->fluidVoices.emplace_back(voices[i]);
+			n->fluidVoices.emplace_back(voice);
 		}
 	}
+	updateVoices(n);
+}
+
+void Sf2Instrument::updateVoices(Sf2PluginData* n)
+{
+	// The caller holds the synth mutex across both validity checks and updates.
+	if (!m_synth || n->generation != m_synthGeneration) { return; }
 
 	// Smallest balance value that results in full attenuation of one channel.
 	// Corresponds to internal FluidSynth macro `FLUID_CB_AMP_SIZE`.
@@ -735,56 +1017,53 @@ void Sf2Instrument::noteOn( Sf2PluginData * n )
 	// Set note panning on all the voices
 	for (const auto& voice : n->fluidVoices) {
 		if (voice.isValid()) {
+			if (std::isfinite(n->detuning))
+			{
+				fluid_voice_gen_set(voice.get(), GEN_COARSETUNE, voice.coarseTune() + n->detuning);
+				fluid_voice_update_param(voice.get(), GEN_COARSETUNE);
+			}
 			fluid_voice_gen_set(voice.get(), GEN_CUSTOM_BALANCE, balance);
 			fluid_voice_update_param(voice.get(), GEN_CUSTOM_BALANCE);
 		}
 	}
-
-	m_synthMutex.unlock();
-
-	m_notesRunningMutex.lock();
-	++m_notesRunning[ n->midiNote ];
-	m_notesRunningMutex.unlock();
 }
 
 
 void Sf2Instrument::noteOff( Sf2PluginData * n )
 {
+	QMutexLocker lock(&m_synthMutex);
+	if (n->noteOffSent) { return; }
 	n->noteOffSent = true;
-	m_notesRunningMutex.lock();
-	const int notes = --m_notesRunning[n->midiNote];
-	m_notesRunningMutex.unlock();
-
-	if( notes <= 0 )
+	if (!n->started || n->generation != m_synthGeneration || n->midiNote < 0 || n->midiNote >= 128) { return; }
+	n->started = false;
+	auto& notes = m_notesRunning[n->midiNote];
+	if (notes > 0) { --notes; }
+	if (notes == 0 && m_synth)
 	{
-		m_synthMutex.lock();
 		fluid_synth_noteoff( m_synth, m_channel, n->midiNote );
-		m_synthMutex.unlock();
 	}
 }
 
 
 void Sf2Instrument::play( SampleFrame* _working_buffer )
 {
+	QMutexLocker lock(&m_synthMutex);
 	const f_cnt_t frames = Engine::audioEngine()->framesPerPeriod();
+	if (!m_synth || m_unresolvedBank) { zeroSampleFrames(_working_buffer, frames); m_playingNotes.clear(); return; }
 
 	// set midi pitch for this period
 	const int currentMidiPitch = instrumentTrack()->midiPitch();
 	if( m_lastMidiPitch != currentMidiPitch )
 	{
 		m_lastMidiPitch = currentMidiPitch;
-		m_synthMutex.lock();
 		fluid_synth_pitch_bend( m_synth, m_channel, m_lastMidiPitch );
-		m_synthMutex.unlock();
 	}
 
 	const int currentMidiPitchRange = instrumentTrack()->midiPitchRange();
 	if( m_lastMidiPitchRange != currentMidiPitchRange )
 	{
 		m_lastMidiPitchRange = currentMidiPitchRange;
-		m_synthMutex.lock();
 		fluid_synth_pitch_wheel_sens( m_synth, m_channel, m_lastMidiPitchRange );
-		m_synthMutex.unlock();
 	}
 	// if we have no new noteons/noteoffs, just render a period and call it a day
 	if( m_playingNotes.isEmpty() )
@@ -814,6 +1093,12 @@ void Sf2Instrument::play( SampleFrame* _working_buffer )
 		// process the current note:
 		// first see if we're synced in frame count
 		auto currentData = static_cast<Sf2PluginData*>(currentNote->m_pluginData);
+		if (currentData->generation != m_synthGeneration)
+		{
+			m_playingNotes.removeOne(currentNote);
+			continue;
+		}
+		currentData->offset = std::min(currentData->offset, frames);
 		if( currentData->offset > currentFrame )
 		{
 			renderFrames( currentData->offset - currentFrame, _working_buffer + currentFrame );
@@ -829,17 +1114,13 @@ void Sf2Instrument::play( SampleFrame* _working_buffer )
 			}
 			else // otherwise remove the handle
 			{
-				m_playingNotesMutex.lock();
-				m_playingNotes.remove( m_playingNotes.indexOf( currentNote ) );
-				m_playingNotesMutex.unlock();
+				m_playingNotes.removeOne(currentNote);
 			}
 		}
 		else
 		{
 			noteOff( currentData );
-			m_playingNotesMutex.lock();
-			m_playingNotes.remove( m_playingNotes.indexOf( currentNote ) );
-			m_playingNotesMutex.unlock();
+			m_playingNotes.removeOne(currentNote);
 		}
 	}
 
@@ -853,6 +1134,7 @@ void Sf2Instrument::play( SampleFrame* _working_buffer )
 void Sf2Instrument::renderFrames( f_cnt_t frames, SampleFrame* buf )
 {
 	const auto guard = std::lock_guard{m_synthMutex};
+	if (!m_synth) { zeroSampleFrames(buf, frames); return; }
 
 	fluid_synth_get_gain(m_synth); // This flushes voice updates as a side effect
 
@@ -891,19 +1173,13 @@ void Sf2Instrument::renderFrames( f_cnt_t frames, SampleFrame* buf )
 
 void Sf2Instrument::deleteNotePluginData( NotePlayHandle * _n )
 {
+	QMutexLocker lock(&m_synthMutex);
 	auto pluginData = static_cast<Sf2PluginData*>(_n->m_pluginData);
-	if( ! pluginData->noteOffSent ) // if we for some reason haven't noteoffed the note before it gets deleted,
-									// do it here
-	{
-		noteOff( pluginData );
-		m_playingNotesMutex.lock();
-		if( m_playingNotes.indexOf( _n ) >= 0 )
-		{
-			m_playingNotes.remove( m_playingNotes.indexOf( _n ) );
-		}
-		m_playingNotesMutex.unlock();
-	}
+	if (!pluginData) { return; }
+	noteOff(pluginData);
+	m_playingNotes.removeAll(_n);
 	delete pluginData;
+	_n->m_pluginData = nullptr;
 }
 
 
@@ -968,8 +1244,8 @@ Sf2InstrumentView::Sf2InstrumentView( Instrument * _instrument, QWidget * _paren
 	m_patchDialogButton->setToolTip(tr("Choose patch"));
 
 	// LCDs
-	m_bankNumLcd = new LcdSpinBox(3, "21pink", this);
-	m_bankNumLcd->move(131, 62);
+	m_bankNumLcd = new LcdSpinBox(5, "11green", this);
+	m_bankNumLcd->move(131, 67);
 //	m_bankNumLcd->addTextForValue( -1, "---" );
 //	m_bankNumLcd->setEnabled( false );
 
@@ -1126,7 +1402,7 @@ void Sf2InstrumentView::updateFilename()
 	m_filenameLabel->setText( fm.elidedText( file, Qt::ElideLeft, m_filenameLabel->width() ) );
 			//		i->m_filename + "\nPatch: TODO" );
 
-	m_patchDialogButton->setEnabled( !i->m_filename.isEmpty() );
+	m_patchDialogButton->setEnabled(!i->m_unresolvedBank && !i->m_programs.empty());
 
 	updatePatchName();
 
@@ -1160,53 +1436,34 @@ void Sf2InstrumentView::invalidateFile()
 
 void Sf2InstrumentView::showFileDialog()
 {
-	auto k = castModel<Sf2Instrument>();
-
-	FileDialog ofd( nullptr, tr( "Open SoundFont file" ) );
-	ofd.setFileMode( FileDialog::ExistingFiles );
-
-	QStringList types;
-	types << tr( "SoundFont Files (*.sf2 *.sf3)" );
-	ofd.setNameFilters( types );
-
-	if( k->m_filename != "" )
-	{
-		QString f = PathUtil::toAbsolute( k->m_filename );
-		ofd.setDirectory( QFileInfo( f ).absolutePath() );
-		ofd.selectFile( QFileInfo( f ).fileName() );
-	}
-	else
-	{
-		ofd.setDirectory( ConfigManager::inst()->sf2Dir() );
-	}
-
-	m_fileDialogButton->setEnabled( false );
-
-	if( ofd.exec() == QDialog::Accepted && !ofd.selectedFiles().isEmpty() )
-	{
-		QString f = ofd.selectedFiles()[0];
-		if( f != "" )
-		{
-			k->openFile( f );
-			Engine::getSong()->setModified();
-		}
-	}
-
-	m_fileDialogButton->setEnabled( true );
+	const QPointer<Sf2InstrumentView> owner(this); const QPointer<Sf2Instrument> native(castModel<Sf2Instrument>()); const QPointer<PixmapButton> button(m_fileDialogButton);
+	const QPointer<InstrumentTrack> track(native ? native->instrumentTrack() : nullptr); const QPointer<Song> song(Engine::getSong()); const auto generation = song ? song->replacementGeneration() : 0;
+	if (!native || !button) { return; } const QString filename = native->m_filename;
+	const auto current = [&] { return owner && native && button && owner->model() == native.data() && owner->m_fileDialogButton == button.data() && track && !track->isRetiring()
+		&& track->instrument() == native.data() && song && Engine::getSong() == song.data() && song->replacementGeneration() == generation; };
+	FileDialog dialog(nullptr, tr("Open SoundFont file")); dialog.setFileMode(FileDialog::ExistingFiles); dialog.setNameFilters({tr("SoundFont Files (*.sf2 *.sf3)")});
+	if (!filename.isEmpty()) { const auto absolute = PathUtil::toAbsolute(filename); dialog.setDirectory(QFileInfo(absolute).absolutePath()); dialog.selectFile(QFileInfo(absolute).fileName()); }
+	else { dialog.setDirectory(ConfigManager::inst()->sf2Dir()); }
+	if (!current()) { return; } button->setEnabled(false); const auto restore = qScopeGuard([&] { if (button) { button->setEnabled(true); } });
+	if (!current()) { return; }
+	const auto accepted = dialog.exec() == QDialog::Accepted; if (!current() || !accepted || dialog.selectedFiles().isEmpty()) { return; }
+	const QString path = dialog.selectedFiles()[0]; if (path.isEmpty()) { return; }
+	try { native->openFile(path); if (current()) { song->setModified(); } }
+	catch (const std::exception& error) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError(QString::fromUtf8(error.what())); } }
+	catch (...) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError("Native SoundFont loading failed"); } }
 }
-
-
 
 
 void Sf2InstrumentView::showPatchDialog()
 {
-	auto k = castModel<Sf2Instrument>();
-
-	PatchesDialog pd( this );
-
-	pd.setup( k->m_synth, 1, k->instrumentTrack()->name(), &k->m_bankNum, &k->m_patchNum, m_patchLabel );
-
-	pd.exec();
+	const QPointer<Sf2InstrumentView> owner(this); const QPointer<Sf2Instrument> native(castModel<Sf2Instrument>());
+	const QPointer<InstrumentTrack> track(native ? native->instrumentTrack() : nullptr); const QPointer<Song> song(Engine::getSong()); const auto generation = song ? song->replacementGeneration() : 0;
+	const auto current = [&] { return owner && native && owner->model() == native.data() && track && !track->isRetiring() && track->instrument() == native.data()
+		&& song && Engine::getSong() == song.data() && song->replacementGeneration() == generation; };
+	if (!current()) { return; } const QString& reported = track->name(); if (!current()) { return; } const QString caption(reported);
+	const QPointer<PatchesDialog> dialog(new PatchesDialog(this)); const auto cleanup = qScopeGuard([dialog] { if (dialog) { delete dialog.data(); } });
+	if (!current() || !dialog || !dialog->setup(native.data(), caption)) { return; }
+	if (current() && dialog) { dialog->exec(); }
 }
 
 

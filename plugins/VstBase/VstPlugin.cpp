@@ -23,17 +23,32 @@
  */
 
 #include "VstPlugin.h"
+#include "NativeValueNotification.h"
+#include <exception>
+#include "VstParameterModels.h"
+#include "VstParameterWire.h"
+#include "VstParameterTransfer.h"
+#include "VstPresetStorage.h"
+#include "VstPeFile.h"
+#include "FileResourceIO.h"
 
 #include "communication.h"
 
-#include <QtEndian>
 #include <QDebug>
+#include <QPointer>
 #include <QDir>
 #include <QDomElement>
 #include <QFileInfo>
 #include <QLocale>
-#include <QTemporaryFile>
+#include <QTemporaryDir>
+#include <QFile>
 #include <QTimerEvent>
+#include <QThread>
+#include <QScopeGuard>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 
 #if defined(LMMS_BUILD_LINUX) && (QT_VERSION < QT_VERSION_CHECK(6,0,0))
 #	include <QX11Info>
@@ -62,59 +77,6 @@
 #ifdef LMMS_BUILD_LINUX
 #	include <X11/Xlib.h>
 #endif
-
-namespace PE
-{
-// Utilities for reading PE file machine type
-// See specification at https://msdn.microsoft.com/library/windows/desktop/ms680547(v=vs.85).aspx
-
-// Work around name conflict
-#ifdef i386
-#	undef i386
-#endif
-
-enum class MachineType : uint16_t
-{
-	unknown = 0x0,
-	amd64 = 0x8664,
-	i386 = 0x14c,
-};
-
-class FileInfo
-{
-public:
-	FileInfo(QString filePath)
-		: m_file(filePath)
-	{
-		m_file.open(QFile::ReadOnly);
-		m_map = m_file.map(0, m_file.size());
-		if (m_map == nullptr) {
-			throw std::runtime_error("Cannot map file");
-		}
-	}
-	~FileInfo()
-	{
-		m_file.unmap(m_map);
-	}
-
-	MachineType machineType()
-	{
-		int32_t peOffset = qFromLittleEndian(* reinterpret_cast<int32_t*>(m_map + 0x3C));
-		uchar* peSignature = m_map + peOffset;
-		if (memcmp(peSignature, "PE\0\0", 4)) {
-			throw std::runtime_error("Invalid PE file");
-		}
-		uchar * coffHeader = peSignature + 4;
-		uint16_t machineType = qFromLittleEndian(* reinterpret_cast<uint16_t*>(coffHeader));
-		return static_cast<MachineType>(machineType);
-	}
-
-private:
-	QFile m_file;
-	uchar* m_map;
-};
-
-} // namespace PE
 
 namespace lmms
 {
@@ -146,18 +108,18 @@ VstPlugin::VstPlugin( const QString & _plugin ) :
 #endif
 	{
 		try {
-			PE::FileInfo peInfo(m_plugin);
-			switch (peInfo.machineType())
+			const auto machine = readVstPeMachine(m_plugin);
+			switch (machine)
 			{
-			case PE::MachineType::amd64:
+			case 0x8664:
 				pluginType = ExecutableType::Win64;
 				break;
-			case PE::MachineType::i386:
+			case 0x014c:
 				pluginType = ExecutableType::Win32;
 				break;
 			default:
 				qWarning() << "Unknown PE machine type"
-					<< QString::number(static_cast<uint16_t>(peInfo.machineType()), 16);
+					<< QString::number(machine, 16);
 				break;
 			}
 		} catch (std::runtime_error& e) {
@@ -185,10 +147,19 @@ VstPlugin::VstPlugin( const QString & _plugin ) :
 
 	setTempo( Engine::getSong()->getTempo() );
 
-	connect( Engine::getSong(), SIGNAL( tempoChanged( lmms::bpm_t ) ),
-			this, SLOT( setTempo( lmms::bpm_t ) ), Qt::DirectConnection );
-	connect( Engine::audioEngine(), SIGNAL( sampleRateChanged() ),
-				this, SLOT( updateSampleRate() ) );
+	connect(Engine::getSong(), &Song::tempoChanged, this, [this](bpm_t tempo) {
+		try { setTempo(tempo); }
+		catch (...) { if (!NativeValueNotification::report(std::current_exception())) { qWarning("VST tempo update failed outside a native value notification frame"); } }
+	}, Qt::DirectConnection);
+	const QPointer<AudioEngine> engine(Engine::audioEngine());
+	connect(engine.data(), &AudioEngine::sampleRateChanged, this, [this, engine] {
+		try { updateSampleRate(); }
+		catch (...)
+		{
+			if (engine && !engine->reportDeviceNotificationFailure(std::current_exception()))
+			{ qWarning("VST rate update failed outside a native device notification frame"); }
+		}
+	});
 
 	// update once per second
 	m_idleTimer.start( 1000 );
@@ -218,6 +189,7 @@ void VstPlugin::tryLoad( const QString &remoteVstPluginExecutable )
 	}
 
 	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
 
 	VstHostLanguage hlang = VstHostLanguage::English;
 	switch( QLocale::system().language() )
@@ -235,7 +207,6 @@ void VstPlugin::tryLoad( const QString &remoteVstPluginExecutable )
 
 	waitForInitDone();
 
-	unlock();
 }
 
 
@@ -243,18 +214,38 @@ void VstPlugin::tryLoad( const QString &remoteVstPluginExecutable )
 
 void VstPlugin::loadSettings( const QDomElement & _this )
 {
-	if( _this.hasAttribute( "program" ) )
+	bool validCount = false;
+	const int num_params = _this.attribute("numparams", "0").toInt(&validCount);
+	if (!_this.hasAttribute("chunk") && _this.hasAttribute("numparams")
+		&& (!validCount || num_params < 0 || num_params != m_parameterCount))
+	{ throw std::runtime_error("Saved VST parameter count differs from the loaded plugin"); }
+	const bool hasNativePreset = _this.hasAttribute("nativepreset");
+	if (hasNativePreset && _this.hasAttribute("chunk")) { throw std::runtime_error("Saved VST state has conflicting native encodings"); }
+	QByteArray nativePreset;
+	if (hasNativePreset)
 	{
-		setProgram( _this.attribute( "program" ).toInt() );
+		nativePreset = decodeVstPresetState(_this.attribute("nativepreset"));
+	}
+	// Validate persisted bytes before selecting a program or calling the plugin.
+	const auto chunk = _this.hasAttribute("chunk") ? decodeVstChunkState(_this.attribute("chunk")) : QByteArray{};
+	if (!hasNativePreset && _this.hasAttribute("program"))
+	{
+		// Zero-program plugins historically serialized program=0.
+		if (programPage(0, 1).total > 0)
+		{
+			bool valid = false;
+			const int index = _this.attribute("program").toInt(&valid);
+			if (!valid) { throw std::runtime_error("Invalid saved VST program index"); }
+			setProgram(index);
+		}
 	}
 
-	const int num_params = _this.attribute( "numparams" ).toInt();
 	// if it exists try to load settings chunk
 	if( _this.hasAttribute( "chunk" ) )
 	{
-		loadChunk( QByteArray::fromBase64(
-				_this.attribute( "chunk" ).toUtf8() ) );
+		loadChunk(chunk);
 	}
+	else if (hasNativePreset) { loadNativePresetState(nativePreset); }
 	else if( num_params > 0 )
 	{
 		// no chunk, restore individual parameters
@@ -294,12 +285,16 @@ void VstPlugin::saveSettings( QDomDocument & _doc, QDomElement & _this )
 	QByteArray chunk = saveChunk();
 	if( !chunk.isEmpty() )
 	{
+		_this.removeAttribute("nativepreset");
 		_this.setAttribute( "chunk", QString( chunk.toBase64() ) );
 	}
 	else
 	{
-		// plugin doesn't seem to support chunks, therefore save
-		// individual parameters
+		// Preserve the whole native bank for recovery, while retaining the legacy
+		// current-program fields for older LMMS versions. Zero-program effects use FXP.
+		_this.removeAttribute("chunk");
+		_this.setAttribute("nativepreset", QString::fromLatin1(saveNativePresetState().toBase64()));
+		// Older readers still restore the selected program's individual parameters.
 		const QMap<QString, QString> & dump = parameterDump();
 		_this.setAttribute( "numparams", dump.size() );
 		for( QMap<QString, QString>::const_iterator it = dump.begin();
@@ -330,8 +325,8 @@ void VstPlugin::toggleUI()
 void VstPlugin::setTempo( bpm_t _bpm )
 {
 	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
 	sendMessage( message( IdVstSetTempo ).addInt( _bpm ) );
-	unlock();
 }
 
 
@@ -340,10 +335,10 @@ void VstPlugin::setTempo( bpm_t _bpm )
 void VstPlugin::updateSampleRate()
 {
 	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
 	sendMessage( message( IdSampleRateInformation ).
 			addInt( Engine::audioEngine()->outputSampleRate() ) );
 	waitForMessage( IdInformationUpdated, true );
-	unlock();
 }
 
 
@@ -352,22 +347,78 @@ void VstPlugin::updateSampleRate()
 int VstPlugin::currentProgram()
 {
 	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
 	sendMessage( message( IdVstCurrentProgram ) );
-	waitForMessage( IdVstCurrentProgram, true );
-	unlock();
+	if (waitForMessage(IdVstCurrentProgram, true).id != IdVstCurrentProgram || failed())
+	{ throw std::runtime_error("VST worker did not report its current program"); }
 
 	return m_currentProgram;
+}
+
+Plugin::NativeProgramPage VstPlugin::programPage(int offset, int limit)
+{
+	if (offset < 0 || limit < 1 || limit > 1024) { throw std::runtime_error("Invalid VST program page bounds"); }
+	FileResourceIO::EventSuspension events;
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
+	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	sendMessage(message(IdVstProgramPage).addInt(offset).addInt(limit));
+	const auto reply = waitForMessage(IdVstProgramPage, true);
+	if (reply.id != IdVstProgramPage || failed()) { throw std::runtime_error("VST worker did not return a program page"); }
+	if (reply.getQString(0) != "1") { throw std::runtime_error(("VST program query failed: " + reply.getQString(1)).toStdString()); }
+	const auto integer = [&](int field) {
+		bool valid = false; const int value = reply.getQString(field).toInt(&valid);
+		if (!valid) { throw std::runtime_error("Malformed VST program reply"); } return value;
+	};
+	Plugin::NativeProgramPage page;
+	page.total = integer(1); page.current = integer(2); page.offset = integer(3);
+	const int length = integer(4);
+	if (page.total < 0 || page.offset != offset || length < 0 || length > limit
+		|| length != (offset >= page.total ? 0 : std::min(limit, page.total - offset))
+		|| (page.total == 0 ? page.current != -1 : page.current < 0 || page.current >= page.total))
+	{ throw std::runtime_error("Inconsistent VST program page"); }
+	for (int relative = 0; relative < length; ++relative)
+	{
+		const int field = 5 + relative * 3;
+		const int index = integer(field), available = integer(field + 2);
+		if (index != offset + relative || (available != 0 && available != 1)) { throw std::runtime_error("Malformed VST program entry"); }
+		page.programs.push_back({index, reply.getQString(field + 1), available == 1});
+	}
+	m_currentProgram = page.current;
+	return page;
 }
 
 
 
 const QMap<QString, QString> & VstPlugin::parameterDump()
 {
+	if (QThread::currentThread() != thread()) { throw std::runtime_error("VST parameter queries require the plugin owner thread"); }
+	FileResourceIO::EventSuspension events;
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
 	lock();
-	sendMessage( IdVstGetParameterDump );
-	waitForMessage( IdVstParameterDump, true );
-	unlock();
-
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	if (failed() || m_parameterCount < 0) { throw std::runtime_error("VST worker is unavailable for parameter queries"); }
+	QMap<QString, QString> staged;
+	int offset = 0;
+	do
+	{
+		QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+		sendMessage(message(IdVstParameterPage).addInt(offset).addInt(VstParameterPageSize));
+		// Blocking waits retain the request deadline without dispatching reentrant Qt timers.
+		const auto reply = waitForMessage(IdVstParameterPage);
+		if (reply.id != IdVstParameterPage || failed()) { throw std::runtime_error("VST worker did not return its parameters"); }
+		const auto entries = readVstParameterPage(m_parameterCount, offset, reply.argumentCount(),
+			[&reply](int field) { return reply.getString(field); });
+		for (const auto& entry : entries)
+		{
+			const auto index = QString::number(entry.index);
+			staged.insert("param" + index, index + ":" + QString::fromStdString(entry.name)
+				+ ":" + QString::fromStdString(vstParameterText(entry.value)));
+		}
+		offset += static_cast<int>(entries.size());
+	} while (offset < m_parameterCount);
+	QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+	m_parameterDump = std::move(staged);
 	return m_parameterDump;
 }
 
@@ -376,21 +427,48 @@ const QMap<QString, QString> & VstPlugin::parameterDump()
 
 void VstPlugin::setParameterDump( const QMap<QString, QString> & _pdump )
 {
-	message m( IdVstSetParameterDump );
-	m.addInt( _pdump.size() );
-	for (const auto& str : _pdump)
-	{
-		const VstParameterDumpItem item =
-		{
-			str.section(':', 0, 0).toInt(), "", LocaleHelper::toFloat(str.section(':', 2, -1))
-		};
-		m.addInt( item.index );
-		m.addString( item.shortLabel );
-		m.addFloat( item.value );
-	}
+	if (QThread::currentThread() != thread()) { throw std::runtime_error("VST parameter restore requires the plugin owner thread"); }
+	FileResourceIO::EventSuspension events;
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
+	const auto parameters = VstParameterModels::decode(_pdump, true);
 	lock();
-	sendMessage( m );
-	unlock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	if (m_parameterCount < 0 || parameters.size() != static_cast<std::size_t>(m_parameterCount))
+	{ throw std::runtime_error("Saved VST parameter count differs from the loaded plugin"); }
+	if (failed()) { throw std::runtime_error("VST worker is unavailable for parameter restore"); }
+	const auto exchange = [this](const message& request) {
+		sendMessage(request);
+		const auto reply = waitForMessage(IdVstParameterRestore);
+		if (reply.id != IdVstParameterRestore || failed())
+		{ throw std::runtime_error("VST worker did not acknowledge parameter restore"); }
+		if (reply.argumentCount() == 2 && reply.getString(0) == "0")
+		{ throw std::runtime_error("VST parameter restore failed: " + reply.getString(1)); }
+		if (reply.argumentCount() != 1 || reply.getString(0) != "1")
+		{ throw std::runtime_error("Malformed VST parameter restore acknowledgment"); }
+	};
+	try
+	{
+		exchange(message(IdVstParameterRestore).addString("begin").addInt(m_parameterCount));
+		for (int offset = 0; offset < m_parameterCount; )
+		{
+			QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+			const auto range = vstParameterRange(m_parameterCount, offset, VstParameterPageSize);
+			message page(IdVstParameterRestore);
+			page.addString("append").addInt(offset).addInt(range.count);
+			for (int relative = 0; relative < range.count; ++relative)
+			{ page.addString(vstParameterText(parameters[offset + relative].value)); }
+			exchange(page);
+			offset += range.count;
+		}
+		QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+		exchange(message(IdVstParameterRestore).addString("commit"));
+	}
+	catch (...)
+	{
+		// Discard any staged values while preserving the original refusal/cancellation.
+		if (!failed()) { try { exchange(message(IdVstParameterRestore).addString("abort")); } catch (...) {} }
+		throw;
+	}
 }
 
 QWidget *VstPlugin::pluginWidget()
@@ -456,64 +534,83 @@ bool VstPlugin::processMessage( const message & _m )
 			break;
 
 		case IdVstProgramNames:
-			m_allProgramNames = _m.getQString();
+			m_allProgramNames = _m.getQString().split('|');
+			break;
+		case IdVstProgramPage:
+		case IdVstSelectProgram:
+		case IdVstParameterPage:
+		case IdVstParameterTextPage:
+		case IdVstParameterRestore:
+			// The waiting caller validates the complete structured reply.
 			break;
 
 		case IdVstLoadAllParameterLabels:
-		{
-			const auto labels = _m.getQString();
-			m_allParameterLabels.clear();
-			for (int i = 0; i < labels.size();)
-			{
-				const int length = labels[i].digitValue();
-				m_allParameterLabels.push_back(labels.mid(i + 1, length));
-				i += length + 1;
-			}
-			break;
-		}
-
 		case IdVstLoadAllParameterDisplays:
 		{
-			const auto displays = _m.getQString();
-			m_allParameterDisplays.clear();
-			for (int i = 0; i < displays.size();)
-			{
-				const int length = displays[i].digitValue();
-				m_allParameterDisplays.push_back(displays.mid(i + 1, length));
-				i += length + 1;
-			}
+			if (_m.argumentCount() == 2 && _m.getString(0) == "-1")
+			{ throw std::runtime_error("VST parameter text query failed: " + _m.getString(1)); }
+			if (_m.argumentCount() != 1) { throw std::runtime_error("Malformed VST parameter text reply"); }
+			const auto fields = decodeVstParameterTextList(_m.getString(), m_parameterCount);
+			std::vector<QString> staged;
+			staged.reserve(fields.size());
+			for (const auto& field : fields) { staged.push_back(QString::fromStdString(field)); }
+			auto& destination = _m.id == IdVstLoadAllParameterLabels ? m_allParameterLabels : m_allParameterDisplays;
+			destination = std::move(staged);
 			break;
 		}
 
 		case IdVstUpdateParameterLabel:
-			m_allParameterLabels.at(static_cast<std::size_t>(_m.getInt(0))) = _m.getQString(1);
-			break;
-
 		case IdVstUpdateParameterDisplay:
-			m_allParameterDisplays.at(static_cast<std::size_t>(_m.getInt(0))) = _m.getQString(1);
+		{
+			if (_m.argumentCount() != 2) { throw std::runtime_error("Malformed VST parameter text update"); }
+			if (_m.getString(0) == "-1")
+			{ throw std::runtime_error("VST parameter text query failed: " + _m.getString(1)); }
+			const int index = vstParameterInteger(_m.getString(0));
+			auto& destination = _m.id == IdVstUpdateParameterLabel ? m_allParameterLabels : m_allParameterDisplays;
+			if (index < 0 || index >= m_parameterCount || destination.size() != static_cast<std::size_t>(m_parameterCount)
+				|| _m.getString(1).size() > 8)
+			{ throw std::runtime_error("VST parameter text update is outside the loaded layout"); }
+			destination[index] = _m.getQString(1);
 			break;
+		}
 
 		case IdVstPluginUniqueID:
 			// TODO: display graphically in case of failure
 			printf("unique ID: %s\n", _m.getString().c_str() );
 			break;
 
+		case IdVstParameterCount:
+		{
+			bool valid = false;
+			const int count = _m.getQString().toInt(&valid);
+			if (!valid || count < 0 || _m.argumentCount() != 1)
+			{ throw std::runtime_error("VST worker reported an invalid parameter count"); }
+			m_parameterCount = count;
+			break;
+		}
 		case IdVstParameterDump:
 		{
-			m_parameterDump.clear();
-			const int num_params = _m.getInt();
+			bool valid = false;
+			const int num_params = _m.getQString().toInt(&valid);
+			if (valid && num_params == -1 && _m.argumentCount() == 2)
+			{ throw std::runtime_error(("VST parameter query failed: " + _m.getQString(1)).toStdString()); }
+			if (!valid || num_params != m_parameterCount || num_params < 0
+				|| num_params > (std::numeric_limits<int>::max() - 1) / 3
+				|| _m.argumentCount() != 1 + std::size_t{3} * num_params)
+			{ throw std::runtime_error("VST worker parameter count changed or is malformed"); }
+			QMap<QString, QString> staged;
 			int p = 0;
 			for( int i = 0; i < num_params; ++i )
 			{
-				VstParameterDumpItem item;
-				item.index = _m.getInt( ++p );
-				item.shortLabel = _m.getString( ++p );
-				item.value = _m.getFloat( ++p );
-	m_parameterDump["param" + QString::number( item.index )] =
-				QString::number( item.index ) + ":" +
-/*uncomented*/				/*QString( item.shortLabel )*/ QString::fromStdString(item.shortLabel) + ":" +
-					QString::number( item.value );
+				const auto indexText = _m.getQString(++p);
+				const int index = indexText.toInt(&valid);
+				if (!valid || index != i) { throw std::runtime_error("VST worker parameter index is malformed"); }
+				const auto name = _m.getQString(++p);
+				const auto value = _m.getQString(++p);
+				staged["param" + QString::number(index)] = indexText + ":" + name + ":" + value;
 			}
+			VstParameterModels::decode(staged);
+			m_parameterDump = std::move(staged);
 			break;
 		}
 		default:
@@ -530,29 +627,55 @@ QWidget *VstPlugin::editor()
 }
 
 
-void VstPlugin::openPreset()
+void VstPlugin::presetFileRequest(const QString& path, const char* operation)
 {
-	gui::FileDialog ofd(nullptr, tr("Open Preset"), "", tr("VST Plugin Preset (*.fxp *.fxb)"));
-	ofd.setFileMode(gui::FileDialog::ExistingFiles);
-	if (ofd.exec() == QDialog::Accepted && !ofd.selectedFiles().isEmpty())
-	{
-		lock();
-		sendMessage(message(IdLoadPresetFile).addString(QSTR_TO_STDSTR(
-			QDir::toNativeSeparators(ofd.selectedFiles()[0]))));
-		waitForMessage(IdLoadPresetFile, true);
-		unlock();
-	}
+	if (path.isEmpty() || path.contains(QChar(0))) { throw std::runtime_error("VST preset requires a valid file path"); }
+	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	if (failed()) { throw std::runtime_error("VST worker is unavailable"); }
+	sendMessage(message(IdVstPresetFile).addString(QSTR_TO_STDSTR(QDir::toNativeSeparators(path))).addString(operation));
+	const auto reply = waitForMessage(IdVstPresetFile, true);
+	if (reply.id != IdVstPresetFile || failed()) { throw std::runtime_error("VST worker did not acknowledge the preset operation"); }
+	if (reply.getQString(0) != "1") { throw std::runtime_error(("VST preset operation failed: " + reply.getQString(1)).toStdString()); }
 }
 
+Plugin::NativePresetInfo VstPlugin::readPresetFile(const QString& path, bool apply)
+{
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
+	return readVstPresetStorage(path, apply, [this](const QString& file, const char* mode) { presetFileRequest(file, mode); });
+}
 
+Plugin::NativePresetInfo VstPlugin::inspectPresetFile(const QString& path) { return readPresetFile(path, false); }
+Plugin::NativePresetInfo VstPlugin::loadPresetFile(const QString& path) { return readPresetFile(path, true); }
 
+Plugin::NativePresetInfo VstPlugin::savePresetFile(const QString& path, bool bank)
+{
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
+	return saveVstPresetStorage(path, bank, [this](const QString& file, const char* mode) { presetFileRequest(file, mode); });
+}
+
+QString VstPlugin::presetOpenPath()
+{
+	gui::FileDialog dialog(nullptr, tr("Open Preset"), "", tr("VST Plugin Preset (*.fxp *.fxb)"));
+	dialog.setFileMode(gui::FileDialog::ExistingFile);
+	return dialog.exec() == QDialog::Accepted && !dialog.selectedFiles().isEmpty() ? dialog.selectedFiles().first() : QString{};
+}
 
 void VstPlugin::setProgram( int index )
 {
+	FileResourceIO::EventSuspension events;
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
+	const auto page = programPage(0, 1);
+	if (index < 0 || index >= page.total) { throw std::out_of_range("VST program index is outside the loaded plugin"); }
 	lock();
-	sendMessage( message( IdVstSetProgram ).addInt( index ) );
-	waitForMessage( IdVstSetProgram, true );
-	unlock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	sendMessage(message(IdVstSelectProgram).addInt(index));
+	const auto reply = waitForMessage(IdVstSelectProgram, true);
+	if (reply.id != IdVstSelectProgram || failed()) { throw std::runtime_error("VST worker did not acknowledge program selection"); }
+	if (reply.getQString(0) != "1") { throw std::runtime_error(("VST program selection failed: " + reply.getQString(1)).toStdString()); }
+	bool valid = false; const int actual = reply.getQString(1).toInt(&valid);
+	if (!valid || actual != index) { throw std::runtime_error("VST worker selected a different program"); }
+	m_currentProgram = actual;
 }
 
 
@@ -560,10 +683,10 @@ void VstPlugin::setProgram( int index )
 
 void VstPlugin::rotateProgram( int offset )
 {
-	lock();
-	sendMessage( message( IdVstRotateProgram ).addInt( offset ) );
-	waitForMessage( IdVstRotateProgram, true );
-	unlock();
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
+	const auto page = programPage(0, 1);
+	if (page.total == 0) { return; }
+	setProgram(static_cast<int>(std::clamp<qint64>(static_cast<qint64>(page.current) + offset, 0, page.total - 1)));
 }
 
 
@@ -571,10 +694,21 @@ void VstPlugin::rotateProgram( int offset )
 
 void VstPlugin::loadProgramNames()
 {
-	lock();
-	sendMessage( message( IdVstProgramNames ) );
-	waitForMessage( IdVstProgramNames, true );
-	unlock();
+	FileResourceIO::EventSuspension events;
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
+	QStringList names;
+	int offset = 0, total = -1;
+	do
+	{
+		QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+		const auto page = programPage(offset, 1024);
+		if (total >= 0 && total != page.total) { throw std::runtime_error("VST program count changed during enumeration"); }
+		total = page.total;
+		for (const auto& program : page.programs)
+		{ names.append(program.nameAvailable ? program.name : tr("Program %1 (name unavailable)").arg(program.index + 1)); }
+		offset += static_cast<int>(page.programs.size());
+	} while (offset < total);
+	m_allProgramNames = std::move(names);
 }
 
 
@@ -582,10 +716,7 @@ void VstPlugin::loadProgramNames()
 
 void VstPlugin::loadParameterLabels()
 {
-	lock();
-	sendMessage(message(IdVstLoadAllParameterLabels));
-	waitForMessage(IdVstLoadAllParameterLabels, true);
-	unlock();
+	requestParameterText(IdVstLoadAllParameterLabels);
 }
 
 
@@ -593,10 +724,7 @@ void VstPlugin::loadParameterLabels()
 
 void VstPlugin::loadParameterDisplays()
 {
-	lock();
-	sendMessage(message(IdVstLoadAllParameterDisplays));
-	waitForMessage(IdVstLoadAllParameterDisplays, true);
-	unlock();
+	requestParameterText(IdVstLoadAllParameterDisplays);
 }
 
 
@@ -604,10 +732,7 @@ void VstPlugin::loadParameterDisplays()
 
 void VstPlugin::updateParameterLabel(int index)
 {
-	lock();
-	sendMessage(message(IdVstUpdateParameterLabel).addInt(index));
-	waitForMessage(IdVstUpdateParameterLabel, true);
-	unlock();
+	requestParameterText(IdVstUpdateParameterLabel, index);
 }
 
 
@@ -615,59 +740,82 @@ void VstPlugin::updateParameterLabel(int index)
 
 void VstPlugin::updateParameterDisplay(int index)
 {
-	lock();
-	sendMessage(message(IdVstUpdateParameterDisplay).addInt(index));
-	waitForMessage(IdVstUpdateParameterDisplay, true);
-	unlock();
+	requestParameterText(IdVstUpdateParameterDisplay, index);
 }
 
-
-
-
-void VstPlugin::savePreset()
+void VstPlugin::requestParameterText(int messageId, int index)
 {
-	QString presName = currentProgramName().isEmpty() ? tr(": default") : currentProgramName();
-	presName.replace("\"", "'"); // QFileDialog unable to handle double quotes properly
-
-	gui::FileDialog sfd(nullptr, tr("Save Preset"), presName.section(": ", 1, 1) + tr(".fxp"),
-		tr("VST Plugin Preset (*.fxp *.fxb)"));
-
-	if (p_name != "") // remember last directory
+	if (QThread::currentThread() != thread()) { throw std::runtime_error("VST parameter text queries require the plugin owner thread"); }
+	FileResourceIO::EventSuspension events;
+	const auto audioGuard = Engine::audioEngine()->requestChangesGuard();
+	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	if (failed() || m_parameterCount < 0) { throw std::runtime_error("VST worker is unavailable for parameter text queries"); }
+	const bool single = messageId == IdVstUpdateParameterLabel || messageId == IdVstUpdateParameterDisplay;
+	if (!single)
 	{
-		sfd.setDirectory(QFileInfo(p_name).absolutePath());
+		std::vector<QString> staged;
+		staged.reserve(m_parameterCount);
+		const char* kind = messageId == IdVstLoadAllParameterLabels ? "labels" : "displays";
+		int offset = 0;
+		do
+		{
+			QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+			sendMessage(message(IdVstParameterTextPage).addInt(offset).addInt(VstParameterPageSize).addString(kind));
+			const auto reply = waitForMessage(IdVstParameterTextPage);
+			if (reply.id != IdVstParameterTextPage || failed()) { throw std::runtime_error("VST worker did not return parameter text"); }
+			const auto entries = readVstParameterTextPage(m_parameterCount, offset, reply.argumentCount(),
+				[&reply](int field) { return reply.getString(field); });
+			for (const auto& entry : entries) { staged.push_back(QString::fromStdString(entry)); }
+			offset += static_cast<int>(entries.size());
+		} while (offset < m_parameterCount);
+		QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+		auto& destination = messageId == IdVstLoadAllParameterLabels ? m_allParameterLabels : m_allParameterDisplays;
+		destination = std::move(staged);
+		return;
 	}
-
-	sfd.setAcceptMode(gui::FileDialog::AcceptSave);
-	sfd.setFileMode(gui::FileDialog::AnyFile);
-	if (sfd.exec() == QDialog::Accepted && !sfd.selectedFiles().isEmpty() && sfd.selectedFiles()[0] != "")
+	message request(messageId);
+	if (single)
 	{
-		QString fns = sfd.selectedFiles()[0];
-		p_name = fns;
-
-		if ((fns.toUpper().indexOf(tr(".FXP")) == -1) && (fns.toUpper().indexOf(tr(".FXB")) == -1))
-		{
-			fns = fns + tr(".fxb");
-		}
-		else
-		{
-			fns = fns.left(fns.length() - 4) + (fns.right(4)).toLower();
-		}
-		lock();
-		sendMessage(message(IdSavePresetFile).addString(QSTR_TO_STDSTR(QDir::toNativeSeparators(fns))));
-		waitForMessage(IdSavePresetFile, true);
-		unlock();
+		if (index < 0 || index >= m_parameterCount) { throw std::out_of_range("VST parameter text index is outside the loaded layout"); }
+		const auto& cached = messageId == IdVstUpdateParameterLabel ? m_allParameterLabels : m_allParameterDisplays;
+		if (cached.size() != static_cast<std::size_t>(m_parameterCount))
+		{ throw std::runtime_error("Load VST parameter text before updating individual entries"); }
+		request.addInt(index);
 	}
+	sendMessage(request);
+	const auto reply = waitForMessage(messageId, true);
+	if (failed() || reply.id != messageId) { throw std::runtime_error("VST worker did not return parameter text"); }
 }
 
 
 
+
+QString VstPlugin::presetSavePath()
+{
+	QString name = currentProgramName().section(": ", 1);
+	if (name.isEmpty()) { name = "default"; }
+	name.replace('"', '\'');
+	gui::FileDialog dialog(nullptr, tr("Save Preset"), name + ".fxp", tr("VST Plugin Preset (*.fxp *.fxb)"));
+	if (!p_name.isEmpty()) { dialog.setDirectory(QFileInfo(p_name).absolutePath()); }
+	dialog.setAcceptMode(gui::FileDialog::AcceptSave);
+	dialog.setFileMode(gui::FileDialog::AnyFile);
+	if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty()) { return {}; }
+	auto path = dialog.selectedFiles().first();
+	if (path.isEmpty()) { return {}; }
+	const auto extension = QFileInfo(path).suffix().toLower();
+	if (extension != "fxp" && extension != "fxb") { path += ".fxp"; }
+	p_name = path;
+	return path;
+}
 
 void VstPlugin::setParam( int i, float f )
 {
 	lock();
-	sendMessage( message( IdVstSetParameter ).addInt( i ).addFloat( f ) );
-	//waitForMessage( IdVstSetParameter, true );
-	unlock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	if (failed() || i < 0 || i >= m_parameterCount || !std::isfinite(f) || f < 0.f || f > 1.f)
+	{ throw std::runtime_error("Cannot write an invalid VST parameter or a failed worker"); }
+	sendMessage(message(IdVstSetParameter).addInt(i).addString(vstParameterText(f)));
 }
 
 
@@ -675,8 +823,8 @@ void VstPlugin::setParam( int i, float f )
 void VstPlugin::idleUpdate()
 {
 	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
 	sendMessage( message( IdVstIdleUpdate ) );
-	unlock();
 }
 
 void VstPlugin::showUI()
@@ -710,51 +858,69 @@ void VstPlugin::hideUI()
 void VstPlugin::handleClientEmbed()
 {
 	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
 	sendMessage( IdShowUI );
-	unlock();
 }
 
 
 
-void VstPlugin::loadChunk( const QByteArray & _chunk )
+void VstPlugin::loadChunk(const QByteArray& chunk)
 {
-	QTemporaryFile tf;
-	if( tf.open() )
-	{
-		tf.write( _chunk );
-		tf.flush();
-
-		lock();
-		sendMessage( message( IdLoadSettingsFromFile ).
-				addString(
-					QSTR_TO_STDSTR(
-						QDir::toNativeSeparators( tf.fileName() ) ) ).
-				addInt( _chunk.size() ) );
-		waitForMessage( IdLoadSettingsFromFile, true );
-		unlock();
-	}
+	FileResourceIO::EventSuspension events;
+	if (chunk.isEmpty() || chunk.size() > static_cast<qint64>(VstPresetMaxBytes)) { throw std::runtime_error("Invalid saved native VST chunk length"); }
+	QTemporaryDir directory;
+	if (!directory.isValid()) { throw std::runtime_error("Cannot create native VST chunk storage"); }
+	const auto path = directory.filePath("chunk.bin"); QFile file(path);
+	if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly) || file.write(chunk) != chunk.size() || !file.flush())
+	{ throw std::runtime_error("Cannot stage the saved native VST chunk"); }
+	file.close();
+	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	sendMessage(message(IdLoadSettingsFromFile).addString(QSTR_TO_STDSTR(QDir::toNativeSeparators(path))).addInt(chunk.size()));
+	const auto reply = waitForMessage(IdLoadSettingsFromFile, true);
+	if (failed() || reply.id != IdLoadSettingsFromFile || reply.getQString(0) != "1")
+	{ throw std::runtime_error(("Native VST chunk load failed: " + reply.getQString(1)).toStdString()); }
 }
-
-
-
 
 QByteArray VstPlugin::saveChunk()
 {
-	QByteArray a;
-	QTemporaryFile tf;
-	if( tf.open() )
-	{
-		lock();
-		sendMessage( message( IdSaveSettingsToFile ).
-				addString(
-					QSTR_TO_STDSTR(
-						QDir::toNativeSeparators( tf.fileName() ) ) ) );
-		waitForMessage( IdSaveSettingsToFile, true );
-		unlock();
-		a = tf.readAll();
-	}
+	FileResourceIO::EventSuspension events;
+	QTemporaryDir directory;
+	if (!directory.isValid()) { throw std::runtime_error("Cannot create native VST chunk storage"); }
+	const auto path = directory.filePath("chunk.bin");
+	lock();
+	const auto unlockGuard = qScopeGuard([this] { unlock(); });
+	sendMessage(message(IdSaveSettingsToFile).addString(QSTR_TO_STDSTR(QDir::toNativeSeparators(path))));
+	const auto reply = waitForMessage(IdSaveSettingsToFile, true);
+	if (failed() || reply.id != IdSaveSettingsToFile || reply.getQString(0) != "1")
+	{ throw std::runtime_error(("Native VST chunk save failed: " + reply.getQString(1)).toStdString()); }
+	if (reply.getQString(1) == "0") { return {}; }
+	if (reply.getQString(1) != "1") { throw std::runtime_error("Malformed native VST chunk save response"); }
+	const auto chunk = vst_preset_storage_detail::readPresetBytes(path);
+	if (chunk.isEmpty()) { throw std::runtime_error("Native VST chunk save returned an empty file"); }
+	return chunk;
+}
 
-	return a;
+QByteArray VstPlugin::saveNativePresetState()
+{
+	QTemporaryDir directory;
+	if (!directory.isValid()) { throw std::runtime_error("Cannot create native VST preset storage"); }
+	const auto path = directory.filePath("preset.bin");
+	presetFileRequest(path, "save-state");
+	const auto bytes = vst_preset_storage_detail::readPresetBytes(path);
+	vst_preset_storage_detail::presetInfo(bytes);
+	return bytes;
+}
+
+void VstPlugin::loadNativePresetState(const QByteArray& bytes)
+{
+	QTemporaryDir directory;
+	if (!directory.isValid()) { throw std::runtime_error("Cannot create native VST preset storage"); }
+	const auto path = directory.filePath("preset.bin"); QFile file(path);
+	if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly) || file.write(bytes) != bytes.size() || !file.flush())
+	{ throw std::runtime_error("Cannot stage saved native VST preset state"); }
+	file.close();
+	presetFileRequest(path, "load");
 }
 
 void VstPlugin::toggleEditorVisibility( int visible )
@@ -772,6 +938,7 @@ void VstPlugin::toggleEditorVisibility( int visible )
 
 void VstPlugin::createUI( QWidget * parent )
 {
+	if (!gui::getGUI() || m_embedMethod == "headless") { return; }
 	if ( m_pluginWidget ) {
 		qWarning() << "VstPlugin::createUI called twice";
 		m_pluginWidget->setParent( parent );
@@ -917,15 +1084,19 @@ auto VstPluginKnob::currentValueToTextUpdate() -> std::optional<QString>
 
 auto VstPluginKnob::getParameterText() const -> QString
 {
-	m_plugin->updateParameterLabel(m_paramIndex);
-	m_plugin->updateParameterDisplay(m_paramIndex);
-
-	const auto& paramLabels = m_plugin->allParameterLabels();
-	const auto& paramDisplays = m_plugin->allParameterDisplays();
-	assert(paramLabels.size() == paramDisplays.size());
-
-	assert(static_cast<std::size_t>(m_paramIndex) < paramLabels.size());
-	return paramDisplays[m_paramIndex] + ' ' + paramLabels[m_paramIndex];
+	try
+	{
+		m_plugin->updateParameterLabel(m_paramIndex);
+		m_plugin->updateParameterDisplay(m_paramIndex);
+		const auto& paramLabels = m_plugin->allParameterLabels();
+		const auto& paramDisplays = m_plugin->allParameterDisplays();
+		return paramDisplays.at(m_paramIndex) + ' ' + paramLabels.at(m_paramIndex);
+	}
+	catch (const std::exception& error)
+	{
+		// Metadata failure must not throw out of a Qt paint/event callback.
+		return tr("VST parameter unavailable: %1").arg(QString::fromUtf8(error.what()));
+	}
 }
 
 } // namespace gui

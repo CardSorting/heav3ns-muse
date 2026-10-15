@@ -50,6 +50,13 @@ class FreeBoyInstrument : public Instrument
 {
 	Q_OBJECT
 public:
+	std::vector<GraphResource> graphResources() override
+	{
+		return {
+			{"wave", tr("Wave channel samples"), "4-bit amplitude", &m_graphModel}
+		};
+	}
+
 
 	FreeBoyInstrument( InstrumentTrack * _instrument_track );
 	~FreeBoyInstrument() override = default;

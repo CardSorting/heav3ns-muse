@@ -37,6 +37,13 @@ namespace lmms
 class WaveShaperEffect : public Effect
 {
 public:
+	std::vector<GraphResource> graphResources() override
+	{
+		return {
+			{"transfer", tr("Transfer curve"), "absolute output amplitude", &m_wsControls.m_wavegraphModel}
+		};
+	}
+
 	WaveShaperEffect( Model * _parent,
 			const Descriptor::SubPluginFeatures::Key * _key );
 	~WaveShaperEffect() override = default;

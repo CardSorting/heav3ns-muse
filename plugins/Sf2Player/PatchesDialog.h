@@ -2,7 +2,7 @@
  * PatchesDialog.h - display sf2 patches
  *
  * Copyright (c) 2008 Paul Giblock <drfaygo/at/gmail/dot/com>
- * 
+ *
  * This file is part of LMMS - https://lmms.io
  *
  * This program is free software; you can redistribute it and/or
@@ -23,92 +23,73 @@
  */
 
 
-#ifndef _PATCHES_DIALOG_H
-#define _PATCHES_DIALOG_H
-
-#include <fluidsynth/types.h>
-#include <QSortFilterProxyModel>
-#include <QStandardItemModel>
-#include <QEvent>
+#ifndef LMMS_SF2_PATCHES_DIALOG_H
+#define LMMS_SF2_PATCHES_DIALOG_H
 
 #include "ui_PatchesDialog.h"
-#include "LcdSpinBox.h"
+#include "Sf2Player.h"
+#include <QPointer>
+#include <QVector>
+#include <QStandardItemModel>
+#include <QSortFilterProxyModel>
+#include <QTableView>
+#include <QLineEdit>
+#include <QItemSelectionModel>
+#include <cstdint>
+#include <memory>
+#include <vector>
 
-class QLabel;
-
-
+namespace lmms { class InstrumentTrack; class TrackContainer; class Song; class Mixer; class AudioEngine; }
 namespace lmms::gui
 {
-
-//----------------------------------------------------------------------------
-// qsynthPresetForm -- UI wrapper form.
-
 class PatchesDialog : public QDialog, private Ui::PatchesDialog
 {
 	Q_OBJECT
-
 public:
-	PatchesDialog(QWidget* pParent = 0, Qt::WindowFlags wflags = QFlag(0));
-	~PatchesDialog() override = default;
-
-	void setup(fluid_synth_t* pSynth, int iChan, const QString& _chanName, LcdSpinBoxModel* _bankModel,
-		LcdSpinBoxModel* _progModel, QLabel* _patchLabel);
-
+	PatchesDialog(QWidget* parent = nullptr, Qt::WindowFlags flags = {});
+	~PatchesDialog() override;
+	bool setup(Sf2Instrument* instrument, const QString& channelName);
 public slots:
 	void stabilizeForm();
 	void bankChanged();
-	void progChanged(const QModelIndex& cur, const QModelIndex& prev);
-
+	void progChanged(const QModelIndex& current, const QModelIndex& previous);
+	void filterChanged(const QString& text);
 protected slots:
 	void accept() override;
 	void reject() override;
-
-protected:
-
-	void setBankProg(int iBank, int iProg);
-
-	QTreeWidgetItem* findBankItem(int iBank);
-
-	//! Finds the program item of given program number id in the source model.
-	QStandardItem* findProgItem(int iProg);
-
-	bool validateForm();
-
-	/**
-		Updates the current patch, and updates the UI controls if `updateUi` is true.
-	*/
-	void updatePatch(bool updateUi);
-
-	/**
-		Selects a row in the program selector based off a signed offset from the currently selected row. Also clamps the
-		selection.
-	*/
-	void diffSelectProgRow(int offset);
-
 private:
-
+	class ViewGuard;
+	bool actorsValid() const;
+	bool contextValid(bool controls = true);
+	bool fillPrograms(int bank, int preferredProgram);
+	bool selectedProgram(int& bank, int& program) const;
+	void previewSelection();
+	void diffSelectProgRow(int offset);
 	void keyPressEvent(QKeyEvent* event) override;
-
-	fluid_synth_t* m_pSynth;
-	int m_iChan;
-	int m_iBank;
-	int m_iProg;
-	int m_dirty;
-	// int m_iDirtySetup;
-	// int m_iDirtyCount;
-
-	int m_selProg;
-	QString m_selProgName;
-
-	LcdSpinBoxModel* m_bankModel;
-	LcdSpinBoxModel* m_progModel;
-	QLabel* m_patchLabel;
-	QStandardItemModel m_progListSourceModel; //!< Programs on the selected bank
-	QSortFilterProxyModel m_progListProxyModel; //!< Model to allow searching
+	void invalidate();
+	QPointer<QTreeWidget> m_banksView;
+	QPointer<QTableView> m_programsView;
+	QPointer<QLineEdit> m_filter;
+	QPointer<QStandardItemModel> m_source;
+	QPointer<QSortFilterProxyModel> m_proxy;
+	QPointer<QItemSelectionModel> m_selection;
+	Sf2Instrument::ProgramPreviewToken m_previewToken;
+	QPointer<QPushButton> m_acceptButton;
+	QPointer<Sf2Instrument> m_instrument;
+	QPointer<InstrumentTrack> m_track;
+	QPointer<TrackContainer> m_container;
+	QPointer<Song> m_song;
+	QPointer<Mixer> m_mixer;
+	QPointer<AudioEngine> m_engine;
+	QPointer<AutomatableModel> m_bankModel, m_programModel;
+	std::shared_ptr<const void> m_identity;
+	QString m_path, m_projectPath;
+	std::vector<Instrument::Program> m_programs;
+	QVector<QMetaObject::Connection> m_connections;
+	std::uint64_t m_project = 0, m_routing = 0, m_epoch = 0;
+	sample_rate_t m_rate = 0;
+	float m_bank = 0, m_program = 0;
+	bool m_invalid = true, m_closed = false, m_preparing = false, m_committing = false;
 };
-
-
 } // namespace lmms::gui
-
 #endif
-

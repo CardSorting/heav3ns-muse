@@ -57,7 +57,7 @@ void Interval::saveSettings(QDomDocument &document, QDomElement &element)
 	}
 	else
 	{
-		element.setAttribute("cents", QString::number(m_cents));
+		element.setAttribute("cents", QString::number(m_cents, 'g', std::numeric_limits<float>::max_digits10));
 	}
 }
 
@@ -113,16 +113,17 @@ void Scale::loadSettings(const QDomElement &element)
 {
 	m_description = element.attribute("description");
 
-	QDomNode node = element.firstChild();
+	QDomElement node = element.firstChildElement("interval");
 	m_intervals.clear();
 
 	while (!node.isNull())
 	{
 		Interval temp;
-		temp.restoreState(node.toElement());
+		temp.restoreState(node);
 		m_intervals.push_back(temp);
-		node = node.nextSibling();
+		node = node.nextSiblingElement("interval");
 	}
+	if (m_intervals.empty()) { m_intervals.emplace_back(1, 1); }
 }
 
 

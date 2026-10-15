@@ -28,8 +28,12 @@
 #include <QApplication>
 #include <QAction>
 #include <QPushButton>
+#include <QPointer>
+#include <QScopeGuard>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include <algorithm>
+#include <memory>
 
 #include "DeprecationHelper.h"
 #include "EffectSelectDialog.h"
@@ -103,26 +107,8 @@ void EffectRackView::clearViews()
 
 void EffectRackView::moveUp( EffectView* view )
 {
-	fxChain()->moveUp( view->effect() );
-	if( view != m_effectViews.first() )
-	{
-		int i = 0;
-		for( QVector<EffectView *>::Iterator it = m_effectViews.begin(); 
-					it != m_effectViews.end(); it++, i++ )
-		{
-			if( *it == view )
-			{
-				break;
-			}
-		}
-
-		EffectView * temp = m_effectViews[ i - 1 ];
-
-		m_effectViews[i - 1] = view;
-		m_effectViews[i] = temp;
-
-		update();
-	}
+	if (!fxChain() || !m_effectViews.contains(view)) { return; }
+	fxChain()->moveUp(view->effect()); // Native dataChanged updates the view order.
 }
 
 
@@ -130,11 +116,8 @@ void EffectRackView::moveUp( EffectView* view )
 
 void EffectRackView::moveDown( EffectView* view )
 {
-	if( view != m_effectViews.last() )
-	{
-		// moving next effect up is the same
-		moveUp( *( std::find( m_effectViews.begin(), m_effectViews.end(), view ) + 1 ) );
-	}
+	if (!fxChain() || !m_effectViews.contains(view)) { return; }
+	fxChain()->moveDown(view->effect());
 }
 
 
@@ -142,12 +125,11 @@ void EffectRackView::moveDown( EffectView* view )
 
 void EffectRackView::deletePlugin( EffectView* view )
 {
-	Effect * e = view->effect();
-	m_effectViews.erase( std::find( m_effectViews.begin(), m_effectViews.end(), view ) );
-	delete view;
-	fxChain()->removeEffect( e );
-	e->deleteLater();
-	update();
+	if (!fxChain() || !m_effectViews.contains(view)) { return; }
+	// The chain notification retires the view while its effect is still alive.
+	// A refused detach leaves both the native effect and its view intact.
+	auto detached = fxChain()->takeEffect(view->effect());
+	if (detached) { detached.release()->deleteLater(); }
 }
 
 
@@ -155,28 +137,28 @@ void EffectRackView::deletePlugin( EffectView* view )
 
 void EffectRackView::update()
 {
+	if (!fxChain()) { clearViews(); return; }
 	QWidget * w = m_scrollArea->widget();
-	QVector<bool> view_map( qMax<int>( fxChain()->m_effects.size(),
-						m_effectViews.size() ), false );
+	auto unused = m_effectViews;
+	QVector<EffectView*> ordered;
+	ordered.reserve(static_cast<int>(fxChain()->effects().size()));
 
-	for (const auto& effect : fxChain()->m_effects)
+	for (const auto effect : fxChain()->effects())
 	{
-		int i = 0;
-		for (const auto& effectView : m_effectViews)
+		const auto found = std::find_if(unused.begin(), unused.end(), [effect](const auto view) { return view->model() == effect; });
+		if (found != unused.end())
 		{
-			if (effectView->model() == effect)
-			{
-				view_map[i] = true;
-				break;
-			}
-			++i;
+			ordered.append(*found);
+			unused.erase(found);
 		}
-		if( i >= m_effectViews.size() )
+		else
 		{
 			auto view = new EffectView(effect, w);
 			connect(view, &EffectView::movedUp, this, &EffectRackView::moveUp);
 			connect(view, &EffectView::movedDown, this, &EffectRackView::moveDown);
-			connect(view, &EffectView::deletedPlugin, this, &EffectRackView::deletePlugin, Qt::QueuedConnection);
+			connect(view, &EffectView::deletedPlugin, this, [this, pending = QPointer<EffectView>(view)] {
+				if (pending) { deletePlugin(pending.data()); }
+			}, Qt::QueuedConnection);
 
 			QAction* moveUpAction = new QAction(view);
 			moveUpAction->setShortcut(keySequence(Qt::Key_Up, Qt::AltModifier));
@@ -191,39 +173,20 @@ void EffectRackView::update()
 			view->addAction(moveDownAction);
 
 			view->show();
-			m_effectViews.append( view );
-			if( i < view_map.size() )
-			{
-				view_map[i] = true;
-			}
-			else
-			{
-				view_map.append( true );
-			}
-
+			ordered.append(view);
 		}
 	}
 
-	int i = 0, nView = 0;
+	m_effectViews = std::move(ordered);
+	for (const auto view : unused) { delete view; }
 
 	const int EffectViewMargin = 3;
 	m_lastY = EffectViewMargin;
 
-	for( QVector<EffectView *>::Iterator it = m_effectViews.begin(); 
-					it != m_effectViews.end(); i++ )
+	for (const auto view : m_effectViews)
 	{
-		if( i < view_map.size() && view_map[i] == false )
-		{
-			delete m_effectViews[nView];
-			it = m_effectViews.erase( it );
-		}
-		else
-		{
-			( *it )->move( EffectViewMargin, m_lastY );
-			m_lastY += ( *it )->height();
-			++nView;
-			++it;
-		}
+		view->move(EffectViewMargin, m_lastY);
+		m_lastY += view->height();
 	}
 
 	w->setFixedSize(EffectView::DEFAULT_WIDTH + 2 * EffectViewMargin, m_lastY);
@@ -236,21 +199,26 @@ void EffectRackView::update()
 
 void EffectRackView::addEffect()
 {
-	EffectSelectDialog esd( this );
-	esd.exec();
+	const QPointer<EffectRackView> owner(this);
+	QPointer<EffectChain> chain = fxChain();
+	if (!chain) { return; }
+	const QPointer<EffectSelectDialog> dialog(new EffectSelectDialog(this));
+	const auto cleanupDialog = qScopeGuard([&] { delete dialog.data(); }); dialog->exec();
 
-	if( esd.result() == QDialog::Rejected )
+	if (!owner || !dialog || dialog->result() == QDialog::Rejected || !chain || owner->fxChain() != chain.data())
 	{
 		return;
 	}
 
-	Effect * fx = esd.instantiateSelectedPlugin( fxChain() );
-
-	fxChain()->appendEffect( fx );
-	update();
+	const QPointer<Effect> fx(dialog->instantiateSelectedPlugin(chain.data()));
+	const auto cleanupEffect = qScopeGuard([&] { if (fx && !fx->effectChain()) { delete fx.data(); } });
+	if (!owner || !chain || !fx || owner->fxChain() != chain.data() || fx->effectChain()) { return; }
+	auto candidate = std::unique_ptr<Effect>(fx.data());
+	if (!chain->appendEffect(candidate)) { return; }
+	if (!owner || !chain || !fx || owner->fxChain() != chain.data()) { return; }
 
 	// Find the effectView, and show the controls
-	for (const auto& effectView : m_effectViews)
+	for (const auto& effectView : owner->m_effectViews)
 	{
 		if (effectView->effect() == fx)
 		{
@@ -267,7 +235,7 @@ void EffectRackView::addEffect()
 
 void EffectRackView::modelChanged()
 {
-	//clearViews();
+	if (!fxChain()) { clearViews(); return; }
 	m_effectsGroupBox->setModel( &fxChain()->m_enabledModel );
 	connect( fxChain(), SIGNAL(aboutToClear()), this, SLOT(clearViews()));
 	update();

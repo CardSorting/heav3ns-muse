@@ -26,6 +26,7 @@
 #define LMMS_CLIP_H
 
 #include <optional>
+#include <memory>
 
 #include <QColor>
 
@@ -56,6 +57,12 @@ public:
 	//! @param track The track that will contain the new object
 	Clip(Track* track);
 	~Clip() override; //!< Destroys the given clip.
+	QDomElement saveJournalState(QDomDocument& document, QDomElement& parent) override;
+	bool restoreJournalState(const QDomElement& state, QString& error) override;
+	BoolModel* mutedModel() { return &m_mutedModel; }
+	BoolModel* soloModel() { return &m_soloModel; }
+	const BoolModel* mutedModel() const { return &m_mutedModel; }
+	const BoolModel* soloModel() const { return &m_soloModel; }
 
 	inline Track * getTrack() const
 	{
@@ -129,6 +136,16 @@ public:
 	//! @param length The new length of the clip.
 	virtual void changeLength(const TimePos& length);
 	virtual void updateLength() {};
+	struct EditOptions
+	{
+		std::optional<int> position, length, offset;
+		std::optional<bool> autoResize, muted;
+		std::optional<QString> name;
+	};
+	// Checked compound metadata/geometry edit through the native virtual setters.
+	// A returned failure after callbacks can retain edits; the studio runtime
+	// supplies the broader project recovery boundary.
+	bool edit(const EditOptions& options, bool& changed, QString& error);
 
 	virtual gui::ClipView * createView( gui::TrackView * tv ) = 0;
 
@@ -154,6 +171,13 @@ public:
 	//! @brief Creates a copy of this clip
 	//! @return Pointer to the new clip object
 	virtual Clip* clone() = 0;
+	//! Copy native state to a compatible track on the model owner thread.
+	//! PatternStore destinations require an existing cell to replace. Other
+	//! destinations append a clip. The destination track owns the returned clip.
+	Clip* copyTo(Track* destination, Clip* replacement = nullptr) const;
+	//! Split at a relative tick position, preserving native offset semantics.
+	//! Returns the new right-hand clip, or nullptr for an invalid boundary.
+	Clip* splitAt(const TimePos& relativePosition);
 
 public slots:
 	void toggleMute(); //!< Mutes this Clip
@@ -169,8 +193,18 @@ protected:
 	//! @brief Creates a duplicate clip of the one provided.
 	//! @param other The clip object which will be copied.
 	Clip(const Clip& other);
+	Clip(const Clip& other, Track* destination);
+	Clip* cloneNative() const;
+	void saveControlSettings(QDomDocument& document, QDomElement& element, const QString& muteKey = "muted");
+	void loadControlSettings(const QDomElement& element, const QString& muteKey = "muted");
 
 private:
+	void saveCopyControlSettings(QDomDocument& document, QDomElement& element, const QString& muteKey = "muted");
+	void loadCopyControlSettings(const QDomElement& element, const QString& muteKey = "muted");
+	void requireIdleForCopy() const;
+	QDomDocument captureCopyControls() const;
+	Clip* copyToImpl(Track* destination, Clip* replacement, bool legacyClone) const;
+	std::unique_ptr<Clip> constructCopy(Track* destination) const;
 	Track * m_track;
 	QString m_name;
 
@@ -187,6 +221,9 @@ private:
 	std::optional<QColor> m_color;
 
 	friend class ClipView;
+	friend class Track;
+	friend class NativeClipTransfer;
+	friend class InlineAutomation;
 };
 
 

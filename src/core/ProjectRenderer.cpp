@@ -28,6 +28,7 @@
 #include "ProjectRenderer.h"
 #include "Song.h"
 #include "PerfLog.h"
+#include "RemotePlugin.h"
 
 #include "AudioFileWave.h"
 #include "AudioFileOgg.h"
@@ -81,8 +82,12 @@ ProjectRenderer::ProjectRenderer(
 	, m_fileDev(nullptr)
 	, m_progress(0)
 	, m_abort(false)
+	, m_remotePluginFailureCount(RemotePlugin::failureCount())
+	, m_dspFailureCount(Engine::audioEngine()->dspStatus().failures)
 {
-	AudioFileDeviceInstantiaton audioEncoderFactory = fileEncodeDevices[static_cast<std::size_t>(exportFileFormat)].m_getDevInst;
+	const auto formatIndex = static_cast<std::size_t>(exportFileFormat);
+	if (formatIndex >= NumFileFormats) { return; }
+	AudioFileDeviceInstantiaton audioEncoderFactory = fileEncodeDevices[formatIndex].m_getDevInst;
 
 	if (audioEncoderFactory)
 	{
@@ -96,9 +101,23 @@ ProjectRenderer::ProjectRenderer(
 			delete m_fileDev;
 			m_fileDev = nullptr;
 		}
+		else { m_unattachedFileDev.reset(m_fileDev); }
 	}
 }
 
+ProjectRenderer::~ProjectRenderer()
+{
+	if (isRunning()) { abortProcessing(); }
+	RemotePlugin::endRenderContext(m_remoteRenderContext.exchange(0));
+}
+
+bool ProjectRenderer::hasDspFailure() const
+{
+	const auto engine = Engine::audioEngine();
+	if (!engine) { return true; }
+	const auto state = engine->dspStatus();
+	return m_dspFailed || state.failure != AudioEngine::DspFailure::None || state.failures != m_dspFailureCount;
+}
 
 
 
@@ -126,71 +145,100 @@ ProjectRenderer::ExportFileFormat ProjectRenderer::getFileFormatFromExtension(
 QString ProjectRenderer::getFileExtensionFromFormat(
 		ExportFileFormat fmt )
 {
-	return fileEncodeDevices[static_cast<std::size_t>(fmt)].m_extension;
+	const auto index = static_cast<std::size_t>(fmt);
+	return index < NumFileFormats ? QString::fromLatin1(fileEncodeDevices[index].m_extension) : QString{};
 }
 
 
 
 
-void ProjectRenderer::startProcessing()
+bool ProjectRenderer::startProcessing()
 {
-
-	if( isReady() )
+	if (!isReady() || m_abort || m_started || isRunning()) { return false; }
+	m_encodingFailed = m_encodingFailed || m_fileDev->hasWriteError();
+	if (m_encodingFailed) { return false; }
+	const auto dsp = Engine::audioEngine()->dspStatus();
+	m_dspFailed = dsp.failure != AudioEngine::DspFailure::None || dsp.failures != m_dspFailureCount;
+	if (m_dspFailed) { return false; }
+	m_remoteRenderContext = RemotePlugin::beginRenderContext(m_executionTimeout);
+	if (!m_remoteRenderContext) { return false; }
+	struct SetupContext
 	{
-		// Have to do audio engine stuff with GUI-thread affinity in order to
-		// make slots connected to sampleRateChanged()-signals being called immediately.
-		Engine::audioEngine()->setAudioDevice(m_fileDev, false);
+		std::atomic<std::uint64_t>& context;
+		bool release = true;
+		~SetupContext() { if (release) { RemotePlugin::endRenderContext(context.exchange(0)); } }
+	} setup{m_remoteRenderContext};
+	// Device setup has main-thread affinity and may wait for remote plugins.
+	try { Engine::audioEngine()->setAudioDevice(m_fileDev, false); }
+	catch (...)
+	{
+		// Signal handlers can fail after the engine has taken ownership.
+		if (Engine::audioEngine()->audioDev() == m_fileDev) { m_unattachedFileDev.release(); }
+		m_executionFailed = true; return false;
+	}
+	m_unattachedFileDev.release();
+	m_encodingFailed = m_encodingFailed || m_fileDev->hasWriteError();
+	if (RemotePlugin::renderContextCancelled(m_remoteRenderContext)) { m_abort = true; }
+	m_remotePluginFailed = RemotePlugin::failureCount() != m_remotePluginFailureCount;
+	if (m_abort || m_remotePluginFailed || m_encodingFailed) { return false; }
+	m_started = true;
 
-		start(
+	start(
 #ifndef LMMS_BUILD_WIN32
 			QThread::HighPriority
 #endif
 						);
-
-	}
+	setup.release = false;
+	return true;
 }
 
 
 void ProjectRenderer::run()
 {
-	PerfLogTimer perfLog("Project Render");
-
-	Engine::getSong()->startExport();
-	// Skip first empty buffer.
-	Engine::audioEngine()->renderNextPeriod();
-
-	m_progress = 0;
-
-	// Now start processing
-	Engine::audioEngine()->startProcessing();
-
-	// Continually track and emit progress percentage to listeners.
-	while (!Engine::getSong()->isExportDone() && !m_abort)
+	struct Execution
 	{
-		const auto buffer = Engine::audioEngine()->renderNextPeriod();
-		m_fileDev->writeBuffer(buffer.data(), buffer.size());
-
-		const int nprog = Engine::getSong()->getExportProgress();
-		if (m_progress != nprog)
+		std::uint64_t context;
+		~Execution() { RemotePlugin::finishRenderExecution(context); }
+	} execution{m_remoteRenderContext.load()};
+	const auto checkFailures = [&]
+	{
+		if (RemotePlugin::renderContextCancelled(m_remoteRenderContext)) { m_abort = true; }
+		m_remotePluginFailed = m_remotePluginFailed || RemotePlugin::failureCount() != m_remotePluginFailureCount;
+		const auto dsp = Engine::audioEngine()->dspStatus();
+		m_dspFailed = m_dspFailed || dsp.failure != AudioEngine::DspFailure::None || dsp.failures != m_dspFailureCount;
+		m_encodingFailed = m_encodingFailed || m_fileDev->hasWriteError();
+	};
+	checkFailures();
+	if (m_abort || m_dspFailed || m_remotePluginFailed || m_encodingFailed) { return; }
+	PerfLogTimer perfLog("Project Render");
+	try
+	{
+		Engine::getSong()->startExport();
+		Engine::audioEngine()->renderNextPeriod();
+		checkFailures();
+		m_progress = 0;
+		if (!m_abort && !m_remotePluginFailed && !m_dspFailed && !m_encodingFailed) { Engine::audioEngine()->startProcessing(); }
+		while (!Engine::getSong()->isExportDone() && !m_abort && !m_remotePluginFailed && !m_dspFailed && !m_encodingFailed)
 		{
-			m_progress = nprog;
-			emit progressChanged( m_progress );
+			checkFailures();
+			if (m_abort || m_dspFailed || m_remotePluginFailed || m_encodingFailed) { break; }
+			const auto buffer = Engine::audioEngine()->renderNextPeriod();
+			checkFailures();
+			if (m_abort || m_dspFailed || m_remotePluginFailed || m_encodingFailed) { break; }
+			m_fileDev->writeBuffer(buffer.data(), buffer.size());
+			checkFailures();
+			if (m_abort || m_dspFailed || m_remotePluginFailed || m_encodingFailed) { break; }
+			const int progress = Engine::getSong()->getExportProgress();
+			if (m_progress != progress) { m_progress = progress; emit progressChanged(m_progress); }
 		}
 	}
-
-	// Notify the audio engine of the end of processing.
-	Engine::audioEngine()->stopProcessing();
-
-	Engine::getSong()->stopExport();
-
+	catch (...) { m_executionFailed = true; }
+	// Cleanup remains required after a returned DSP/export exception. A cleanup
+	// exception is also a failed export, never a successful encoded artifact.
+	try { Engine::audioEngine()->stopProcessing(); } catch (...) { m_executionFailed = true; }
+	try { Engine::getSong()->stopExport(); } catch (...) { m_executionFailed = true; }
 	perfLog.end();
-
-	// If the user aborted export-process, the file has to be deleted.
-	const QString f = m_fileDev->outputFile();
-	if( m_abort )
-	{
-		QFile( f ).remove();
-	}
+	if (m_abort) { QFile(m_fileDev->outputFile()).remove(); }
 }
 
 
@@ -199,7 +247,27 @@ void ProjectRenderer::run()
 void ProjectRenderer::abortProcessing()
 {
 	m_abort = true;
+	RemotePlugin::cancelRenderContext(m_remoteRenderContext);
 	wait();
+}
+
+bool ProjectRenderer::finalizeOutput()
+{
+	if (isRunning() || !m_fileDev || m_abort || !m_started || m_executionFailed
+		|| Engine::audioEngine()->audioDev() != m_fileDev) { return false; }
+	const auto dsp = Engine::audioEngine()->dspStatus();
+	m_dspFailed = m_dspFailed || dsp.failure != AudioEngine::DspFailure::None || dsp.failures != m_dspFailureCount;
+	if (m_dspFailed) { return false; }
+	if (RemotePlugin::renderContextCancelled(m_remoteRenderContext)) { m_abort = true; return false; }
+	m_remotePluginFailed = m_remotePluginFailed || RemotePlugin::failureCount() != m_remotePluginFailureCount;
+	if (m_remotePluginFailed) { return false; }
+	const auto encoded = m_fileDev->finalizeOutput();
+	m_encodingFailed = m_encodingFailed || !encoded || m_fileDev->hasWriteError();
+	if (RemotePlugin::renderContextCancelled(m_remoteRenderContext)) { m_abort = true; }
+	m_remotePluginFailed = RemotePlugin::failureCount() != m_remotePluginFailureCount;
+	const auto completedDsp = Engine::audioEngine()->dspStatus();
+	m_dspFailed = m_dspFailed || completedDsp.failure != AudioEngine::DspFailure::None || completedDsp.failures != m_dspFailureCount;
+	return encoded && !m_abort && !m_remotePluginFailed && !m_dspFailed && !m_executionFailed && !m_encodingFailed;
 }
 
 
@@ -219,7 +287,7 @@ void ProjectRenderer::updateConsoleProgress()
 
 	const auto activity = "|/-\\";
 	std::fill(buf.begin(), buf.end(), 0);
-	std::snprintf(buf.data(), buf.size(), "\r|%s|    %3d%%   %c  ", prog.data(), m_progress,
+	std::snprintf(buf.data(), buf.size(), "\r|%s|    %3d%%   %c  ", prog.data(), m_progress.load(),
 							activity[rot] );
 	rot = ( rot+1 ) % 4;
 

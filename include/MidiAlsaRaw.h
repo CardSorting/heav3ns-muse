@@ -32,6 +32,11 @@
 #include <alsa/asoundlib.h>
 
 #include <QThread>
+#include <array>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <poll.h>
 
 #include "MidiClient.h"
 
@@ -42,12 +47,20 @@ struct pollfd;
 namespace lmms
 {
 
+namespace detail { struct AlsaRawMidiApi; class MidiIoWakeup; class RawMidiOutput; }
+
 class MidiAlsaRaw : public QThread, public MidiClientRaw
 {
 	Q_OBJECT
 public:
 	MidiAlsaRaw();
 	~MidiAlsaRaw() override;
+	InputBackendStatus inputBackendStatus() const override;
+	bool isAvailable() const;
+	OutputBackendStatus outputBackendStatus() const override;
+	void addPort(MidiPort* port) override;
+	void removePort(MidiPort* port) override;
+	void cancelOutputEvents(const MidiPort* port) override;
 
 	static QString probeDevice();
 
@@ -67,15 +80,30 @@ public:
 protected:
 	void sendByte( const unsigned char c ) override;
 	void run() override;
+	void processOutEvent(const MidiEvent& event, const TimePos& time, const MidiPort* port) override;
 
 
 private:
-	snd_rawmidi_t * m_input, * * m_inputp;
-	snd_rawmidi_t * m_output, * * m_outputp;
-	int m_npfds;
-	pollfd * m_pfds;
-
-	volatile bool m_quit;
+	friend class RawMidiIoTestAccess;
+	explicit MidiAlsaRaw(const detail::AlsaRawMidiApi& api);
+	void closeResources() noexcept;
+	void inputFailed(int error) noexcept;
+	void finishPortTransferOutput(const std::function<bool()>& cancelled) override;
+	void drainOutput(const std::function<bool()>& cancelled);
+	int writeOutput(const std::uint8_t* bytes, std::size_t size);
+	int inspectInputLoss();
+	const detail::AlsaRawMidiApi& m_api;
+	std::unique_ptr<detail::MidiIoWakeup> m_wakeup;
+	std::unique_ptr<detail::RawMidiOutput> m_outputQueue;
+	std::mutex m_ioMutex;
+	snd_rawmidi_t* m_input = nullptr;
+	snd_rawmidi_t* m_output = nullptr;
+	static constexpr int MaximumDescriptors = 64;
+	std::array<pollfd, MaximumDescriptors * 2 + 1> m_descriptors{};
+	std::atomic_bool m_quit{false}, m_active{false};
+	std::atomic_int m_nativeError{0};
+	std::atomic_bool m_overrunObserved{false};
+	std::atomic<std::uint64_t> m_reportedOverrunBytes{0};
 
 } ;
 

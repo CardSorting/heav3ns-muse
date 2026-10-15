@@ -26,6 +26,7 @@
 
 #include <samplerate.h>
 #include <stdexcept>
+#include <limits>
 
 namespace lmms {
 
@@ -62,9 +63,20 @@ AudioResampler::AudioResampler(Mode mode, ch_cnt_t channels)
 
 auto AudioResampler::process(InterleavedBufferView<const float> input, InterleavedBufferView<float> output) -> Result
 {
+	return process(input, output, false);
+}
+
+auto AudioResampler::process(InterleavedBufferView<const float> input, InterleavedBufferView<float> output,
+	bool endOfInput) -> Result
+{
 	if (input.channels() != m_channels || output.channels() != m_channels)
 	{
 		throw std::invalid_argument{"Invalid channel count"};
+	}
+	if (input.frames() > static_cast<f_cnt_t>(std::numeric_limits<long>::max())
+		|| output.frames() > static_cast<f_cnt_t>(std::numeric_limits<long>::max()))
+	{
+		throw std::invalid_argument{"Resampler frame count exceeds the native API range"};
 	}
 
 	auto data = SRC_DATA{};
@@ -76,11 +88,16 @@ auto AudioResampler::process(InterleavedBufferView<const float> input, Interleav
 	data.output_frames = output.frames();
 
 	data.src_ratio = m_ratio;
-	data.end_of_input = 0;
+	data.end_of_input = endOfInput ? 1 : 0;
 
 	if ((m_error = src_process(static_cast<SRC_STATE*>(m_state.get()), &data)))
 	{
 		throw std::runtime_error{src_strerror(m_error)};
+	}
+	if (data.input_frames_used < 0 || data.output_frames_gen < 0
+		|| data.input_frames_used > data.input_frames || data.output_frames_gen > data.output_frames)
+	{
+		throw std::runtime_error{"Native resampler returned invalid frame counts"};
 	}
 
 	return {static_cast<f_cnt_t>(data.input_frames_used), static_cast<f_cnt_t>(data.output_frames_gen)};

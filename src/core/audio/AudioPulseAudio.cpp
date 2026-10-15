@@ -24,6 +24,11 @@
 
 #include <QFormLayout>
 #include <QLineEdit>
+#include <QElapsedTimer>
+#include <QScopeGuard>
+#include <algorithm>
+#include <limits>
+#include <stdexcept>
 
 #include "AudioPulseAudio.h"
 
@@ -33,222 +38,269 @@
 #include "LcdSpinBox.h"
 #include "AudioEngine.h"
 #include "Engine.h"
+#include "FileResourceIO.h"
+#include "PulseAudioApi.h"
 
 namespace lmms
 {
 
-static void stream_write_callback(pa_stream *s, size_t length, void *userdata)
+namespace
 {
-	static_cast<AudioPulseAudio *>( userdata )->streamWriteCallback( s, length );
+const detail::PulseAudioApi nativeApi;
+constexpr int StartupTimeoutMs = 10000;
 }
 
-AudioPulseAudio::AudioPulseAudio(bool& _success_ful, AudioEngine* _audioEngine)
-	: AudioDevice(std::clamp<ch_cnt_t>(
-					  ConfigManager::inst()->value("audiopa", "channels").toInt(), DEFAULT_CHANNELS, DEFAULT_CHANNELS),
-		  _audioEngine)
-	, m_s(nullptr)
-	, m_latency(static_cast<double>(_audioEngine->framesPerAudioBuffer()) / sampleRate())
+AudioPulseAudio::AudioPulseAudio(bool& successful, AudioEngine* engine)
+	: AudioPulseAudio(successful, engine, nativeApi, StartupTimeoutMs)
 {
-	_success_ful = false;
+}
 
+AudioPulseAudio::AudioPulseAudio(bool& successful, AudioEngine* engine, const detail::PulseAudioApi& api, int startupTimeoutMs)
+	: AudioDevice(DEFAULT_CHANNELS, engine)
+	, m_api(api)
+	, m_startupTimeoutMs(startupTimeoutMs)
+	, m_device(probeDevice().toUtf8())
+	, m_periodBytes(static_cast<std::size_t>(engine->framesPerAudioBuffer()) * channels() * sizeof(float))
+{
 	m_sampleSpec.format = PA_SAMPLE_FLOAT32;
 	m_sampleSpec.rate = sampleRate();
 	m_sampleSpec.channels = channels();
+	successful = pa_sample_spec_valid(&m_sampleSpec) && m_periodBytes > 0
+		&& m_periodBytes < std::numeric_limits<std::uint32_t>::max();
+}
 
-	_success_ful = true;
+AudioPulseAudio::~AudioPulseAudio()
+{
+	AudioDevice::stopProcessing();
 }
 
 QString AudioPulseAudio::probeDevice()
 {
-	QString dev = ConfigManager::inst()->value( "audiopa", "device" );
-	if( dev.isEmpty() )
-	{
-		if( getenv( "AUDIODEV" ) != nullptr )
-		{
-			return getenv( "AUDIODEV" );
-		}
-		return "default";
-	}
-	return dev;
+	const auto configured = ConfigManager::inst()->value("audiopa", "device");
+	if (!configured.isEmpty()) { return configured; }
+	const auto environment = qEnvironmentVariable("AUDIODEV");
+	return environment.isEmpty() ? QStringLiteral("default") : environment;
 }
 
-
-
+void AudioPulseAudio::requestStop()
+{
+	m_stopRequested.store(true, std::memory_order_release);
+	// wakeup is the cross-thread operation supported by the simple mainloop.
+	// Hold the pointer lock only for wakeup; never join while holding it.
+	const std::lock_guard lock{m_mainLoopMutex};
+	if (m_mainLoop) { m_api.mainloopWakeup(m_mainLoop); }
+}
 
 void AudioPulseAudio::startProcessingImpl()
 {
+	// A failed previous run may still be releasing its context. Join it before
+	// resetting readiness or consuming any notifications from the new run.
+	requestStop();
+	wait();
+	while (m_startupSemaphore.tryAcquire()) { }
+	m_streamReady.store(false, std::memory_order_release);
+	m_stopRequested.store(false, std::memory_order_release);
+	QElapsedTimer deadline; deadline.start();
 	start(QThread::HighPriority);
+	try
+	{
+		for (;;)
+		{
+			QString error;
+			if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+			if (!AudioDevice::isRunning() || m_streamReady.load(std::memory_order_acquire)) { break; }
+			if (deadline.elapsed() >= m_startupTimeoutMs)
+			{
+				fail(ProcessingFailure::Start, PA_ERR_TIMEOUT);
+				break;
+			}
+			m_startupSemaphore.tryAcquire(1, 25);
+		}
+	}
+	catch (...)
+	{
+		fail(ProcessingFailure::Start, PA_ERR_KILLED);
+		requestStop(); wait();
+		throw;
+	}
+	if (!AudioDevice::isRunning()) { requestStop(); wait(); }
 }
-
-
-
 
 void AudioPulseAudio::stopProcessingImpl()
 {
-	stopProcessingThread( this );
+	requestStop();
+	// No forced termination: cleanup and every callback must finish before
+	// the engine can release this device or install a replacement.
+	wait();
 }
 
-
-/* This routine is called whenever the stream state changes */
-static void stream_state_callback( pa_stream *s, void * userdata )
+void AudioPulseAudio::fail(ProcessingFailure failure, int error) noexcept
 {
-	switch( pa_stream_get_state( s ) )
+	if (m_stopRequested.exchange(true, std::memory_order_acq_rel)) { return; }
+	reportProcessingFailure(failure, error);
+	m_startupSemaphore.release();
+}
+
+void AudioPulseAudio::connectionFailed(pa_context* context) noexcept
+{
+	const auto error = context ? m_api.contextError(context) : PA_ERR_INTERNAL;
+	fail(m_streamReady.load(std::memory_order_acquire) ? ProcessingFailure::Disconnected : ProcessingFailure::Start,
+		error == PA_OK ? PA_ERR_CONNECTIONTERMINATED : error);
+}
+
+void AudioPulseAudio::contextStateCallback(pa_context* context, void* userdata) noexcept
+{
+	auto device = static_cast<AudioPulseAudio*>(userdata);
+	try { device->contextStateChanged(context); }
+	catch (...) { device->fail(ProcessingFailure::Exception, PA_ERR_INTERNAL); }
+}
+
+void AudioPulseAudio::streamStateCallback(pa_stream* stream, void* userdata) noexcept
+{
+	auto device = static_cast<AudioPulseAudio*>(userdata);
+	try { device->streamStateChanged(stream); }
+	catch (...) { device->fail(ProcessingFailure::Exception, PA_ERR_INTERNAL); }
+}
+
+void AudioPulseAudio::streamWriteCallback(pa_stream* stream, std::size_t length, void* userdata) noexcept
+{
+	auto device = static_cast<AudioPulseAudio*>(userdata);
+	try { device->writeStream(stream, length); }
+	catch (...) { device->fail(ProcessingFailure::Exception, PA_ERR_INTERNAL); }
+}
+
+void AudioPulseAudio::contextStateChanged(pa_context* context)
+{
+	if (m_stopRequested.load(std::memory_order_acquire)) { return; }
+	switch (m_api.contextState(context))
 	{
-		case PA_STREAM_CREATING:
-		case PA_STREAM_TERMINATED:
-			break;
-
-		case PA_STREAM_READY:
-			qDebug( "Stream successfully created\n" );
-			break;
-
-		case PA_STREAM_FAILED:
-		default:
-			qCritical( "Stream error: %s\n",
-					pa_strerror(pa_context_errno(
-						pa_stream_get_context( s ) ) ) );
+	case PA_CONTEXT_UNCONNECTED:
+	case PA_CONTEXT_CONNECTING:
+	case PA_CONTEXT_AUTHORIZING:
+	case PA_CONTEXT_SETTING_NAME:
+		return;
+	case PA_CONTEXT_READY:
+	{
+		if (m_stream) { return; }
+		m_stream = m_api.streamNew(context, "lmms", &m_sampleSpec, nullptr);
+		if (!m_stream) { connectionFailed(context); return; }
+		m_api.streamSetStateCallback(m_stream, streamStateCallback, this);
+		m_api.streamSetWriteCallback(m_stream, streamWriteCallback, this);
+		pa_buffer_attr attributes{};
+		attributes.maxlength = attributes.minreq = attributes.fragsize = std::numeric_limits<std::uint32_t>::max();
+		attributes.prebuf = 0; // Play silence instead of rewinding on underrun.
+		// One native period in bytes, avoiding a seconds/milliseconds conversion.
+		attributes.tlength = static_cast<std::uint32_t>(m_periodBytes);
+		const auto sink = m_device.isEmpty() || m_device == "default" ? nullptr : m_device.constData();
+		if (m_api.streamConnect(m_stream, sink, &attributes, PA_STREAM_ADJUST_LATENCY, nullptr, nullptr) < 0)
+		{ connectionFailed(context); }
+		return;
+	}
+	case PA_CONTEXT_FAILED:
+	case PA_CONTEXT_TERMINATED:
+		connectionFailed(context);
+		return;
 	}
 }
 
-
-
-/* This is called whenever the context status changes */
-static void context_state_callback(pa_context *c, void *userdata)
+void AudioPulseAudio::streamStateChanged(pa_stream* stream)
 {
-	auto _this = static_cast<AudioPulseAudio*>(userdata);
-	switch( pa_context_get_state( c ) )
+	if (m_stopRequested.load(std::memory_order_acquire)) { return; }
+	switch (m_api.streamState(stream))
 	{
-		case PA_CONTEXT_CONNECTING:
-		case PA_CONTEXT_AUTHORIZING:
-		case PA_CONTEXT_SETTING_NAME:
-			break;
-
-		case PA_CONTEXT_READY:
-		{
-			qDebug( "Connection established.\n" );
-			_this->m_s = pa_stream_new( c, "lmms", &_this->m_sampleSpec,  nullptr);
-			pa_stream_set_state_callback( _this->m_s, stream_state_callback, _this );
-			pa_stream_set_write_callback( _this->m_s, stream_write_callback, _this );
-
-			pa_buffer_attr buffer_attr;
-
-			buffer_attr.maxlength = (uint32_t)(-1);
-
-			// play silence in case of buffer underrun instead of using default rewind
-			buffer_attr.prebuf = 0;
-
-			buffer_attr.minreq = (uint32_t)(-1);
-			buffer_attr.fragsize = (uint32_t)(-1);
-
-			// ask PulseAudio for the desired latency (which might not be approved)
-			buffer_attr.tlength = pa_usec_to_bytes(_this->m_latency * PA_USEC_PER_MSEC, &_this->m_sampleSpec);
-
-			pa_stream_connect_playback( _this->m_s, nullptr, &buffer_attr,
-										PA_STREAM_ADJUST_LATENCY,
-										nullptr,	// volume
-										nullptr );
-			_this->signalConnected( true );
-			break;
-		}
-
-		case PA_CONTEXT_TERMINATED:
-			break;
-
-		case PA_CONTEXT_FAILED:
-		default:
-			qCritical( "Connection failure: %s\n", pa_strerror( pa_context_errno( c ) ) );
-			_this->signalConnected( false );
+	case PA_STREAM_UNCONNECTED:
+	case PA_STREAM_CREATING:
+		return;
+	case PA_STREAM_READY:
+		if (!m_streamReady.exchange(true, std::memory_order_acq_rel)) { m_startupSemaphore.release(); }
+		return;
+	case PA_STREAM_FAILED:
+	case PA_STREAM_TERMINATED:
+		connectionFailed(m_api.streamContext(stream));
+		return;
 	}
 }
-
-
-
 
 void AudioPulseAudio::run()
 {
-	pa_mainloop * mainLoop = pa_mainloop_new();
-	if( !mainLoop )
+	pa_mainloop* loop = nullptr;
+	pa_context* context = nullptr;
+	const auto cleanup = qScopeGuard([&]
 	{
-		qCritical( "pa_mainloop_new() failed.\n" );
-		return;
-	}
-	pa_mainloop_api * mainloop_api = pa_mainloop_get_api( mainLoop );
-
-	pa_context *context = pa_context_new( mainloop_api, "lmms" );
-	if ( context == nullptr )
-	{
-		qCritical( "pa_context_new() failed." );
-		return;
-	}
-
-	m_connected = false;
-
-	pa_context_set_state_callback( context, context_state_callback, this  );
-	// connect the context
-	pa_context_connect( context, nullptr, (pa_context_flags) 0, nullptr );
-
-	while (!m_connectedSemaphore.tryAcquire()) {
-		pa_mainloop_iterate(mainLoop, 1, nullptr);
-	}
-
-	// run the main loop
-	if( m_connected )
-	{
-		int ret = 0;
-		while (AudioDevice::isRunning() && pa_mainloop_iterate(mainLoop, 1, &ret) >= 0) {}
-
-		pa_stream_disconnect( m_s );
-		pa_stream_unref( m_s );
-	}
-	else
-	{
-		while (AudioDevice::isRunning())
+		if (m_stream)
 		{
-			audioEngine()->renderNextPeriod();
+			m_api.streamSetWriteCallback(m_stream, nullptr, nullptr);
+			m_api.streamSetStateCallback(m_stream, nullptr, nullptr);
+			m_api.streamDisconnect(m_stream); m_api.streamUnref(m_stream); m_stream = nullptr;
+		}
+		if (context)
+		{
+			m_api.contextSetCallback(context, nullptr, nullptr);
+			m_api.contextDisconnect(context); m_api.contextUnref(context);
+		}
+		{
+			const std::lock_guard lock{m_mainLoopMutex};
+			m_mainLoop = nullptr;
+		}
+		if (loop) { m_api.mainloopFree(loop); }
+		m_startupSemaphore.release();
+	});
+	try
+	{
+		loop = m_api.mainloopNew();
+		if (!loop) { fail(ProcessingFailure::Start, PA_ERR_INTERNAL); return; }
+		{
+			const std::lock_guard lock{m_mainLoopMutex};
+			m_mainLoop = loop;
+		}
+		if (m_stopRequested.load(std::memory_order_acquire)) { return; }
+		context = m_api.contextNew(m_api.mainloopGetApi(loop), "lmms");
+		if (!context) { fail(ProcessingFailure::Start, PA_ERR_INTERNAL); return; }
+		m_api.contextSetCallback(context, contextStateCallback, this);
+		if (m_api.contextConnect(context, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0)
+		{ connectionFailed(context); return; }
+		while (!m_stopRequested.load(std::memory_order_acquire) && AudioDevice::isRunning())
+		{
+			// prepare clears old wakeups. Recheck stop after it so a stop racing
+			// with prepare cannot be lost immediately before the blocking poll.
+			if (m_api.mainloopPrepare(loop, -1) < 0) { connectionFailed(context); break; }
+			if (m_stopRequested.load(std::memory_order_acquire) || !AudioDevice::isRunning()) { break; }
+			if (m_api.mainloopPoll(loop) < 0 || m_api.mainloopDispatch(loop) < 0)
+			{ connectionFailed(context); break; }
 		}
 	}
-
-	pa_context_disconnect( context );
-	pa_context_unref( context );
-
-	pa_mainloop_free( mainLoop );
+	catch (...) { fail(ProcessingFailure::Exception, PA_ERR_INTERNAL); }
 }
 
-void AudioPulseAudio::streamWriteCallback(pa_stream*, size_t)
+void AudioPulseAudio::writeStream(pa_stream* stream, std::size_t length)
 {
-	auto buf = static_cast<void*>(nullptr);
-	auto maxBufSizeInBytes = audioEngine()->framesPerAudioBuffer() * channels() * sizeof(float);
-
-	if (pa_stream_begin_write(m_s, &buf, &maxBufSizeInBytes) != 0 || !buf) { return; }
-
-	const auto numSamples = maxBufSizeInBytes / sizeof(float);
-	const auto numFrames = numSamples / channels();
-
-	if (!AudioDevice::isRunning())
+	if (m_stopRequested.load(std::memory_order_acquire) || !AudioDevice::isRunning() || length == 0) { return; }
+	const auto frameBytes = sizeof(float) * channels();
+	if (stream != m_stream || !m_streamReady.load(std::memory_order_acquire) || length % frameBytes != 0)
+	{ fail(ProcessingFailure::InvalidCallback, PA_ERR_INVALID); return; }
+	while (length > 0 && !m_stopRequested.load(std::memory_order_acquire) && AudioDevice::isRunning())
 	{
-		std::fill_n(static_cast<float*>(buf), numSamples, 0.f);
-	}
-	else
-	{
-		audioEngine()->renderNextBuffer({static_cast<float*>(buf), channels(), numFrames});
-	}
-
-	pa_stream_write(m_s, buf, maxBufSizeInBytes, nullptr, 0, PA_SEEK_RELATIVE);
-}
-
-
-
-
-void AudioPulseAudio::signalConnected( bool connected )
-{
-	if( !m_connected )
-	{
-		m_connected = connected;
-		m_connectedSemaphore.release();
+		const auto requested = std::min(length, m_periodBytes);
+		auto bytes = requested;
+		void* data = nullptr;
+		if (m_api.streamBeginWrite(stream, &data, &bytes) < 0)
+		{ connectionFailed(m_api.streamContext(stream)); return; }
+		bool submitted = false;
+		const auto cancel = qScopeGuard([&] { if (!submitted) { m_api.streamCancelWrite(stream); } });
+		if (!data || reinterpret_cast<std::uintptr_t>(data) % alignof(float) != 0
+			|| bytes == 0 || bytes > requested || bytes % frameBytes != 0)
+		{ fail(ProcessingFailure::InvalidCallback, PA_ERR_INVALID); return; }
+		if (m_stopRequested.load(std::memory_order_acquire) || !AudioDevice::isRunning()) { return; }
+		audioEngine()->renderNextBuffer({static_cast<float*>(data), channels(), static_cast<f_cnt_t>(bytes / frameBytes)});
+		if (m_stopRequested.load(std::memory_order_acquire) || !AudioDevice::isRunning()) { return; }
+		// A write consumes the borrowed buffer, including the error path. Never
+		// cancel or touch it after calling write (see PulseAudio stream.h).
+		submitted = true;
+		if (m_api.streamWrite(stream, data, bytes, nullptr, 0, PA_SEEK_RELATIVE) < 0)
+		{ connectionFailed(m_api.streamContext(stream)); return; }
+		length -= bytes;
 	}
 }
-
-
 
 
 AudioPulseAudio::setupWidget::setupWidget( QWidget * _parent ) :

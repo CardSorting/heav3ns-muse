@@ -27,6 +27,8 @@
 #define LMMS_IMPORT_FILTER_H
 
 #include <QFile>
+#include <functional>
+#include <memory>
 
 #include "Plugin.h"
 
@@ -47,12 +49,34 @@ public:
 
 	// tries to import given file to given track-container by having all
 	// available import-filters to try to import the file
-	static void import( const QString & _file_to_import,
-						TrackContainer* tc );
+	// PatternStore: -1 chooses its current column (0 when empty); an explicit
+	// index chooses an existing column without changing the current selection.
+	// Dispatch guards project transitions and checks returned filter stages.
+	// Failure can leave partial native changes; callers own checkpoint recovery.
+	static bool import( const QString & _file_to_import,
+						TrackContainer* tc, int pattern = -1 );
 
 
 protected:
+	class LMMS_EXPORT WorkScope
+	{
+	public:
+		WorkScope(ImportFilter* filter, TrackContainer* target, int pattern);
+		~WorkScope();
+		WorkScope(const WorkScope&) = delete;
+		WorkScope& operator=(const WorkScope&) = delete;
+		void check();
+		void checkContext();
+	private:
+		struct State;
+		std::unique_ptr<State> m_state;
+	};
 	virtual bool tryImport( TrackContainer* tc ) = 0;
+	// Explicit PatternStore destinations require a filter that supports them.
+	// -1 retains the ordinary song-container dispatch for existing filters.
+	virtual bool tryImport(TrackContainer* tc, int pattern)
+	{ return pattern == -1 && tryImport(tc); }
+	QFile& file() { return m_file; }
 
 	const QFile & file() const
 	{
@@ -60,6 +84,7 @@ protected:
 	}
 
 	bool openFile();
+	static bool openFile(QFile& input);
 
 	inline void closeFile()
 	{
@@ -107,7 +132,13 @@ protected:
 
 
 private:
+	class Session;
+	using Instantiate = std::function<Plugin*(const QString&, void*)>;
+	static bool importWithFilters(const QString& path, TrackContainer* target, int pattern,
+		QStringList filters, Instantiate instantiate);
+	friend class NativeImportTestAccess;
 	QFile m_file;
+	bool m_working = false;
 
 } ;
 

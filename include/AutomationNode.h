@@ -41,6 +41,14 @@ public:
 	AutomationNode(); //!< Dummy constructor for the QMap
 	AutomationNode(AutomationClip* clip, float value, int pos);
 	AutomationNode(AutomationClip* clip, float inValue, float outValue, int pos);
+	bool operator==(const AutomationNode& other) const
+	{
+		return m_clip == other.m_clip && m_pos == other.m_pos
+			&& m_inValue == other.m_inValue && m_outValue == other.m_outValue
+			&& m_inTangent == other.m_inTangent && m_outTangent == other.m_outTangent
+			&& m_lockedTangents == other.m_lockedTangents;
+	}
+	bool operator!=(const AutomationNode& other) const { return !(*this == other); }
 
 	AutomationNode& operator+=(float f)
 	{

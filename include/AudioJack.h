@@ -35,16 +35,14 @@
 #endif
 
 #include <atomic>
+#include <memory>
+#include <QByteArray>
+#include <QTimer>
+#include <QElapsedTimer>
 #include <vector>
-#ifdef AUDIO_BUS_HANDLE_SUPPORT
-#include <QMap>
-#endif
 
 #include "AudioDevice.h"
 #include "AudioDeviceSetupWidget.h"
-#ifdef AUDIO_BUS_HANDLE_SUPPORT
-#include "AudioBusHandle.h"
-#endif
 
 class QLineEdit;
 class QMenu;
@@ -54,6 +52,7 @@ namespace lmms
 {
 
 class MidiJack;
+namespace detail { class JackCallbackGate; class JackAudioBuses; struct JackBusSnapshot; struct JackApi; }
 
 
 class AudioJack : public QObject, public AudioDevice
@@ -67,8 +66,16 @@ public:
 	// the jack callback is handled here, we call the midi client so that it can read
 	// it's midi data during the callback
 	AudioJack* addMidiClient(MidiJack* midiClient);
-	void removeMidiClient() { m_midiClient = nullptr; }
+	void removeMidiClient(MidiJack* midiClient);
 	jack_client_t* jackClient() { return m_client; };
+	bool serverDisconnected() const { return m_serverDisconnected.load(std::memory_order_acquire); }
+	BackendGraph inspectBackendGraph(bool input) override;
+	BackendRoute setBackendRoute(bool input, unsigned int channel, const QString& remote, bool enabled,
+		const std::function<bool()>& cancelled = {}) override;
+	BusGraph inspectBusGraph(AudioBusHandle* bus) override;
+	void configureBusOutput(AudioBusHandle* bus, bool enabled, const std::function<bool()>& cancelled = {}) override;
+	BackendRoute setBusRoute(AudioBusHandle* bus, unsigned int channel, const QString& remote, bool enabled,
+		const std::function<bool()>& cancelled = {}) override;
 
 	inline static QString name()
 	{
@@ -96,12 +103,24 @@ public:
 		std::vector<QToolButton*> m_inputDevices;
 	};
 
-private slots:
-	void restartAfterZombified();
-
 private:
-	bool initJackClient();
+	friend class AudioJackTestAccess;
+	friend class MidiJack;
+	friend class detail::JackAudioBuses;
+	AudioJack(bool& successful, AudioEngine* engine, const detail::JackApi& api);
+	bool initJackClient(bool preserveRate = false);
+	bool reopenJackClient();
+	void closeJackClient();
+	void pollServerHealth();
+	bool recoverMidiClient(MidiJack* midiClient);
+	void retireFailedMidiPorts();
 	void resizeInputBuffer(jack_nframes_t nframes);
+	void requireGraphOwner() const;
+	bool graphConnected(jack_port_t* local, const QByteArray& remote);
+	BackendGraph inspectGraphPorts(bool input, const std::vector<jack_port_t*>& ports, bool startup);
+	BackendRoute setGraphPortRoute(bool input, jack_port_t* local, const QString& remote, bool enabled,
+		const std::function<bool()>& cancelled);
+	bool isProjectBus(const AudioBusHandle* bus) const;
 
 	void startProcessingImpl() override;
 	void stopProcessingImpl() override;
@@ -114,30 +133,33 @@ private:
 	void unregisterPort(AudioBusHandle* port) override;
 	void renamePort(AudioBusHandle* port) override;
 
-	int processCallback(jack_nframes_t nframes);
+	int processCallback(jack_nframes_t nframes, bool processing, detail::JackBusSnapshot* buses, bool& busesCleared);
 
 	static int staticProcessCallback(jack_nframes_t nframes, void* udata);
 	static void shutdownCallback(void* _udata);
 
+	const detail::JackApi& m_api;
+	const QByteArray m_clientName;
 	jack_client_t* m_client;
 
 	bool m_active;
 
 	std::atomic<MidiJack*> m_midiClient;
+	std::unique_ptr<detail::JackCallbackGate> m_callbackGate;
+	std::unique_ptr<detail::JackCallbackGate> m_midiGate;
+	std::unique_ptr<detail::JackAudioBuses> m_buses;
+	std::atomic_bool m_serverDisconnected{false};
+	bool m_processingRequested = false;
+	bool m_reportedDisconnect = false;
+	bool m_recovering = false;
+	bool m_graphBusy = false; // owner-thread graph operations never dispatch Qt events
+	int m_graphError = 0;
+	QTimer m_healthTimer;
+	QElapsedTimer m_retryClock;
 	std::vector<jack_port_t*> m_outputPorts;
 	std::vector<jack_port_t*> m_inputPorts;
-	jack_default_audio_sample_t** m_tempOutBufs;
+	std::unique_ptr<jack_default_audio_sample_t*[]> m_tempOutBufs;
 	std::vector<SampleFrame> m_inputFrameBuffer;
-
-#ifdef AUDIO_BUS_HANDLE_SUPPORT
-	struct StereoPort
-	{
-		jack_port_t* ports[2];
-	};
-
-	using JackPortMap = QMap<AudioBusHandle*, StereoPort>;
-	JackPortMap m_portMap;
-#endif
 
 signals:
 	void zombified();

@@ -39,7 +39,8 @@ PlayHandle::PlayHandle(const Type type, f_cnt_t offset) :
 		m_affinity(QThread::currentThread()),
 		m_playHandleBuffer(BufferManager::acquire()),
 		m_bufferReleased(true),
-		m_usesBuffer(true)
+		m_usesBuffer(true),
+		m_audioBusHandle(nullptr)
 {
 }
 
@@ -57,6 +58,14 @@ void PlayHandle::doProcessing()
 		m_bufferReleased = false;
 		zeroSampleFrames(m_playHandleBuffer, Engine::audioEngine()->framesPerPeriod());
 		play( buffer() );
+		const auto engine = Engine::audioEngine();
+		for (f_cnt_t frame = 0; frame < engine->framesPerPeriod(); ++frame)
+		{
+			if (m_playHandleBuffer[frame].containsNaN() || m_playHandleBuffer[frame].containsInf())
+			{
+				engine->reportDspFailure(AudioEngine::DspFailure::NonfiniteOutput); break;
+			}
+		}
 	}
 	else
 	{

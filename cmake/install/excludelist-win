@@ -26,3 +26,7 @@ WS2_32.dll
 RPCRT4.dll
 dsound.dll
 SETUPAPI.dll
+CRYPT32.dll
+SECUR32.dll
+NCRYPT.dll
+BCRYPT.dll

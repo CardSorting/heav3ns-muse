@@ -24,8 +24,6 @@
 
 #include "FileSearchJob.h"
 
-#include <QDirIterator>
-#include <QRegularExpression>
 
 #include "ThreadPool.h"
 
@@ -59,44 +57,11 @@ void FileSearchJob::search(Task task)
 
 void FileSearchJob::runSearch(Task task)
 {
-	// RE expression that matches regular tokens, and tokens with double quotes around them
-	static auto s_tokenRe = QRegularExpression{R"(\"([^"]+)\"|(\S+))"};
-
-	auto tokensIt = s_tokenRe.globalMatch(task.filter);
-	auto tokens = QStringList{};
-
-	while (tokensIt.hasNext())
-	{
-		const auto match = tokensIt.next();
-		const auto quoted = match.captured(1);
-		const auto plain = match.captured(2);
-
-		if (!quoted.isEmpty()) { tokens.push_back(quoted); }
-		if (!plain.isEmpty()) { tokens.push_back(plain); }
-	}
-
 	emit started();
-
-	for (const auto& path : task.paths)
-	{
-		auto dirIt = QDirIterator{path, task.dirFilters,
-			QDirIterator::IteratorFlag::Subdirectories | QDirIterator::IteratorFlag::FollowSymlinks};
-
-		while (dirIt.hasNext() && !m_stop.test(std::memory_order_relaxed))
-		{
-			const auto fileInfo = QFileInfo{dirIt.next()};
-			const auto fileName = fileInfo.fileName();
-			const auto containsToken = std::all_of(tokens.begin(), tokens.end(),
-				[&](const auto& token) { return fileName.contains(token, Qt::CaseInsensitive); });
-
-			const auto validDir = fileInfo.isDir() && containsToken;
-			const auto validFile = fileInfo.isFile() && containsToken
-				&& task.extensions.contains(QString{"*.%1"}.arg(fileInfo.completeSuffix()), Qt::CaseInsensitive);
-
-			if (validDir || validFile) { emit foundMatch(fileInfo.filePath()); }
-		}
-	}
-
+	FileSearch::Callbacks callbacks;
+	callbacks.cancelled = [this] { return m_stop.test(std::memory_order_relaxed); };
+	callbacks.match = [this](const QString& path) { emit foundMatch(path); };
+	FileSearch::scan(std::move(task), callbacks);
 	emit finished();
 }
 

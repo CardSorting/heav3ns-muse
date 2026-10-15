@@ -31,6 +31,7 @@
 #include <QMutex>
 
 #include "AudioBuffer.h"
+#include "AudioBusOutput.h"
 #include "PlayHandle.h"
 
 namespace lmms
@@ -39,12 +40,14 @@ namespace lmms
 class EffectChain;
 class FloatModel;
 class BoolModel;
+class Track;
 
 /**
 	@brief Job between @ref PlayHandle and @ref MixerChannel
 
 	A @ref ThreadableJob class located at the exit point of each @ref PlayHandle into a @ref MixerChannel
-	(or into an audio device, in case of AudioJack, but this is not supported in AudioBusHandle yet).
+	External output snapshots use the same delayed period as the master output.
+	AudioJack's legacy port publication is still disabled pending safe native port retirement.
 	It contains an optional @ref EffectChain which is e.g. visualized in the
 	@ref gui::InstrumentTrackWindow or @ref gui::SampleTrackWindow.
 	For processing, it adds all input play handles into an internal buffer,
@@ -56,12 +59,15 @@ class AudioBusHandle : public ThreadableJob
 public:
 	AudioBusHandle(const QString& name, bool hasEffectChain = true,
 		FloatModel* volumeModel = nullptr, FloatModel* panningModel = nullptr,
-		BoolModel* mutedModel = nullptr);
+		BoolModel* mutedModel = nullptr, const Track* renderTrack = nullptr);
 	virtual ~AudioBusHandle();
 
 	// indicate whether JACK & Co should provide output-buffer at ext. port
 	bool extOutputEnabled() const { return m_extOutputEnabled; }
 	void setExtOutputEnabled(bool enabled);
+	// Acquire/retain this on the model owner thread before starting a callback.
+	// Allocated only on first acquisition; only AudioEngine copies its audio.
+	std::shared_ptr<const AudioBusOutput> externalOutput();
 
 	// next mixer-channel after this audio-bus-handle
 	// (-1 = none  0 = master)
@@ -88,6 +94,7 @@ private:
 	volatile bool m_bufferUsage;
 
 	AudioBuffer m_buffer;
+	std::shared_ptr<AudioBusOutput> m_externalOutput;
 
 	bool m_extOutputEnabled;
 	mix_ch_t m_nextMixerChannel;
@@ -102,11 +109,13 @@ private:
 	FloatModel* m_volumeModel;
 	FloatModel* m_panningModel;
 	BoolModel* m_mutedModel;
+	const Track* m_renderTrack;
 	
 	std::atomic<bool> m_corrupted = false;
 
 	friend class AudioEngine;
 	friend class AudioEngineWorkerThread;
+	friend class AudioJack;
 };
 
 } // namespace lmms

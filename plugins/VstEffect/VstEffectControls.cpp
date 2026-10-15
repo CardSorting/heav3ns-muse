@@ -22,6 +22,7 @@
  *
  */
 
+#include <QFileInfo>
 #include "VstEffectControls.h"
 
 #include <QAction>
@@ -34,7 +35,14 @@
 
 #include "embed.h"
 #include "GuiApplication.h"
-#include "LocaleHelper.h"
+#include "AudioEngine.h"
+#include "Engine.h"
+#include "Song.h"
+#include <algorithm>
+#include "FileResourceIO.h"
+#include <QMutexLocker>
+#include <QScopedValueRollback>
+#include <stdexcept>
 #include "MainWindow.h"
 #include "SubWindow.h"
 #include "VstEffectControlDialog.h"
@@ -48,7 +56,10 @@ namespace lmms
 VstEffectControls::VstEffectControls( VstEffect * _eff ) :
 	EffectControls( _eff ),
 	m_effect( _eff ),
+	m_selPresetButton(nullptr),
 	m_subWindow( nullptr ),
+	m_scrollArea(nullptr),
+	m_parameters(this, [this](int index, float value) { if (m_effect->m_plugin) { m_effect->m_plugin->setParam(index, value); } }),
 	ctrHandle( nullptr ),
 	lastPosInMenu (0),
 	m_vstGuiVisible ( true )
@@ -68,88 +79,125 @@ VstEffectControls::~VstEffectControls()
 
 
 
-void VstEffectControls::loadSettings( const QDomElement & _this )
+void VstEffectControls::loadSettings(const QDomElement& settings)
 {
-	//m_effect->closePlugin();
-	//m_effect->openPlugin( _this.attribute( "plugin" ) );
-	m_effect->m_pluginMutex.lock();
-	if( m_effect->m_plugin != nullptr )
+	m_parameters.checkOwner();
+	if (m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+	QScopedValueRollback<bool> operation(m_parameterOperation, true);
+	FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	QMutexLocker lock(&m_effect->m_pluginMutex);
+	if (!m_effect->m_plugin) { return; }
+	try
 	{
-		m_vstGuiVisible = _this.attribute( "guivisible" ).toInt();
-
-		m_effect->m_plugin->loadSettings( _this );
-
-		const QMap<QString, QString> & dump = m_effect->m_plugin->parameterDump();
-		paramCount = dump.size();
-		auto paramStr = std::array<char, 35>{};
-		knobFModel.resize(paramCount);
-		QStringList s_dumpValues;
-		for( int i = 0; i < paramCount; i++ )
-		{
-			std::snprintf(paramStr.data(), paramStr.size(), "param%d", i);
-			s_dumpValues = dump[paramStr.data()].split(":");
-
-			knobFModel[i] = new FloatModel( 0.0f, 0.0f, 1.0f, 0.01f, this, QString::number(i) );
-			knobFModel[i]->loadSettings(_this, paramStr.data());
-
-			if( !( knobFModel[ i ]->isAutomated() ||
-						knobFModel[ i ]->controllerConnection() ) )
-			{
-				knobFModel[ i ]->setValue(LocaleHelper::toFloat(s_dumpValues.at(2)));
-				knobFModel[ i ]->setInitValue(LocaleHelper::toFloat(s_dumpValues.at(2)));
-			}
-
-			connect( knobFModel[i], &FloatModel::dataChanged, this,
-				[this, i]() { setParameter( knobFModel[i] ); }, Qt::DirectConnection);
-		}
-
+		m_vstGuiVisible = settings.attribute("guivisible").toInt();
+		m_effect->m_plugin->loadSettings(settings);
+		m_parameters.restore(m_effect->m_plugin->parameterDump(), settings);
 	}
-	m_effect->m_pluginMutex.unlock();
+	catch (const std::exception& error) { m_effect->collectErrorForUI(QString::fromUtf8(error.what())); }
 }
 
-
-
-
-void VstEffectControls::setParameter( Model * action )
+Plugin::NativeProgramPage VstEffectControls::nativePrograms(int offset, int limit)
 {
-	int knobUNID = action->displayName().toInt();
-
-	if ( m_effect->m_plugin != nullptr ) {
-		m_effect->m_plugin->setParam( knobUNID, knobFModel[knobUNID]->value() );
-	}
+	m_parameters.checkOwner();
+	if (m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+	QScopedValueRollback<bool> operation(m_parameterOperation, true);
+	FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	QMutexLocker lock(&m_effect->m_pluginMutex);
+	if (!m_effect->m_plugin) { throw std::runtime_error("Load a VST plugin before inspecting programs"); }
+	return m_effect->m_plugin->programPage(offset, limit);
 }
 
-
-
-
-void VstEffectControls::saveSettings( QDomDocument & _doc, QDomElement & _this )
+Plugin::NativePresetInfo VstEffectControls::inspectNativePreset(const QString& path)
 {
-	_this.setAttribute( "plugin", m_effect->m_key.attributes["file"] );
-	m_effect->m_pluginMutex.lock();
-	if( m_effect->m_plugin != nullptr )
+	m_parameters.checkOwner();
+	if (m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+	QScopedValueRollback<bool> operation(m_parameterOperation, true);
+	FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	QMutexLocker lock(&m_effect->m_pluginMutex);
+	if (!m_effect->m_plugin) { throw std::runtime_error("Load a VST plugin before using native preset files"); }
+	const auto result = m_effect->m_plugin->inspectPresetFile(path);
+	return result;
+}
+
+Plugin::NativePresetInfo VstEffectControls::loadNativePreset(const QString& path)
+{
+	m_parameters.checkOwner();
+	if (m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+	QScopedValueRollback<bool> operation(m_parameterOperation, true);
+	FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	QMutexLocker lock(&m_effect->m_pluginMutex);
+	if (!m_effect->m_plugin) { throw std::runtime_error("Load a VST plugin before using native preset files"); }
+	const auto result = m_effect->m_plugin->loadPresetFile(path);
+	m_parameters.synchronize(m_effect->m_plugin->parameterDump());
+	return result;
+}
+
+Plugin::NativePresetInfo VstEffectControls::saveNativePreset(const QString& path, bool bank)
+{
+	m_parameters.checkOwner();
+	if (m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+	QScopedValueRollback<bool> operation(m_parameterOperation, true);
+	FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	QMutexLocker lock(&m_effect->m_pluginMutex);
+	if (!m_effect->m_plugin) { throw std::runtime_error("Load a VST plugin before using native preset files"); }
+	const auto result = m_effect->m_plugin->savePresetFile(path, bank);
+	return result;
+}
+
+bool VstEffectControls::selectNativeProgram(int index, QString& error)
+{
+	try
 	{
-		m_effect->m_plugin->saveSettings( _doc, _this );
-		if (!knobFModel.empty()) {
-			const QMap<QString, QString> & dump = m_effect->m_plugin->parameterDump();
-			paramCount = dump.size();
-			auto paramStr = std::array<char, 35>{};
-			for( int i = 0; i < paramCount; i++ )
-			{
-				if (knobFModel[i]->isAutomated() || knobFModel[i]->controllerConnection()) {
-					std::snprintf(paramStr.data(), paramStr.size(), "param%d", i);
-					knobFModel[i]->saveSettings(_doc, _this, paramStr.data());
-				}
-			}
-		}
+		m_parameters.checkOwner();
+		if (m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+		QScopedValueRollback<bool> operation(m_parameterOperation, true);
+		FileResourceIO::EventSuspension events;
+		const auto guard = Engine::audioEngine()->requestChangesGuard();
+		QMutexLocker lock(&m_effect->m_pluginMutex);
+		if (!m_effect->m_plugin) { throw std::runtime_error("Load a VST plugin before selecting a program"); }
+		m_effect->m_plugin->setProgram(index);
+		m_parameters.synchronize(m_effect->m_plugin->parameterDump());
+		error.clear();
+		return true;
 	}
-	m_effect->m_pluginMutex.unlock();
+	catch (const std::exception& failure) { error = QString::fromUtf8(failure.what()); return false; }
 }
 
+void VstEffectControls::refreshParameterModels()
+{
+	m_parameters.checkOwner();
+	if (m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+	QScopedValueRollback<bool> operation(m_parameterOperation, true);
+	FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	QMutexLocker lock(&m_effect->m_pluginMutex);
+	if (m_effect->m_plugin) { m_parameters.synchronize(m_effect->m_plugin->parameterDump()); }
+}
 
-
+void VstEffectControls::saveSettings(QDomDocument& document, QDomElement& settings)
+{
+	m_parameters.checkOwner();
+	if (m_parameterOperation) { throw std::runtime_error("VST parameter operation is already active"); }
+	QScopedValueRollback<bool> operation(m_parameterOperation, true);
+	settings.setAttribute("plugin", m_effect->m_key.attributes["file"]);
+	FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	QMutexLocker lock(&m_effect->m_pluginMutex);
+	if (m_effect->m_plugin)
+	{
+		m_effect->m_plugin->saveSettings(document, settings);
+		m_parameters.saveSettings(document, settings);
+	}
+}
 
 int VstEffectControls::controlCount()
 {
+	// Even a plugin with no generic parameters can have a custom editor.
 	return m_effect->m_plugin != nullptr ? 1 : 0;
 }
 
@@ -187,20 +235,15 @@ void VstEffectControls::managePlugin()
 
 void VstEffectControls::savePreset()
 {
-
-	if ( m_effect->m_plugin != nullptr ) {
-		m_effect->m_plugin->savePreset();
-/*    		bool converted;
-    		QString str = m_vi->m_plugin->currentProgramName().section("/", 0, 0);
-     		if (str != "")
-   			lastPosInMenu = str.toInt(&converted, 10) - 1;
-		QWidget::update();*/
+	if (!m_effect->m_plugin) { return; }
+	try
+	{
+		const auto path = m_effect->m_plugin->presetSavePath();
+		if (path.isEmpty()) { return; }
+		saveNativePreset(path, QFileInfo(path).suffix().compare("fxb", Qt::CaseInsensitive) == 0);
 	}
-
+	catch (const std::exception& error) { m_effect->collectErrorForUI(QString::fromUtf8(error.what())); }
 }
-
-
-
 
 void VstEffectControls::updateMenu()
 {
@@ -208,12 +251,11 @@ void VstEffectControls::updateMenu()
 	// get all presets -
 	if ( m_effect->m_plugin != nullptr )
 	{
-		m_effect->m_plugin->loadProgramNames();
+		try { m_effect->m_plugin->loadProgramNames(); }
+		catch (const std::exception& error) { m_effect->collectErrorForUI(QString::fromUtf8(error.what())); return; }
 		///QWidget::update();
 
-     		QString str = m_effect->m_plugin->allProgramNames();
-
-    		QStringList list1 = str.split("|");
+		const auto list1 = m_effect->m_plugin->allProgramNames();
 
      		QMenu * to_menu = m_selPresetButton->menu();
     		to_menu->clear();
@@ -239,65 +281,39 @@ void VstEffectControls::updateMenu()
 
 void VstEffectControls::openPreset()
 {
-
-	if ( m_effect->m_plugin != nullptr ) {
-		m_effect->m_plugin->openPreset();
-    		bool converted;
-    		QString str = m_effect->m_plugin->currentProgramName().section("/", 0, 0);
-     		if (str != "")
-   			lastPosInMenu = str.toInt(&converted, 10) - 1;
-		//QWidget::update();
+	if (!m_effect->m_plugin) { return; }
+	try
+	{
+		const auto path = m_effect->m_plugin->presetOpenPath();
+		if (path.isEmpty()) { return; }
+		loadNativePreset(path);
+		lastPosInMenu = nativePrograms(0, 1).current;
+		Engine::getSong()->setModified();
 	}
-
+	catch (const std::exception& error) { m_effect->collectErrorForUI(QString::fromUtf8(error.what())); }
 }
 
-
-
-
-void VstEffectControls::rollPreset()
+void VstEffectControls::changeProgram(int program, bool relative)
 {
-
-	if ( m_effect->m_plugin != nullptr ) {
-		m_effect->m_plugin->rotateProgram( 1 );
-    		bool converted;
-    		QString str = m_effect->m_plugin->currentProgramName().section("/", 0, 0);
-     		if (str != "")
-   			lastPosInMenu = str.toInt(&converted, 10) - 1;
-		//QWidget::update();
+	try
+	{
+		const auto page = nativePrograms(0, 1);
+		if (page.total == 0) { return; }
+		const int index = relative ? static_cast<int>(std::clamp<qint64>(static_cast<qint64>(page.current) + program, 0, page.total - 1)) : program;
+		QString error;
+		if (!selectNativeProgram(index, error)) { m_effect->collectErrorForUI(error); return; }
+		lastPosInMenu = index;
+		Engine::getSong()->setModified();
 	}
+	catch (const std::exception& error) { m_effect->collectErrorForUI(QString::fromUtf8(error.what())); }
 }
 
-
-
-
-void VstEffectControls::rolrPreset()
-{
-
-	if ( m_effect->m_plugin != nullptr ) {
-		m_effect->m_plugin->rotateProgram( -1 );
-    		bool converted;
-    		QString str = m_effect->m_plugin->currentProgramName().section("/", 0, 0);
-     		if (str != "")
-   			lastPosInMenu = str.toInt(&converted, 10) - 1;
-		//QWidget::update();
-	}
-}
-
-
-
-
+void VstEffectControls::rollPreset() { changeProgram(1, true); }
+void VstEffectControls::rolrPreset() { changeProgram(-1, true); }
 void VstEffectControls::selPreset()
 {
-	auto action = qobject_cast<QAction*>(sender());
-	if (action && m_effect->m_plugin != nullptr)
-	{
-		lastPosInMenu = action->data().toInt();
-		m_effect->m_plugin->setProgram(lastPosInMenu);
-		// QWidget::update();
-	}
+	if (auto action = qobject_cast<QAction*>(sender())) { changeProgram(action->data().toInt(), false); }
 }
-
-
 
 
 void VstEffectControls::paintEvent( QPaintEvent * )
@@ -358,52 +374,25 @@ ManageVSTEffectView::ManageVSTEffectView( VstEffect * _eff, VstEffectControls * 
 		l->addItem( new QSpacerItem( 68, 45, QSizePolicy::Fixed, QSizePolicy::Fixed ), 0, i );
 	}
 
-	const QMap<QString, QString> & dump = m_effect->m_plugin->parameterDump();
-	m_vi->paramCount = dump.size();
-
-	m_vstKnobs.reserve(m_vi->paramCount);
-
-	bool hasKnobModel = true;
-	if (m_vi->knobFModel.empty())
+	m_vi->refreshParameterModels();
+	const int paramCount = m_vi->m_parameters.size();
+	m_vstKnobs.reserve(paramCount);
+	for (int i = 0; i < paramCount; ++i)
 	{
-		m_vi->knobFModel.resize(m_vi->paramCount);
-		hasKnobModel = false;
-	}
-
-	auto paramStr = std::array<char, 35>{};
-	QStringList s_dumpValues;
-
-	for( int i = 0; i < m_vi->paramCount; i++ )
-	{
-		std::snprintf(paramStr.data(), paramStr.size(), "param%d", i);
-		s_dumpValues = dump[paramStr.data()].split(":");
-
-		const auto& description = s_dumpValues.at(1);
-
-		auto knob = new VstPluginKnob{m_effect->m_plugin.get(), i, description, widget};
+		auto model = m_vi->m_parameters.at(i);
+		auto knob = new VstPluginKnob{m_effect->m_plugin.get(), i, model->displayName(), widget};
 		m_vstKnobs.push_back(knob);
-
-		if( !hasKnobModel )
-		{
-			std::snprintf(paramStr.data(), paramStr.size(), "%d", i);
-			m_vi->knobFModel[i] = new FloatModel(LocaleHelper::toFloat(s_dumpValues.at(2)),
-					0.0f, 1.0f, 0.01f, _eff, paramStr.data());
-		}
-
-		FloatModel * model = m_vi->knobFModel[i];
-		connect( model, &FloatModel::dataChanged, this,
-			[this, model]() { setParameter( model ); }, Qt::DirectConnection);
 		knob->setModel(model);
 	}
-	m_effect->m_plugin->loadParameterLabels();
-	m_effect->m_plugin->loadParameterDisplays();
+	try { m_effect->m_plugin->loadParameterLabels(); m_effect->m_plugin->loadParameterDisplays(); }
+	catch (const std::exception& error) { m_effect->collectErrorForUI(QString::fromUtf8(error.what())); }
 
 	int i = 0;
-	for( int lrow = 1; lrow < ( int( m_vi->paramCount / 10 ) + 1 ) + 1; lrow++ )
+	for( int lrow = 1; lrow < ( int( m_vi->m_parameters.size() / 10 ) + 1 ) + 1; lrow++ )
 	{
 		for( int lcolumn = 0; lcolumn < 10; lcolumn++ )
 		{
-			if( i < m_vi->paramCount )
+			if( i < m_vi->m_parameters.size() )
 			{
 				l->addWidget(m_vstKnobs[i], lrow, lcolumn, Qt::AlignCenter);
 			}
@@ -411,7 +400,7 @@ ManageVSTEffectView::ManageVSTEffectView( VstEffect * _eff, VstEffectControls * 
 		}
 	}
 
-	l->setRowStretch( ( int( m_vi->paramCount / 10 ) + 1 ), 1 );
+	l->setRowStretch( ( int( m_vi->m_parameters.size() / 10 ) + 1 ), 1 );
 	l->setColumnStretch( 10, 1 );
 
 	widget->setLayout(l);
@@ -440,39 +429,23 @@ void ManageVSTEffectView::closeWindow()
 
 void ManageVSTEffectView::syncPlugin()
 {
-	auto paramStr = std::array<char, 35>{};
-	QStringList s_dumpValues;
-	const QMap<QString, QString> & dump = m_effect->m_plugin->parameterDump();
-
-	for( int i = 0; i < m_vi2->paramCount; i++ )
+	try
 	{
-		// only not automated knobs are synced from VST
-		// those auto-setted values are not jurnaled, tracked for undo / redo
-		if( !( m_vi2->knobFModel[ i ]->isAutomated() ||
-					m_vi2->knobFModel[ i ]->controllerConnection() ) )
-		{
-			std::snprintf(paramStr.data(), paramStr.size(), "param%d", i);
-			s_dumpValues = dump[paramStr.data()].split(":");
-			float f_value = LocaleHelper::toFloat(s_dumpValues.at(2));
-			m_vi2->knobFModel[i]->setValue(f_value, true);
-			m_vi2->knobFModel[i]->setInitValue(f_value);
-		}
+		m_vi2->refreshParameterModels();
+		if (m_effect->m_plugin) { m_effect->m_plugin->loadParameterLabels(); m_effect->m_plugin->loadParameterDisplays(); }
 	}
-	m_effect->m_plugin->loadParameterLabels();
-	m_effect->m_plugin->loadParameterDisplays();
+	catch (const std::exception& error) { m_effect->collectErrorForUI(QString::fromUtf8(error.what())); }
 }
-
-
 
 void ManageVSTEffectView::displayAutomatedOnly()
 {
 	bool isAuto = QString::compare( m_displayAutomatedOnly->text(), tr( "Automated" ) ) == 0;
 
-	for( int i = 0; i< m_vi2->paramCount; i++ )
+	for( int i = 0; i< m_vi2->m_parameters.size(); i++ )
 	{
 
-		if( !( m_vi2->knobFModel[ i ]->isAutomated() ||
-					m_vi2->knobFModel[ i ]->controllerConnection() ) )
+		if( !( m_vi2->m_parameters.at(i)->isAutomated() ||
+					m_vi2->m_parameters.at(i)->controllerConnection() ) )
 		{
 			if (m_vstKnobs[i]->isVisible() && isAuto)
 			{
@@ -489,28 +462,10 @@ void ManageVSTEffectView::displayAutomatedOnly()
 
 
 
-void ManageVSTEffectView::setParameter( Model * action )
-{
-	int knobUNID = action->displayName().toInt();
 
-	if ( m_effect->m_plugin != nullptr ) {
-		m_effect->m_plugin->setParam( knobUNID, m_vi2->knobFModel[knobUNID]->value() );
-	}
-}
 
 ManageVSTEffectView::~ManageVSTEffectView()
 {
-	if (!m_vi2->knobFModel.empty())
-	{
-		for( int i = 0; i < m_vi2->paramCount; i++ )
-		{
-			delete m_vi2->knobFModel[ i ];
-			delete m_vstKnobs[i];
-		}
-	}
-
-	m_vi2->knobFModel.clear();
-
 	if( m_vi2->m_scrollArea != nullptr )
 	{
 		delete m_vi2->m_scrollArea;

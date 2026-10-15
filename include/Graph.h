@@ -30,7 +30,7 @@
 #include <QPixmap>
 #include <QCursor>
 
-#include "Model.h"
+#include "GraphModel.h"
 #include "ModelView.h"
 #include "LmmsTypes.h"
 
@@ -67,6 +67,7 @@ public:
 		int height = 104
 	);
 	~Graph() override = default;
+	static QString loadUserWaveform(graphModel* target);
 
 	void setForeground( const QPixmap & _pixmap );
 
@@ -125,103 +126,7 @@ private:
 } // namespace gui
 
 
-/**
-	@brief 2 dimensional function plot
 
-	Function plot graph with discrete x scale and continous y scale
-	This makes it possible to display "#x" samples
-*/
-class LMMS_EXPORT graphModel : public Model
-{
-	Q_OBJECT
-public:
-	//! @param _min Minimum y value to display
-	//! @param _max Maximum y value to display
-	//! @param _size Number of samples (e.g. x value)
-	//! @param _step Step size on y axis where values snap to, or 0.0f
-	//! for "no snapping"
-	// TODO: @param _parent
-	// TODO: @param _default_constructed
-	graphModel( float _min,
-			float _max,
-			int _size,
-			Model * _parent,
-			bool _default_constructed = false,
-			float _step = 0.0 );
-
-	~graphModel() override = default;
-
-	// TODO: saveSettings, loadSettings?
-
-	inline float minValue() const
-	{
-		return( m_minValue );
-	}
-
-	inline float maxValue() const
-	{
-		return( m_maxValue );
-	}
-
-	inline int length() const
-	{
-		return m_length;
-	}
-
-	inline const float * samples() const
-	{
-		return( m_samples.data() );
-	}
-
-	//! Make cyclic convolution
-	//! @param convolution Samples to convolve with
-	//! @param convolutionLength Number of samples to take for each sum
-	//! @param centerOffset Offset for resulting values
-	void convolve(const float *convolution,
-		const int convolutionLength, const int centerOffset);
-
-public slots:
-	//! Set range of y values
-	void setRange(float ymin, float ymax);
-
-	void setLength( int _size );
-	//! Update one sample
-	void setSampleAt( int x, float val );
-	//! Update samples array
-	void setSamples( const float * _value );
-
-	void setWaveToSine();
-	void setWaveToTriangle();
-	void setWaveToSaw();
-	void setWaveToSquare();
-	void setWaveToNoise();
-	QString setWaveToUser();
-
-	void smooth();
-	void smoothNonCyclic();
-	void normalize();
-	void invert();
-	void shiftPhase( int _deg );
-	void clear();
-	void clearInvisible();
-
-signals:
-	void lengthChanged();
-	void samplesChanged( int startPos, int endPos );
-	void rangeChanged();
-
-private:
-	void drawSampleAt( int x, float val );
-
-	QVector<float> m_samples;
-	int m_length;
-	float m_minValue;
-	float m_maxValue;
-	float m_step;
-
-	friend class gui::Graph;
-
-};
 
 
 } // namespace lmms

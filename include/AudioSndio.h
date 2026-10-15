@@ -31,6 +31,11 @@
 #ifdef LMMS_HAVE_SNDIO
 
 #include <QThread>
+#include <QByteArray>
+#include <QElapsedTimer>
+#include <QSemaphore>
+#include <vector>
+#include <poll.h>
 #include <sndio.h>
 
 #include "AudioDevice.h"
@@ -40,6 +45,8 @@ class QLineEdit;
 
 namespace lmms
 {
+
+namespace detail { struct SndioApi; }
 
 namespace gui
 {
@@ -73,12 +80,31 @@ public:
 	} ;
 
 private:
+	friend class AudioSndioTestAccess;
+	AudioSndio(bool& successful, AudioEngine* engine, const detail::SndioApi& api, int timeoutMs);
 	void startProcessingImpl() override;
 	void stopProcessingImpl() override;
 	void run() override;
+	bool configureDevice(bool preserveRate);
+	void closeDevice() noexcept;
+	void requestStop();
+	bool processing() const;
+	void fail(ProcessingFailure failure, int error) noexcept;
+	bool waitWritable(std::vector<pollfd>& descriptors, QElapsedTimer& progress);
+	bool writeBuffer(const int_sample_t* data, std::size_t samples, std::vector<pollfd>& descriptors);
 
-	struct sio_hdl *m_hdl;
-	struct sio_par m_par;
+	const detail::SndioApi& m_api;
+	const int m_timeoutMs;
+	const QByteArray m_device;
+	struct sio_hdl* m_hdl = nullptr;
+	struct sio_par m_par{};
+	std::atomic_bool m_stopRequested{true};
+	std::atomic_bool m_started{false};
+	QSemaphore m_startupSemaphore;
+	QSemaphore m_stopSemaphore;
+	// Written by the worker, read/reset only after joining it.
+	ProcessingFailure m_cleanupFailure = ProcessingFailure::None;
+	int m_cleanupError = 0;
 };
 
 } // namespace lmms

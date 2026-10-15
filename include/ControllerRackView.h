@@ -69,6 +69,7 @@ public slots:
 
 private slots:
 	void addController();
+	void removeRetiredControllers();
 
 
 private:

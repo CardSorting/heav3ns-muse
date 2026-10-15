@@ -111,6 +111,11 @@ public:
 
 	Note& operator=(const Note& note);
 
+	// Process-local lifetime, requested only by application-thread studio selection
+	// checks. Copies get a new identity; assignment preserves the destination's.
+	// No allocation or identity sharing occurs in ordinary playback Note copies.
+	std::shared_ptr<const void> selectionIdentity() const;
+
 	//! Performs a deep copy and returns an owning raw pointer
 	Note* clone() const;
 
@@ -275,6 +280,7 @@ private:
 	TimePos m_length;
 	TimePos m_pos;
 	std::shared_ptr<DetuningHelper> m_detuning;
+	mutable std::shared_ptr<const void> m_selectionIdentity;
 
 	Type m_type = Type::Regular;
 };

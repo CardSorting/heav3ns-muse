@@ -27,6 +27,7 @@
 #define LMMS_RENDER_MANAGER_H
 
 #include <memory>
+#include <QPointer>
 
 #include "ProjectRenderer.h"
 #include "OutputSettings.h"
@@ -34,6 +35,9 @@
 
 namespace lmms
 {
+
+class TrackRenderScope;
+class NativeRenderOutput;
 
 
 class RenderManager : public QObject
@@ -51,6 +55,14 @@ public:
 	void renderTracks();
 
 	void abortProcessing();
+	const QString& errorString() const { return m_error; }
+	bool isStarting() const { return m_starting; }
+
+protected:
+	// Return a newly owned, unstarted native renderer for this output. Failures
+	// are contained by the common CLI/GUI render path before further stems run.
+	virtual std::shared_ptr<ProjectRenderer> createRenderer(const OutputSettings& settings,
+		ProjectRenderer::ExportFileFormat format, const QString& outputPath);
 
 signals:
 	void progressChanged( int );
@@ -62,18 +74,36 @@ private slots:
 
 private:
 	QString pathForTrack( const Track *track, int num );
-	void restoreMutedState();
+	void clearTrackSelection();
 
 	void render( QString outputPath );
+	bool prepareRender();
 
 	const OutputSettings m_outputSettings;
 	ProjectRenderer::ExportFileFormat m_format;
 	QString m_outputPath;
+	QString m_activeOutputPath;
+	QString m_error;
+	const QString m_rendererFailureMessage;
+	bool m_deviceStored = false;
+	bool m_starting = false;
+	bool m_cancelled = false;
+	bool m_finishing = false;
+	bool m_retiring = false;
+	bool m_outputFinalized = false;
+	bool m_setupFailed = false;
+	std::uint64_t m_deviceReservation = 0;
 
-	std::unique_ptr<ProjectRenderer> m_activeRenderer;
+	std::shared_ptr<ProjectRenderer> m_activeRenderer;
+	std::shared_ptr<NativeRenderOutput> m_outputTransaction;
+	std::unique_ptr<TrackRenderScope> m_trackSelection;
 
-	std::vector<Track*> m_tracksToRender;
-	std::vector<Track*> m_unmuted;
+	std::vector<QPointer<Track>> m_tracksToRender;
+	std::vector<QPointer<Track>> m_exportTracks;
+	friend class RenderManagerPreparationTestAccess;
+	friend class RenderManagerLifecycleTestAccess;
+	friend class RenderManagerConstructionTestAccess;
+	friend class RenderManagerPublicationTestAccess;
 } ;
 
 

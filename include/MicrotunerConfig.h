@@ -86,14 +86,6 @@ private slots:
 	bool saveKeymapToFile();
 
 private:
-	//! @brief Validate the scale name and entered interval definitions
-	//! @return true if input is valid, false if problems were detected
-	bool validateScaleForm();
-
-	//! @brief Validate the entered key mapping and other values
-	//! @return true if input is valid, false if problems were detected
-	bool validateKeymapForm();
-
 	//! @brief Parse and apply the entered scale definition
 	//! @return true if input is valid, false if problems were detected
 	bool applyScale();
@@ -116,7 +108,8 @@ private:
 	IntModel m_middleKeyModel;              //!< model for spinbox of currently edited middle key
 
 	IntModel m_baseKeyModel;                //!< model for spinbox of currently edited base key
-	FloatModel m_baseFreqModel;             //!< model for spinbox of currently edited base note frequency
+	QLineEdit *m_baseFreqEdit;              //!< preserve the complete native reference frequency
+	QLineEdit *m_octaveDegreeEdit;          //!< signed scale degree advanced per keyboard-map period
 };
 
 

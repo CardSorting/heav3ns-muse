@@ -23,26 +23,38 @@
  */
 
 #include "Song.h"
+#include "NativeValueNotification.h"
 #include <QTextStream>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QFile>
 #include <QMessageBox>
+#include <QScopeGuard>
+#include <QScopedValueRollback>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
+#include <limits>
+#include <optional>
+#include <stdexcept>
 
 #include "AutomationTrack.h"
 #include "AutomationEditor.h"
 #include "ConfigManager.h"
 #include "ControllerRackView.h"
 #include "ControllerConnection.h"
+#include "NativeLinkedControls.h"
+#include "NativeTrackSaveSnapshot.h"
+#include "FileResourceIO.h"
 #include "EnvelopeAndLfoParameters.h"
 #include "Mixer.h"
 #include "MixerView.h"
 #include "GuiApplication.h"
 #include "ExportFilter.h"
 #include "InstrumentTrack.h"
+#include "Instrument.h"
 #include "Keymap.h"
 #include "NotePlayHandle.h"
 #include "MidiClip.h"
@@ -53,14 +65,121 @@
 #include "ProjectJournal.h"
 #include "ProjectNotes.h"
 #include "Scale.h"
+#include "TuningFile.h"
 #include "SongEditor.h"
 #include "PeakController.h"
+#include "SampleRecordHandle.h"
 
 
 namespace lmms
 {
 
 tick_t TimePos::s_ticksPerBar = DefaultTicksPerBar;
+
+namespace
+{
+struct ControllerNotificationFrame;
+thread_local ControllerNotificationFrame* controllerNotificationFrame = nullptr;
+// Stack-owned frames require no Song field and never dereference a Song on
+// unwind. Nested delivery, including another Song, restores its predecessor.
+struct ControllerNotificationFrame
+{
+	explicit ControllerNotificationFrame(Song* source)
+		: owner(source), previous(controllerNotificationFrame) { controllerNotificationFrame = this; }
+	~ControllerNotificationFrame() { controllerNotificationFrame = previous; }
+	ControllerNotificationFrame(const ControllerNotificationFrame&) = delete;
+	ControllerNotificationFrame& operator=(const ControllerNotificationFrame&) = delete;
+	void rethrow() const { if (failure) { std::rethrow_exception(failure); } }
+	QPointer<Song> owner;
+	ControllerNotificationFrame* previous;
+	std::exception_ptr failure;
+};
+}
+
+class Song::CreationGuard
+{
+public:
+	explicit CreationGuard(Song* song)
+		: m_owner(song), m_patterns(Engine::patternStore()), m_mixer(Engine::mixer()), m_hidden(song->m_globalAutomationTrack),
+		  m_journal(Engine::projectJournal()), m_loading(song->m_loadingProject), m_journalling(m_journal->isJournalling())
+	{
+		if (song->thread() != QThread::currentThread() || song->m_creatingProject || song->m_loadingProjectFile || song->m_loadingProject || song->m_clearingProject || song->m_savingProject || song->m_importingProject)
+		{ throw std::logic_error("Native project creation cannot overlap a project transition or run on another thread"); }
+		checkContext(); m_changes.emplace(Engine::audioEngine()->requestChangesGuard());
+		song->m_creatingProject = true; song->m_loadingProject = true; m_journal->setJournalling(false);
+	}
+	~CreationGuard()
+	{
+		if (m_owner) { m_owner->m_permitCreationLoad = false; m_owner->m_creatingProject = false; m_owner->m_loadingProject = m_loading; }
+		if (Engine::projectJournal() == m_journal) { m_journal->setJournalling(m_journalling); }
+	}
+	void checkContext() const
+	{
+		if (!m_owner || Engine::getSong() != m_owner.data() || !m_patterns || Engine::patternStore() != m_patterns.data()
+			|| !m_mixer || Engine::mixer() != m_mixer.data() || !m_hidden || m_owner->m_globalAutomationTrack != m_hidden.data()
+			|| Engine::projectJournal() != m_journal) { throw std::runtime_error("Native project creation context retired"); }
+	}
+	void check() const
+	{
+		checkContext(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } checkContext();
+		for (const auto& entry : m_tracks)
+		{
+			if (!entry.track || !entry.owner || entry.track->trackContainer() != entry.owner.data()
+				|| std::find(entry.owner->tracks().begin(), entry.owner->tracks().end(), entry.track.data()) == entry.owner->tracks().end())
+			{ throw std::runtime_error("Native created track retired or detached before project completion"); }
+			if (auto instrument = dynamic_cast<InstrumentTrack*>(entry.track.data()); instrument && entry.confirmed
+				&& (instrument->isRetiring() || entry.instrument.data() != entry.identity || instrument->instrument() != entry.identity))
+			{ throw std::runtime_error("Native created instrument changed before project completion"); }
+		}
+	}
+	void watch(Track* track, bool pendingInstrument = false)
+	{
+		if (!track) { throw std::runtime_error("Native project track could not be created"); }
+		auto instrument = dynamic_cast<InstrumentTrack*>(track);
+		m_tracks.push_back({track, track->trackContainer(), instrument ? instrument->instrument() : nullptr, instrument ? instrument->instrument() : nullptr, !pendingInstrument});
+	}
+	void expectInstrument(const QPointer<InstrumentTrack>& track, const QPointer<Instrument>& instrument)
+	{
+		checkContext();
+		if (!track || !instrument || track->instrument() != instrument.data()) { throw std::runtime_error("Native builtin instrument did not survive creation"); }
+		for (auto& entry : m_tracks) { if (entry.track.data() == track.data()) { entry.instrument = instrument; entry.identity = instrument.data(); entry.confirmed = true; } }
+		check();
+	}
+	void watchProject()
+	{
+		for (auto container : {static_cast<TrackContainer*>(m_owner.data()), static_cast<TrackContainer*>(m_patterns.data())})
+		{ for (auto track : container->tracks()) { watch(track); } }
+	}
+	bool loadTemplate(const QString& path)
+	{
+		const QString requested(path); check(); m_owner->m_loadingProject = false; m_owner->m_permitCreationLoad = true;
+		const auto permit = qScopeGuard([owner = m_owner] { if (owner) { owner->m_permitCreationLoad = false; } });
+		const bool loaded = m_owner->loadProject(requested); checkContext(); m_owner->m_loadingProject = true;
+		if (loaded) { watchProject(); check(); }
+		return loaded;
+	}
+	void finish(bool refreshPatterns)
+	{
+		check(); NativeProjectSaveSnapshot source(m_owner.data());
+		m_owner->m_oldFileName.clear(); m_owner->setProjectFileName(""); check(); source.validate();
+		m_owner->m_loadingProject = false; m_owner->updateLength(); check(); source.validate();
+		if (refreshPatterns) { m_patterns->updateAfterTrackAdd(); check(); source.validate(); }
+		m_owner->setModified(false); check(); source.validate();
+		if (m_owner->isModified() || !m_owner->projectFileName().isEmpty()) { throw std::runtime_error("Native new project publication state changed"); }
+		m_owner->m_loadOnLaunch = false;
+	}
+private:
+	struct TrackEntry { QPointer<Track> track; QPointer<TrackContainer> owner; QPointer<Instrument> instrument; Instrument* identity; bool confirmed; };
+	QPointer<Song> m_owner;
+	QPointer<PatternStore> m_patterns;
+	QPointer<Mixer> m_mixer;
+	QPointer<AutomationTrack> m_hidden;
+	ProjectJournal* m_journal;
+	bool m_loading, m_journalling;
+	std::optional<AudioEngine::RequestChangesGuard> m_changes;
+	FileResourceIO::EventSuspension m_events;
+	std::vector<TrackEntry> m_tracks;
+};
 
 
 
@@ -94,21 +213,46 @@ Song::Song() :
 	m_loopMidiClip( false ),
 	m_loopRenderCount(1),
 	m_loopRenderRemaining(1),
-	m_oldAutomatedValues()
+	m_oldAutomatedModels()
 {
-	connect( &m_tempoModel, SIGNAL(dataChanged()),
-			this, SLOT(setTempo()), Qt::DirectConnection );
-	connect( &m_tempoModel, SIGNAL(dataUnchanged()),
-			this, SLOT(setTempo()), Qt::DirectConnection );
-	connect( &m_timeSigModel, SIGNAL(dataChanged()),
-			this, SLOT(setTimeSignature()), Qt::DirectConnection );
+	const auto updateTempo = [this] {
+		try { setTempo(); }
+		catch (...)
+		{
+			if (!NativeValueNotification::report(std::current_exception()))
+			{ qWarning("Song tempo update failed outside a native value notification frame"); }
+		}
+	};
+	connect(&m_tempoModel, &Model::dataChanged, this, updateTempo, Qt::DirectConnection);
+	connect(&m_tempoModel, &Model::dataUnchanged, this, updateTempo, Qt::DirectConnection);
+	connect(&m_timeSigModel, &Model::dataChanged, this, [this] {
+		try { setTimeSignature(); }
+		catch (...)
+		{
+			if (!NativeValueNotification::report(std::current_exception()))
+			{ qWarning("Song meter update failed outside a native value notification frame"); }
+		}
+	}, Qt::DirectConnection);
 
 
-	connect( Engine::audioEngine(), SIGNAL(sampleRateChanged()), this,
-						SLOT(updateFramesPerTick()));
+	const QPointer<AudioEngine> engine(Engine::audioEngine());
+	connect(engine.data(), &AudioEngine::sampleRateChanged, this, [this, engine] {
+		try { updateFramesPerTick(); }
+		catch (...)
+		{
+			if (engine && !engine->reportDeviceNotificationFailure(std::current_exception()))
+			{ qWarning("Song frame timing update failed outside a native device notification frame"); }
+		}
+	});
 
-	connect( &m_masterVolumeModel, SIGNAL(dataChanged()),
-			this, SLOT(masterVolumeChanged()), Qt::DirectConnection );
+	connect(&m_masterVolumeModel, &Model::dataChanged, this, [this] {
+		try { masterVolumeChanged(); }
+		catch (...)
+		{
+			if (!NativeValueNotification::report(std::current_exception()))
+			{ qWarning("Song master gain update failed outside a native value notification frame"); }
+		}
+	}, Qt::DirectConnection);
 /*	connect( &m_masterPitchModel, SIGNAL(dataChanged()),
 			this, SLOT(masterPitchChanged()));*/
 
@@ -128,7 +272,9 @@ Song::Song() :
 			if (m_playing && m_playMode == playMode) { emit playbackPositionJumped(); }
 		};
 
-		connect(&m_timelines[i], &Timeline::positionJumped, this, onPositionJumped);
+		// Native sample/LFO/VST discontinuity handling must run on the caller's
+		// processing thread before the next tick; GUI consumers queue themselves.
+		connect(&m_timelines[i], &Timeline::positionJumped, this, onPositionJumped, Qt::DirectConnection);
 	}
 
 	// Inform VST plugins if the user moved the play head
@@ -140,6 +286,7 @@ Song::Song() :
 
 Song::~Song()
 {
+	m_controllerLifecycleContext.reset();
 	m_playing = false;
 	delete m_globalAutomationTrack;
 }
@@ -157,26 +304,35 @@ void Song::masterVolumeChanged()
 
 void Song::setTempo()
 {
-	Engine::audioEngine()->requestChangeInModel();
-	const auto tempo = (bpm_t)m_tempoModel.value();
-	PlayHandleList & playHandles = Engine::audioEngine()->playHandles();
-	for (const auto& playHandle : playHandles)
+	const QPointer<Song> owner(this); const QPointer<AudioEngine> engine(Engine::audioEngine());
+	if (!engine) { throw std::runtime_error("Native tempo update requires an audio engine"); }
+	const auto context = [&] {
+		if (!owner || Engine::getSong() != owner.data() || !engine || Engine::audioEngine() != engine.data())
+		{ throw std::runtime_error("Native tempo update context retired"); }
+	};
+	bpm_t tempo;
 	{
-		auto nph = dynamic_cast<NotePlayHandle*>(playHandle);
-		if( nph && !nph->isReleased() )
+		const auto changes = engine->requestChangesGuard();
+		tempo = static_cast<bpm_t>(m_tempoModel.value()); context();
+		if (tempo < MinTempo || tempo > MaxTempo) { throw std::invalid_argument("Native tempo exceeds the song range"); }
+		for (const auto playHandle : engine->playHandles())
 		{
-			nph->lock();
-			nph->resize( tempo );
-			nph->unlock();
+			auto nph = dynamic_cast<NotePlayHandle*>(playHandle);
+			if (nph && !nph->isReleased())
+			{
+				nph->lock(); const auto unlock = qScopeGuard([nph] { nph->unlock(); });
+				nph->resize(tempo);
+			}
 		}
 	}
-	Engine::audioEngine()->doneChangeInModel();
 
-	Engine::updateFramesPerTick();
+	Engine::updateFramesPerTick(); context();
 
 	m_vstSyncController.setTempo( tempo );
 
+	NativeValueNotification notification;
 	emit tempoChanged( tempo );
+	notification.rethrow();
 }
 
 
@@ -198,6 +354,8 @@ void Song::setTimeSignature()
 
 void Song::savePlayStartPosition()
 {
+	m_playbackFrames = 0;
+	++m_playbackGeneration;
 	getTimeline().setPlayStartPosition(getPlayPos());
 }
 
@@ -208,6 +366,15 @@ void Song::processNextBuffer()
 {
 	// If nothing is playing, there is nothing to do
 	if (!m_playing) { return; }
+	const auto generation = m_playbackGeneration;
+	const auto mode = m_playMode;
+	QPointer<PatternTrack> selectedPattern;
+	const auto samePlayback = [&] {
+		return m_playing && !m_paused && m_playMode == mode && m_playbackGeneration == generation
+			&& (mode != PlayMode::Pattern || (selectedPattern
+				&& PatternTrack::findPatternTrack(Engine::patternStore()->currentPattern()) == selectedPattern.data()
+				&& std::find(tracks().begin(), tracks().end(), selectedPattern.data()) != tracks().end()));
+	};
 
 	// At the beginning of the song, we have to reset the LFOs
 	if (m_playMode == PlayMode::Song && getPlayPos() == 0)
@@ -229,7 +396,8 @@ void Song::processNextBuffer()
 			if (Engine::patternStore()->numOfPatterns() > 0)
 			{
 				clipNum = Engine::patternStore()->currentPattern();
-				trackList.push_back(PatternTrack::findPatternTrack(clipNum));
+				selectedPattern = PatternTrack::findPatternTrack(clipNum);
+				if (selectedPattern) { trackList.push_back(selectedPattern.data()); }
 			}
 			break;
 
@@ -245,6 +413,9 @@ void Song::processNextBuffer()
 			return;
 	}
 
+	std::vector<QPointer<Track>> playbackTracks;
+	playbackTracks.reserve(trackList.size());
+	for (auto track : trackList) { if (track) { playbackTracks.emplace_back(track); } }
 	auto& timeline = getTimeline();
 
 	// If the playback position is outside of the range [begin, end), move it to
@@ -272,6 +443,7 @@ void Song::processNextBuffer()
 
 	while (frameOffsetInPeriod < framesPerPeriod)
 	{
+		if (!samePlayback()) { return; }
 		auto frameOffsetInTick = timeline.frameOffset();
 
 		// If a whole tick has elapsed, update the frame and tick count, and check any loops
@@ -280,7 +452,10 @@ void Song::processNextBuffer()
 			// Transfer any whole ticks from the frame count to the tick count
 			const auto elapsedTicks = static_cast<int>(frameOffsetInTick / framesPerTick);
 			frameOffsetInTick -= elapsedTicks * framesPerTick;
+			const auto expectedTick = static_cast<qint64>(timeline.ticks()) + elapsedTicks;
+			if (expectedTick < std::numeric_limits<tick_t>::min() || expectedTick > std::numeric_limits<tick_t>::max()) { return; }
 			timeline.incrementTicks(elapsedTicks);
+			if (!samePlayback() || getPlayPos().getTicks() != expectedTick) { return; }
 			timeline.setFrameOffset(frameOffsetInTick);
 
 			// If we are playing a pattern track, or a MIDI clip with no loop enabled,
@@ -295,14 +470,15 @@ void Song::processNextBuffer()
 			}
 
 			// Handle loop points, and inform VST plugins of the loop status
-			if (loopEnabled || (m_loopRenderRemaining > 1 && getPlayPos() >= timeline.loopBegin()))
+			const bool repeatExport = m_exporting && m_loopRenderRemaining > 1;
+			if (loopEnabled || (repeatExport && getPlayPos() >= timeline.loopBegin()))
 			{
 				m_vstSyncController.startCycle(
 					timeline.loopBegin().getTicks(), timeline.loopEnd().getTicks());
 
 				// Loop if necessary, and decrement the remaining loops if we did
 				if (enforceLoop(timeline.loopBegin(), timeline.loopEnd())
-					&& m_loopRenderRemaining > 1)
+					&& repeatExport)
 				{
 					m_loopRenderRemaining--;
 				}
@@ -313,6 +489,7 @@ void Song::processNextBuffer()
 			}
 		}
 
+		if (!samePlayback()) { return; }
 		const f_cnt_t framesUntilNextPeriod = framesPerPeriod - frameOffsetInPeriod;
 		const auto framesUntilNextTick = static_cast<f_cnt_t>(std::ceil(framesPerTick - frameOffsetInTick));
 
@@ -332,12 +509,20 @@ void Song::processNextBuffer()
 		if (static_cast<f_cnt_t>(frameOffsetInTick) == 0)
 		{
 			// First frame of tick: process automation and play tracks
-			processAutomations(trackList, getPlayPos(), framesToPlay);
+			const auto position = getPlayPos();
+			if (!processAutomations(playbackTracks, position, framesToPlay)) { return; }
+			const auto sameTick = [&] { return samePlayback() && getPlayPos() == position; };
+			if (!sameTick()) { return; }
 			processMetronome(frameOffsetInPeriod);
+			if (!sameTick()) { return; }
 
-			for (const auto track : trackList)
+			for (const auto& track : playbackTracks)
 			{
+				if (!track) { continue; }
+				const auto owner = track->trackContainer();
+				if (!owner || std::find(owner->tracks().begin(), owner->tracks().end(), track.data()) == owner->tracks().end()) { continue; }
 				track->play(getPlayPos(), framesToPlay, frameOffsetInPeriod, clipNum);
+				if (!sameTick()) { return; }
 			}
 		}
 
@@ -349,11 +534,23 @@ void Song::processNextBuffer()
 
 	// Reset the jumped state after processing this buffer, since presumably it has now been handled.
 	m_vstSyncController.setPlaybackJumped(false);
+	m_playbackFrames += framesPerPeriod;
 }
 
 
-void Song::processAutomations(const TrackList &tracklist, TimePos timeStart, f_cnt_t)
+bool Song::processAutomations(const std::vector<QPointer<Track>>& tracklist, TimePos timeStart, f_cnt_t)
 {
+	const auto generation = m_playbackGeneration;
+	const auto mode = m_playMode;
+	const auto position = getPlayPos();
+	QPointer<PatternTrack> selectedPattern;
+	const auto current = [&] {
+		return m_playing && !m_paused && !m_loadingProject && m_playMode == mode
+			&& m_playbackGeneration == generation && getPlayPos() == position
+			&& (mode != PlayMode::Pattern || (selectedPattern
+				&& PatternTrack::findPatternTrack(Engine::patternStore()->currentPattern()) == selectedPattern.data()
+				&& std::find(tracks().begin(), tracks().end(), selectedPattern.data()) != tracks().end()));
+	};
 	AutomatedValueMap values;
 
 	QSet<const AutomatableModel*> recordedModels;
@@ -367,36 +564,62 @@ void Song::processAutomations(const TrackList &tracklist, TimePos timeStart, f_c
 		break;
 	case PlayMode::Pattern:
 	{
-		if (tracklist.empty()) { return; }
-		Q_ASSERT(tracklist.at(0)->type() == Track::Type::Pattern);
-		auto patternTrack = dynamic_cast<PatternTrack*>(tracklist.at(0));
+		if (tracklist.empty()) { return true; }
+		auto patternTrack = dynamic_cast<PatternTrack*>(tracklist.at(0).data());
+		if (!patternTrack) { return false; }
+		selectedPattern = patternTrack;
 		container = Engine::patternStore();
 		clipNum = patternTrack->patternIndex();
 	}
 		break;
 	default:
-		return;
+		return true;
 	}
+	if (!current()) { return false; }
 
 	values = container->automatedValuesAt(timeStart, clipNum);
-	const TrackList& tracks = container->tracks();
+	// The native map preserves curve precedence and values. Guard its targets
+	// before recording or controller callbacks can retire another model.
+	struct Target { QPointer<AutomatableModel> model; float value; };
+	std::vector<Target> targets;
+	targets.reserve(values.size());
+	for (auto it = values.cbegin(); it != values.cend(); ++it)
+	{
+		if (it.key()) { targets.push_back({it.key(), it.value()}); }
+	}
+	const TrackList& recordingTracks = container->tracks();
 
 	Track::clipVector clips;
-	for (Track* track : tracks)
+	for (Track* track : recordingTracks)
 	{
-		if (track->type() == Track::Type::Automation) {
-			track->getClipsInRange(clips, 0, timeStart);
+		if (track->type() == Track::Type::Automation && !track->isMuted()) {
+			if (clipNum >= 0)
+			{
+				if (clipNum < track->numOfClips() && track->getClips()[clipNum]) { clips.push_back(track->getClips()[clipNum]); }
+			}
+			else { track->getClipsInRange(clips, 0, timeStart); }
 		}
 	}
 
-	// Process recording
-	for (Clip* clip : clips)
+	// Snapshot recording clips before model/curve callbacks can retire another
+	// clip. This does not pin a track or permit arbitrary deletion during DSP.
+	std::vector<QPointer<AutomationClip>> recordingClips;
+	for (const auto clip : clips)
 	{
-		auto p = dynamic_cast<AutomationClip *>(clip);
-		TimePos relTime = timeStart - p->startPosition();
-		if (p->isRecording() && relTime >= 0 && relTime < p->length())
+		if (const auto curve = dynamic_cast<AutomationClip*>(clip)) { recordingClips.emplace_back(curve); }
+	}
+	// Process recording
+	for (const auto& p : recordingClips)
+	{
+		if (!p || p->isMuted()) { continue; }
+		TimePos relTime = clipNum >= 0 ? timeStart : timeStart - p->startPosition();
+		if (p->isRecording() && relTime >= 0 && relTime < p->length() && !p->objects().empty())
 		{
-			const AutomatableModel* recordedModel = p->firstObject();
+			const auto recordedModel = p->objects().front();
+			if (!recordedModel || !recordedModel->supportsAutomation()) { continue; }
+			recordedModel->setUseControllerValue(true);
+			if (!current()) { return false; }
+			if (!p || !recordedModel) { continue; }
 			// The automation system really needs to be reworked.
 			// For whatever reason, the values in an automation clip are stored in un-un-scaled format, so if you
 			// are automating a log knob, when you draw an curve, the values being stored are not the actual values the
@@ -405,29 +628,42 @@ void Song::processAutomations(const TrackList &tracklist, TimePos timeStart, f_c
 			// Anyhow, in the meantime before we redo the automation system, when recording automations, we have to get the inverseScaledValue
 			// and store that so that when playing it back, it scales the value correctly.
 			p->recordValue(relTime, recordedModel->inverseScaledValue(recordedModel->value<float>()));
+			if (!current()) { return false; }
 
-			recordedModels << recordedModel;
+			if (recordedModel) { recordedModels << recordedModel.data(); }
 		}
 	}
 
 	// Checks if an automated model stopped being automated by automation clip
 	// so we can move the control back to any connected controller again
-	for (auto it = m_oldAutomatedValues.begin(); it != m_oldAutomatedValues.end(); it++)
+	const auto previous = m_oldAutomatedModels;
+	for (const auto& model : previous)
 	{
-		AutomatableModel * am = it.key();
-		if (!values.contains(am))
+		if (model && !values.contains(model.data()))
 		{
-			am->setUseControllerValue(true);
+			model->setUseControllerValue(true);
+			if (!current()) { return false; }
 		}
 	}
-	m_oldAutomatedValues = values;
+	// Retain ownership before applying values so a returned callback exception
+	// still permits native stop to restore any surviving controller targets.
+	std::vector<QPointer<AutomatableModel>> automatedModels;
+	automatedModels.reserve(targets.size());
+	for (const auto& target : targets)
+	{
+		if (target.model) { automatedModels.push_back(target.model); }
+	}
+	m_oldAutomatedModels.swap(automatedModels);
 
 	// Apply values
-	for (auto it = values.begin(); it != values.end(); it++)
+	for (const auto& target : targets)
 	{
-		AutomatableModel* model = it.key();
-		bool isRecording = recordedModels.contains(model);
+		const auto& model = target.model;
+		if (!model) { continue; }
+		bool isRecording = recordedModels.contains(model.data());
 		model->setUseControllerValue(isRecording);
+		if (!current()) { return false; }
+		if (!model) { continue; }
 
 		if (!isRecording)
 		{
@@ -436,9 +672,11 @@ void Song::processAutomations(const TrackList &tracklist, TimePos timeStart, f_c
 			 * Y axis can be set to logarithmic, and automation clips store
 			 * the actual values, and not the invertedScaledValue.
 			 */
-			model->setValue(model->scaledValue(it.value()), true);
+			model->setValue(model->scaledValue(target.value), true);
+			if (!current()) { return false; }
 		}
 	}
+	return current();
 }
 
 void Song::processMetronome(size_t bufferOffset)
@@ -448,7 +686,7 @@ void Song::processMetronome(size_t bufferOffset)
 		|| currentPlayMode == PlayMode::Song
 		|| currentPlayMode == PlayMode::Pattern;
 
-	if (!supported || m_exporting) { return; } 
+	if (!supported || m_exporting) { return; }
 	m_metronome.processTick(currentTick(), ticksPerBar(), m_timeSigModel.getNumerator(), bufferOffset);
 }
 
@@ -468,24 +706,24 @@ bool Song::isExportDone() const
 
 int Song::getExportProgress() const
 {
-	TimePos pos = getPlayPos();
-    
+	qint64 pos = getPlayPos().getTicks();
+
 	if (pos >= m_exportSongEnd)
 	{
 		return 100;
 	}
-	else if (pos <= m_exportSongBegin)
+	else if (pos < m_exportSongBegin)
 	{
 		return 0;
 	}
 	else if (pos >= m_exportLoopEnd)
 	{
-		pos = (m_exportLoopBegin-m_exportSongBegin) + (m_exportLoopEnd - m_exportLoopBegin) *
+		pos = (m_exportLoopBegin-m_exportSongBegin) + qint64(m_exportLoopEnd - m_exportLoopBegin) *
 			m_loopRenderCount + (pos - m_exportLoopEnd);
 	}
 	else if ( pos >= m_exportLoopBegin )
 	{
-		pos = (m_exportLoopBegin-m_exportSongBegin) + ((m_exportLoopEnd - m_exportLoopBegin) *
+		pos = (m_exportLoopBegin-m_exportSongBegin) + (qint64(m_exportLoopEnd - m_exportLoopBegin) *
 			(m_loopRenderCount - m_loopRenderRemaining)) + (pos - m_exportLoopBegin);
 	}
 	else
@@ -493,7 +731,7 @@ int Song::getExportProgress() const
 		pos = (pos - m_exportSongBegin);
 	}
 
-	return (float)pos/(float)m_exportEffectiveLength*100.0f;
+	return m_exportEffectiveLength > 0 ? static_cast<int>(static_cast<double>(pos) / m_exportEffectiveLength * 100.0) : 0;
 }
 
 void Song::playSong()
@@ -565,6 +803,7 @@ void Song::playMidiClip( const MidiClip* midiClipToPlay, bool loop )
 		stop();
 	}
 
+	QObject::disconnect(m_playingMidiClipDestroyed);
 	m_midiClipToPlay = midiClipToPlay;
 	m_loopMidiClip = loop;
 
@@ -573,8 +812,16 @@ void Song::playMidiClip( const MidiClip* midiClipToPlay, bool loop )
 		m_playMode = PlayMode::MidiClip;
 		m_playing = true;
 		m_paused = false;
+		m_playingMidiClipDestroyed = connect(midiClipToPlay, &MidiClip::destroyedMidiClip, this,
+			[this](MidiClip* destroyed) {
+				const auto guard = Engine::audioEngine()->requestChangesGuard();
+				if (m_midiClipToPlay != destroyed) { return; }
+				if (m_playMode == PlayMode::MidiClip) { stop(); }
+				m_midiClipToPlay = nullptr;
+			}, Qt::DirectConnection);
 	}
 
+	m_vstSyncController.setPlaybackState(m_playing);
 	savePlayStartPosition();
 
 	emit playbackStateChanged();
@@ -591,7 +838,10 @@ void Song::updateLength()
 	m_tracksMutex.lockForRead();
 	for (auto track : tracks())
 	{
-		if (m_exporting && track->isMuted())
+		// A bulk stem was admitted before earlier stems ran their automation.
+		// Its current mute value still controls audio, but must not erase its
+		// arranged extent before its own automation gets a chance to run.
+		if (m_exporting && track->isMuted() && !track->isRenderSelected())
 		{
 			continue;
 		}
@@ -612,6 +862,7 @@ void Song::updateLength()
 
 void Song::togglePause()
 {
+	const auto transportGuard = Engine::audioEngine()->requestChangesGuard();
 	// Pause/unpause only works when something is actually playing
 	if (m_playMode == PlayMode::None)
 	{
@@ -628,6 +879,7 @@ void Song::togglePause()
 		m_playing = false;
 		m_paused = true;
 		Engine::audioEngine()->clear();
+		releaseMidiOutput();
 	}
 
 	m_vstSyncController.setPlaybackState( m_playing );
@@ -638,22 +890,57 @@ void Song::togglePause()
 
 
 
+bool Song::releaseMidiOutput()
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	m_midiOutputCleanupError.clear();
+	int failed = 0;
+	for (const auto owner : {static_cast<TrackContainer*>(this), static_cast<TrackContainer*>(Engine::patternStore())})
+	{
+		if (!owner) { continue; }
+		for (const auto track : owner->tracks())
+		{
+			const auto instrument = dynamic_cast<InstrumentTrack*>(track); if (!instrument) { continue; }
+			QString error;
+			try { instrument->midiPort()->releaseOutput(); }
+			catch (const std::exception& exception)
+			{
+				error = QString::fromUtf8(exception.what()).left(1024);
+				if (error.isEmpty()) { error = QStringLiteral("Native MIDI output cleanup failed without a message"); }
+			}
+			catch (...) { error = QStringLiteral("Unknown native MIDI output cleanup failure"); }
+			if (!error.isEmpty())
+			{
+				if (++failed == 1) { m_midiOutputCleanupError = error; }
+			}
+		}
+	}
+	if (failed > 1) { m_midiOutputCleanupError += QStringLiteral(" (%1 output ports failed)").arg(failed); }
+	return failed == 0;
+}
+
 void Song::stop()
 {
+	const auto recordingGuard = Engine::audioEngine()->requestChangesGuard();
+	Engine::audioEngine()->finishSampleRecordings();
+	QString recordingError;
+	if (QCoreApplication::instance() && QThread::currentThread() == QCoreApplication::instance()->thread()
+		&& !SampleRecordHandle::finalizePendingRecordings(recordingError)) { collectError(recordingError); }
 	// do not stop/reset things again if we're stopped already
 	if( m_playMode == PlayMode::None )
 	{
+		m_recording = false;
+		releaseMidiOutput();
 		return;
 	}
 
 	using gui::TimeLineWidget;
 
-	// To avoid race conditions with the processing threads
-	Engine::audioEngine()->requestChangeInModel();
+	// recordingGuard already owns native changes and releases them on exceptions.
 
 	auto& timeline = getTimeline();
 	m_paused = false;
-	m_recording = true;
+	m_recording = false;
 	m_playing = false;
 
 	switch (timeline.stopBehaviour())
@@ -683,6 +970,7 @@ void Song::stop()
 	}
 
 	getTimeline(PlayMode::None).setTicks(getPlayPos().getTicks());
+	exportTransitionCheckpoint(ExportTransitionPoint::StopAfterTimeline);
 
 	m_vstSyncController.setPlaybackState( m_exporting );
 	m_vstSyncController.setAbsolutePosition(
@@ -695,16 +983,15 @@ void Song::stop()
 
 	// Moves the control of the models that were processed on the last frame
 	// back to their controllers.
-	for (auto it = m_oldAutomatedValues.begin(); it != m_oldAutomatedValues.end(); it++)
+	const auto automatedModels = m_oldAutomatedModels;
+	for (const auto& model : automatedModels)
 	{
-		AutomatableModel * am = it.key();
-		am->setUseControllerValue(true);
+		if (model) { model->setUseControllerValue(true); }
 	}
-	m_oldAutomatedValues.clear();
-
+	m_oldAutomatedModels.clear();
 	m_playMode = PlayMode::None;
 
-	Engine::audioEngine()->doneChangeInModel();
+	releaseMidiOutput();
 
 	emit stopped();
 	emit playbackStateChanged();
@@ -713,53 +1000,93 @@ void Song::stop()
 
 
 
-void Song::startExport()
+Song::ExportRange Song::exportRange(bool exportLoop, bool betweenMarkers, int loopCount) const
 {
-	stop();
-
-	m_exporting = true;
-	updateLength();
-
-	auto& timeline = getTimeline(PlayMode::Song);
-
-	if (m_renderBetweenMarkers)
+	if (loopCount < 1) { throw std::invalid_argument("Native export loop count must be positive"); }
+	const auto& timeline = getTimeline(PlayMode::Song);
+	const qint64 loopBegin = timeline.loopBegin().getTicks(), loopEnd = timeline.loopEnd().getTicks();
+	if ((betweenMarkers || loopCount > 1) && (loopBegin < 0 || loopEnd <= loopBegin))
+	{ throw std::invalid_argument("Native export requires ordered nonnegative loop markers"); }
+	qint64 begin = 0, end = 0, repeatBegin = 0, repeatEnd = 0;
+	if (betweenMarkers)
 	{
-		m_exportSongBegin = m_exportLoopBegin = timeline.loopBegin();
-		m_exportSongEnd = m_exportLoopEnd = timeline.loopEnd();
-
-		timeline.setTicks(timeline.loopBegin().getTicks());
+		begin = repeatBegin = loopBegin; end = repeatEnd = loopEnd;
 	}
 	else
 	{
-		m_exportSongEnd = TimePos(m_length, 0);
-        
-		// Handle potentially ridiculous loop points gracefully.
-		if (m_loopRenderCount > 1 && timeline.loopEnd() > m_exportSongEnd) 
-		{
-			m_exportSongEnd = timeline.loopEnd();
-		}
-
-		if (!m_exportLoop) 
-			m_exportSongEnd += TimePos(1,0);
-        
-		m_exportSongBegin = TimePos(0,0);
-		m_exportLoopBegin = timeline.loopBegin() < m_exportSongEnd && timeline.loopEnd() <= m_exportSongEnd
-			? timeline.loopBegin()
-			: TimePos{0};
-		m_exportLoopEnd = timeline.loopBegin() < m_exportSongEnd && timeline.loopEnd() <= m_exportSongEnd
-			? timeline.loopEnd()
-			: TimePos{0};
-
-		getTimeline(PlayMode::Song).setTicks(0);
+		end = qint64(m_length) * TimePos::ticksPerBar();
+		if (loopCount > 1) { end = std::max(end, loopEnd); }
+		if (!exportLoop) { end += TimePos::ticksPerBar(); }
+		if (loopBegin >= 0 && loopBegin < end && loopEnd >= loopBegin && loopEnd <= end)
+		{ repeatBegin = loopBegin; repeatEnd = loopEnd; }
 	}
+	if (end < begin || end > std::numeric_limits<tick_t>::max())
+	{ throw std::invalid_argument("Native export range exceeds native tick bounds"); }
+	const auto effective = (end - begin) + (repeatEnd - repeatBegin) * (loopCount - 1);
+	return {TimePos(static_cast<tick_t>(begin)), TimePos(static_cast<tick_t>(end)),
+		TimePos(static_cast<tick_t>(repeatBegin)), TimePos(static_cast<tick_t>(repeatEnd)), effective};
+}
 
-	m_exportEffectiveLength = (m_exportLoopBegin - m_exportSongBegin) + (m_exportLoopEnd - m_exportLoopBegin) 
-		* m_loopRenderCount + (m_exportSongEnd - m_exportLoopEnd);
-	m_loopRenderRemaining = m_loopRenderCount;
+class Song::ExportTransitionGuard
+{
+public:
+	explicit ExportTransitionGuard(Song* owner) : m_song(owner), m_engine(Engine::audioEngine())
+	{
+		if (!m_engine) { throw std::logic_error("Native export transitions require an initialized audio engine"); }
+		const auto changes = m_engine->requestChangesGuard();
+		if (owner->m_exportTransitionActive) { throw std::logic_error("Native export transition cannot reenter"); }
+		owner->m_exportTransitionActive = true;
+	}
+	~ExportTransitionGuard()
+	{
+		if (m_song && m_engine && Engine::audioEngine() == m_engine.data())
+		{ const auto changes = m_engine->requestChangesGuard(); m_song->m_exportTransitionActive = false; }
+	}
+private:
+	QPointer<Song> m_song;
+	QPointer<AudioEngine> m_engine;
+};
 
-	playSong();
+void Song::exportTransitionCheckpoint(ExportTransitionPoint point)
+{
+	if (!m_exportTransitionProbe) { return; }
+	const auto probe = m_exportTransitionProbe; probe(point);
+}
 
-	m_vstSyncController.setPlaybackState( true );
+void Song::startExport()
+{
+	ExportTransitionGuard transition(this);
+	{
+		const auto guard = Engine::audioEngine()->requestChangesGuard();
+		if (m_exportCleanupPending) { throw std::logic_error("Pending native export cleanup requires audio.device.restore before another export"); }
+		if (m_exporting) { throw std::logic_error("A native song export is already active"); }
+	}
+	ExportRange range;
+	try
+	{
+		stop();
+		// Native export length excludes muted tracks and clips.
+		{
+			const auto guard = Engine::audioEngine()->requestChangesGuard();
+			m_exporting = true; Engine::audioEngine()->updateMidiInputAdmission();
+		}
+		updateLength(); range = exportRange(m_exportLoop, m_renderBetweenMarkers, m_loopRenderCount);
+		if (range.effectiveTicks < 1) { throw std::invalid_argument("Native export range is empty"); }
+		m_exportSongBegin = range.begin; m_exportSongEnd = range.end;
+		m_exportLoopBegin = range.loopBegin; m_exportLoopEnd = range.loopEnd;
+		m_exportEffectiveLength = range.effectiveTicks;
+		m_loopRenderRemaining = m_loopRenderCount;
+		getTimeline(PlayMode::Song).setTicks(range.begin.getTicks());
+		exportTransitionCheckpoint(ExportTransitionPoint::StartAfterTimeline);
+		playSong();
+		exportTransitionCheckpoint(ExportTransitionPoint::StartAfterPlayback);
+		m_vstSyncController.setPlaybackState(true);
+	}
+	catch (...)
+	{
+		const auto guard = Engine::audioEngine()->requestChangesGuard();
+		m_exporting = false; m_exportCleanupPending = true; Engine::audioEngine()->updateMidiInputAdmission(); throw;
+	}
 }
 
 
@@ -767,10 +1094,20 @@ void Song::startExport()
 
 void Song::stopExport()
 {
-	stop();
-	m_exporting = false;
-
-	m_vstSyncController.setPlaybackState( m_playing );
+	ExportTransitionGuard transition(this);
+	try
+	{
+		stop();
+		exportTransitionCheckpoint(ExportTransitionPoint::StopAfterPlayback);
+		const auto guard = Engine::audioEngine()->requestChangesGuard();
+		m_vstSyncController.setPlaybackState(m_playing);
+		m_exporting = false; m_exportCleanupPending = false; Engine::audioEngine()->updateMidiInputAdmission();
+	}
+	catch (...)
+	{
+		const auto guard = Engine::audioEngine()->requestChangesGuard();
+		m_exportCleanupPending = true; Engine::audioEngine()->updateMidiInputAdmission(); throw;
+	}
 }
 
 
@@ -849,181 +1186,236 @@ AutomatedValueMap Song::automatedValuesAt(TimePos time, int clipNum) const
 
 void Song::clearProject()
 {
+	if (m_savingProject) { throw std::logic_error("Native project cannot be cleared during serialization"); }
+	if (m_loadingProjectFile) { throw std::logic_error("Native project cannot be cleared during restoration"); }
+	if (m_creatingProject) { throw std::logic_error("Native project cannot be cleared during creation"); }
+	if (m_importingProject) { throw std::logic_error("Native project cannot be cleared during import"); }
+	clearProjectImpl();
+}
+
+void Song::clearProjectImpl()
+{
+	if (m_clearingProject || thread() != QThread::currentThread()) { throw std::logic_error("Native project clear cannot reenter or run on another thread"); }
+	FileResourceIO::EventSuspension events;
+	const QPointer<Song> owner(this);
+	const QPointer<PatternStore> patterns(Engine::patternStore());
+	const QPointer<Mixer> mixer(Engine::mixer());
+	const QPointer<AutomationTrack> hidden(m_globalAutomationTrack);
+	auto journal = Engine::projectJournal();
+	m_clearingProject = true;
+	const auto clearing = qScopeGuard([owner] { if (owner) { owner->m_clearingProject = false; } });
+	const auto ready = [&] {
+		if (!owner || !patterns || Engine::patternStore() != patterns.data() || !mixer || Engine::mixer() != mixer.data()
+			|| Engine::projectJournal() != journal || !hidden || owner->m_globalAutomationTrack != hidden.data()) { throw std::runtime_error("Native project clear context retired"); }
+	};
 	using gui::getGUI;
+	advanceReplacementGeneration();
+	m_preservedProjectData.clear();
+	const bool wasJournalling = Engine::projectJournal()->isJournalling();
+	const auto journalStateRestore = qScopeGuard([journal, wasJournalling] { if (Engine::projectJournal() == journal) { journal->setJournalling(wasJournalling); } });
 
 	Engine::projectJournal()->setJournalling( false );
 
-	if( m_playing )
+	if (!isStopped() || isRecording())
 	{
 		stop();
+		ready();
 	}
 
 	for (auto i = std::size_t{0}; i < PlayModeCount; i++)
 	{
 		setPlayPos( 0, ( PlayMode )i );
+		ready();
 	}
 
 
-	Engine::audioEngine()->requestChangeInModel();
+	std::optional<AudioEngine::RequestChangesGuard> modelChange(Engine::audioEngine()->requestChangesGuard());
 
+	NativeLinkedControls::unlinkProjectModels();
+	ready();
 	if( getGUI() != nullptr && getGUI()->patternEditor() )
 	{
 		getGUI()->patternEditor()->m_editor->clearAllTracks();
+		ready();
 	}
 	if( getGUI() != nullptr && getGUI()->songEditor() )
 	{
 		getGUI()->songEditor()->m_editor->clearAllTracks();
+		ready();
 	}
 	if( getGUI() != nullptr && getGUI()->mixerView() )
 	{
 		getGUI()->mixerView()->clear();
+		ready();
 	}
-	QCoreApplication::sendPostedEvents();
+	if (getGUI() != nullptr) { QCoreApplication::sendPostedEvents(); ready(); }
 	Engine::patternStore()->clearAllTracks();
+	ready();
 	clearAllTracks();
+	ready();
 
 	Engine::mixer()->clear();
+	ready();
+	for (auto& scale : m_scales) { std::atomic_store(&scale, std::make_shared<Scale>()); }
+	for (auto& keymap : m_keymaps) { std::atomic_store(&keymap, std::make_shared<Keymap>()); }
+	emit scaleListChanged(-1);
+	ready();
+	emit keymapListChanged(-1);
+	ready();
 
 	if( getGUI() != nullptr && getGUI()->automationEditor() )
 	{
 		getGUI()->automationEditor()->setCurrentClip( nullptr );
+		ready();
 	}
 
 	if( getGUI() != nullptr && getGUI()->pianoRoll() )
 	{
 		getGUI()->pianoRoll()->reset();
+		ready();
 	}
 
 	m_tempoModel.reset();
+	ready();
 	m_masterVolumeModel.reset();
+	ready();
 	m_masterPitchModel.reset();
+	ready();
 	m_timeSigModel.reset();
+	ready();
+	getTimeline(PlayMode::Song).setLoopPoints(TimePos(0), TimePos(DefaultTicksPerBar));
+	ready();
+	getTimeline(PlayMode::Song).setLoopEnabled(false);
+	ready();
 
-	// Clear the m_oldAutomatedValues AutomatedValueMap
-	m_oldAutomatedValues.clear();
+	// Forget the previous native automation ownership after project replacement.
+	m_oldAutomatedModels.clear();
+	// Hidden curves can target any project model. Remove stale targets and pending
+	// journal IDs before a new project reuses model IDs.
+	while (hidden && !hidden->getClips().empty()) { delete hidden->getClips().back(); ready(); }
+	if (!hidden) { throw std::runtime_error("Native hidden automation track retired during project clear"); }
 
 	AutomationClip::globalAutomationClip( &m_tempoModel )->clear();
+	ready();
 	AutomationClip::globalAutomationClip( &m_masterVolumeModel )->
 									clear();
+	ready();
 	AutomationClip::globalAutomationClip( &m_masterPitchModel )->
 									clear();
+	ready();
 
-	Engine::audioEngine()->doneChangeInModel();
+	modelChange.reset();
 
 	if( getGUI() != nullptr && getGUI()->getProjectNotes() )
 	{
 		getGUI()->getProjectNotes()->clear();
+		ready();
 	}
 
 	removeAllControllers();
+	ready();
 
 	emit dataChanged();
+	ready();
 
 	Engine::projectJournal()->clearJournal();
 
-	Engine::projectJournal()->setJournalling( true );
+	Engine::projectJournal()->setJournalling(wasJournalling);
 }
 
 
 
 
 // create new file
+void Song::createEmptyProject()
+{
+	CreationGuard creation(this); creation.check(); clearErrors(); clearProjectImpl(); creation.check(); creation.finish(false);
+}
+
 void Song::createNewProject()
 {
-
-	QString defaultTemplate = ConfigManager::inst()->userTemplateDir()
-						+ "default.mpt";
-
-
-	if( QFile::exists( defaultTemplate ) )
+	CreationGuard creation(this); creation.check();
+	QString defaultTemplate = ConfigManager::inst()->userTemplateDir() + "default.mpt";
+	if (!QFile::exists(defaultTemplate)) { defaultTemplate = ConfigManager::inst()->factoryProjectsDir() + "templates/default.mpt"; }
+	creation.check();
+	if (QFile::exists(defaultTemplate))
 	{
-		createNewProjectFromTemplate( defaultTemplate );
-		return;
+		if (!creation.loadTemplate(defaultTemplate)) { collectError(tr("The native default project template could not be loaded")); return; }
+		creation.finish(false); return;
 	}
-
-	defaultTemplate = ConfigManager::inst()->factoryProjectsDir()
-						+ "templates/default.mpt";
-	if( QFile::exists( defaultTemplate ) )
-	{
-		createNewProjectFromTemplate( defaultTemplate );
-		return;
-	}
-
-	m_loadingProject = true;
-
-	clearProject();
-
-	Engine::projectJournal()->setJournalling( false );
-
-	m_oldFileName = "";
-	setProjectFileName("");
-
-	auto tripleOscTrack = Track::create(Track::Type::Instrument, this);
-	dynamic_cast<InstrumentTrack*>(tripleOscTrack)->loadInstrument("tripleoscillator");
-
-	auto kickerTrack = Track::create(Track::Type::Instrument, Engine::patternStore());
-	dynamic_cast<InstrumentTrack*>(kickerTrack)->loadInstrument("kicker");
-
-	Track::create( Track::Type::Sample, this );
-	Track::create( Track::Type::Pattern, this );
-	Track::create( Track::Type::Automation, this );
-
-	m_tempoModel.setInitValue( DefaultTempo );
-	m_timeSigModel.reset();
-	m_masterVolumeModel.setInitValue( 100 );
-	m_masterPitchModel.setInitValue( 0 );
-
-	QCoreApplication::instance()->processEvents();
-
-	m_loadingProject = false;
-	updateLength();
-	Engine::patternStore()->updateAfterTrackAdd();
-
-	Engine::projectJournal()->setJournalling( true );
-
-	QCoreApplication::sendPostedEvents();
-
-	setModified(false);
-	m_loadOnLaunch = false;
+	clearErrors(); clearProjectImpl(); creation.check();
+	m_oldFileName.clear(); setProjectFileName(""); creation.check();
+	const auto builtin = [&](TrackContainer* container, const QString& name) {
+		const QPointer<InstrumentTrack> track(dynamic_cast<InstrumentTrack*>(Track::create(Track::Type::Instrument, container)));
+		creation.watch(track.data(), true); creation.check();
+		const QPointer<Instrument> instrument(track->loadInstrument(name)); creation.checkContext();
+		if (!track || !instrument || track->instrument() != instrument.data() || !instrument->descriptor()
+			|| QString::fromUtf8(instrument->descriptor()->name) != name)
+		{ collectError(tr("Native default instrument %1 is unavailable").arg(name)); return false; }
+		creation.expectInstrument(track, instrument); return true;
+	};
+	if (!builtin(this, "tripleoscillator")) { return; }
+	if (!builtin(Engine::patternStore(), "kicker")) { return; }
+	creation.watch(Track::create(Track::Type::Sample, this)); creation.check();
+	creation.watch(Track::create(Track::Type::Pattern, this)); creation.check();
+	creation.watch(Track::create(Track::Type::Automation, this)); creation.check();
+	m_tempoModel.setInitValue(DefaultTempo); creation.check();
+	m_timeSigModel.reset(); creation.check();
+	m_masterVolumeModel.setInitValue(100); creation.check();
+	m_masterPitchModel.setInitValue(0); creation.check();
+	creation.finish(true);
 }
 
-
-
-
-void Song::createNewProjectFromTemplate( const QString & templ )
+void Song::createNewProjectFromTemplate(const QString& templ)
 {
-	loadProject( templ );
-	// clear file-name so that user doesn't overwrite template when
-	// saving...
-	m_oldFileName = "";
-	setProjectFileName("");
-	// update window title
-	m_loadOnLaunch = false;
+	const QString requested(templ); CreationGuard creation(this);
+	if (!creation.loadTemplate(requested)) { collectError(tr("The native project template could not be loaded")); return; }
+	creation.finish(false);
 }
-
-
 
 
 // load given song
-void Song::loadProject( const QString & fileName )
+bool Song::loadProject( const QString & fileName )
 {
+	if (m_savingProject) { return false; }
+	if (m_importingProject) { return false; }
+	if (m_creatingProject && !m_permitCreationLoad) { return false; }
+	m_permitCreationLoad = false;
+	if (m_loadingProjectFile || m_loadingProject || m_clearingProject || thread() != QThread::currentThread()) { return false; }
+	const QString requestedFile(fileName);
+	const QPointer<Song> owner(this);
+	const QPointer<PatternStore> patterns(Engine::patternStore());
+	const QPointer<Mixer> mixer(Engine::mixer());
+	const QPointer<AutomationTrack> hidden(m_globalAutomationTrack);
+	auto journal = Engine::projectJournal();
+	const bool wasLoading = m_loadingProject;
+	const bool wasJournalling = journal->isJournalling();
+	FileResourceIO::EventSuspension events;
+	const auto ready = [&] {
+		if (!owner || Engine::getSong() != owner.data() || !patterns || Engine::patternStore() != patterns.data()
+			|| !mixer || Engine::mixer() != mixer.data() || !hidden || owner->m_globalAutomationTrack != hidden.data()
+			|| Engine::projectJournal() != journal) { throw std::runtime_error("Native project load context retired"); }
+	};
+	const auto check = [&] { ready(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready(); };
+	m_loadingProjectFile = true; m_loadingProject = true;
+	const auto finish = [&] {
+		if (owner) { owner->m_loadingProject = wasLoading; owner->m_loadingProjectFile = false; }
+		if (Engine::projectJournal() == journal) { journal->setJournalling(wasJournalling); }
+	};
+	const auto loadStateRestore = qScopeGuard(finish);
 	using gui::getGUI;
 
 	QDomNode node;
 
-	m_loadingProject = true;
-
 	Engine::projectJournal()->setJournalling( false );
-
-	m_oldFileName = m_fileName;
-	setProjectFileName(fileName);
-
-	DataFile dataFile( m_fileName );
+	check();
+	DataFile dataFile(requestedFile);
+	check();
 
 	bool cantLoadProject = false;
 	// if file could not be opened, head-node is null and we create
 	// new project
-	if( dataFile.head().isNull() )
+	if (dataFile.head().isNull() || (dataFile.type() != DataFile::Type::SongProject && dataFile.type() != DataFile::Type::SongProjectTemplate))
 	{
 		cantLoadProject = true;
 	}
@@ -1040,6 +1432,7 @@ void Song::loadProject( const QString & fileName )
 				QMessageBox::critical(nullptr, tr("Aborting project load"),
 					tr("Project file contains local paths to plugins, which could be used to "
 						"run malicious code."));
+				ready();
 			}
 			else
 			{
@@ -1052,29 +1445,42 @@ void Song::loadProject( const QString & fileName )
 
 	if (cantLoadProject)
 	{
-		if( m_loadOnLaunch )
+		finish();
+		if (m_loadOnLaunch && !m_creatingProject)
 		{
 			createNewProject();
 		}
-		setProjectFileName(m_oldFileName);
-		return;
+		return false;
 	}
 
+	advanceReplacementGeneration();
+	m_oldFileName = m_fileName;
+	setProjectFileName(requestedFile);
+	check();
 	m_oldFileName = m_fileName;
 
-	clearProject();
+	clearProjectImpl();
+	check();
+	Engine::projectJournal()->setJournalling(false);
+	m_preservedProjectData.appendChild(m_preservedProjectData.importNode(dataFile.content(), true));
 
 	clearErrors();
 
-	Engine::audioEngine()->requestChangeInModel();
+	std::optional<AudioEngine::RequestChangesGuard> modelChange(Engine::audioEngine()->requestChangesGuard());
 
 	// get the header information from the DOM
+	NativeLinkedControls::RestoreScope linkedControls(dataFile);
 	m_tempoModel.loadSettings( dataFile.head(), "bpm" );
+	check();
 	m_timeSigModel.loadSettings( dataFile.head(), "timesig" );
+	check();
 	m_masterVolumeModel.loadSettings( dataFile.head(), "mastervol" );
+	check();
 	m_masterPitchModel.loadSettings( dataFile.head(), "masterpitch" );
+	check();
 
 	getTimeline(PlayMode::Song).setLoopEnabled(false);
+	check();
 
 	//Backward compatibility for LMMS <= 0.4.15
 	PeakController::initGetControllerBySetting();
@@ -1084,10 +1490,12 @@ void Song::loadProject( const QString & fileName )
 	if( !node.isNull() )
 	{
 		Engine::mixer()->restoreState( node.toElement() );
+		check();
 		if( getGUI() != nullptr )
 		{
 			// refresh MixerView
 			getGUI()->mixerView()->refreshDisplay();
+			ready();
 		}
 	}
 
@@ -1097,29 +1505,31 @@ void Song::loadProject( const QString & fileName )
 	m_nLoadingTrack=0;
 	for( int i=0,n=tclist.count(); i<n; ++i )
 	{
+		check();
 		QDomNode nd=tclist.at(i).firstChild();
 		while(!nd.isNull())
 		{
 			if( nd.isElement() && nd.nodeName() == "track" )
 			{
 				++m_nLoadingTrack;
-				if (static_cast<Track::Type>(nd.toElement().attribute("type").toInt()) == Track::Type::Pattern)
-				{
-					n += nd.toElement().elementsByTagName("patterntrack").at(0)
-						.toElement().firstChildElement().childNodes().count();
-				}
-				nd=nd.nextSibling();
 			}
+			check();
+			nd=nd.nextSibling(); // Comments and extension elements must also advance.
 		}
 	}
 
 	while( !node.isNull() && !isCancelled() )
 	{
+		check();
 		if( node.isElement() )
 		{
 			if( node.nodeName() == "trackcontainer" )
 			{
 				( (JournallingObject *)( this ) )->restoreState( node.toElement() );
+			}
+			else if (node.nodeName() == "track" && static_cast<Track::Type>(node.toElement().attribute("type").toInt()) == Track::Type::HiddenAutomation)
+			{
+				m_globalAutomationTrack->restoreState(node.toElement());
 			}
 			else if( node.nodeName() == "controllers" )
 			{
@@ -1132,6 +1542,10 @@ void Song::loadProject( const QString & fileName )
 			else if (node.nodeName() == "keymaps")
 			{
 				restoreKeymapStates(node.toElement());
+			}
+			else if (node.nodeName() == getTimeline(PlayMode::Song).nodeName())
+			{
+				getTimeline(PlayMode::Song).restoreState(node.toElement());
 			}
 			else if( getGUI() != nullptr )
 			{
@@ -1151,21 +1565,31 @@ void Song::loadProject( const QString & fileName )
 				{
 					 getGUI()->getProjectNotes()->SerializingObject::restoreState( node.toElement() );
 				}
-				else if (node.nodeName() == getTimeline(PlayMode::Song).nodeName())
-				{
-					getTimeline(PlayMode::Song).restoreState(node.toElement());
-				}
 			}
 		}
+		check();
 		node = node.nextSibling();
 	}
 
 	// quirk for fixing projects with broken positions of Clips inside pattern tracks
 	Engine::patternStore()->fixIncorrectPositions();
+	check();
+	if (dataFile.head().hasAttribute("currentpattern"))
+	{
+		bool valid = false;
+		const int selected = dataFile.head().attribute("currentpattern").toInt(&valid);
+		const int count = Engine::patternStore()->numOfPatterns();
+		Engine::patternStore()->setCurrentPattern(valid && selected >= 0 && selected < count ? selected : 0);
+		check();
+	}
 
 	// Connect controller links to their controllers
 	// now that everything is loaded
 	ControllerConnection::finalizeConnections();
+	check();
+	QString linkedError;
+	if (!linkedControls.finish(dataFile.content(), linkedError)) { collectError("Native linked controls did not restore: " + linkedError); }
+	check();
 
 	// Remove dummy controllers that was added for correct connections
 	m_controllers.erase(std::remove_if(m_controllers.begin(), m_controllers.end(),
@@ -1174,21 +1598,26 @@ void Song::loadProject( const QString & fileName )
 
 	// resolve all IDs so that autoModels are automated
 	AutomationClip::resolveAllIDs();
+	check();
 
 
-	Engine::audioEngine()->doneChangeInModel();
+	modelChange.reset();
+	ready();
 
-	ConfigManager::inst()->addRecentlyOpenedProject( fileName );
+	ConfigManager::inst()->addRecentlyOpenedProject(requestedFile);
+	ready();
 
-	Engine::projectJournal()->setJournalling( true );
+	Engine::projectJournal()->setJournalling(wasJournalling);
 
 	emit projectLoaded();
+	check();
 
 	if( isCancelled() )
 	{
 		m_isCancelled = false;
-		createNewProject();
-		return;
+		finish();
+		if (!m_creatingProject) { createNewProject(); }
+		return false;
 	}
 
 	if ( hasErrors())
@@ -1197,6 +1626,7 @@ void Song::loadProject( const QString & fileName )
 		{
 			QMessageBox::warning( nullptr, tr("LMMS Error report"), errorSummary(),
 							QMessageBox::Ok );
+			ready();
 		}
 		else
 		{
@@ -1206,15 +1636,39 @@ void Song::loadProject( const QString & fileName )
 
 	m_loadingProject = false;
 	updateLength();
+	ready();
 	setModified(false);
+	ready();
 	m_loadOnLaunch = false;
+	return true;
 }
 
 
 // only save current song as filename and do nothing else
-bool Song::saveProjectFile(const QString & filename, bool withResources)
+bool Song::saveProjectFile(const QString & filename, bool withResources, bool absoluteLocalResources,
+	QJsonArray* checkpointAssets)
 {
 	using gui::getGUI;
+	if ((checkpointAssets && withResources) || m_savingProject || m_loadingProjectFile || m_clearingProject || m_creatingProject || m_importingProject || thread() != QThread::currentThread()) { return false; }
+	const auto modelGuard = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	const QPointer<Song> owner(this);
+	const QPointer<PatternStore> patterns(Engine::patternStore());
+	const QPointer<Mixer> mixer(Engine::mixer());
+	const QPointer<Track> hidden(m_globalAutomationTrack);
+	const bool oldCheckpoint = m_savingCheckpoint;
+	m_savingProject = true; m_savingCheckpoint = checkpointAssets != nullptr;
+	const auto saving = qScopeGuard([owner, oldCheckpoint] { if (owner) { owner->m_savingCheckpoint = oldCheckpoint; owner->m_savingProject = false; } });
+	const auto ready = [&] {
+		if (!owner || Engine::getSong() != owner.data() || !patterns || Engine::patternStore() != patterns.data()
+			|| !mixer || Engine::mixer() != mixer.data() || !hidden || owner->m_globalAutomationTrack != hidden.data()) { throw std::runtime_error("Native project save owner retired"); }
+	};
+	try
+	{
+	QString recordingError;
+	const bool recordingsReady = SampleRecordHandle::finalizePendingRecordings(recordingError); ready();
+	if (!recordingsReady) { collectError(recordingError); return false; }
+	NativeProjectSaveSnapshot source(this);
 
 	// ensure property order in file is consistent across saves
 #if QT_VERSION < QT_VERSION_CHECK(6, 6, 0)
@@ -1222,44 +1676,90 @@ bool Song::saveProjectFile(const QString & filename, bool withResources)
 #else
 	QHashSeed::setDeterministicGlobalSeed();
 #endif
+	const auto hashSeedReset = qScopeGuard([] {
+#if QT_VERSION < QT_VERSION_CHECK(6, 6, 0)
+		qSetGlobalQHashSeed(-1);
+#else
+		QHashSeed::resetRandomGlobalSeed();
+#endif
+	});
 
 	DataFile dataFile( DataFile::Type::SongProject );
-	m_savingProject = true;
-
+	NativeLinkedControls::SaveScope linkedControls(dataFile);
+	DataFile::ResourceSourceScope resourceSources(dataFile, withResources || checkpointAssets);
 	m_tempoModel.saveSettings( dataFile, dataFile.head(), "bpm" );
+	ready();
 	m_timeSigModel.saveSettings( dataFile, dataFile.head(), "timesig" );
+	ready();
 	m_masterVolumeModel.saveSettings( dataFile, dataFile.head(), "mastervol" );
+	ready();
 	m_masterPitchModel.saveSettings( dataFile, dataFile.head(), "masterpitch" );
+	ready();
+	dataFile.head().setAttribute("currentpattern", Engine::patternStore()->currentPattern());
 
 	saveState( dataFile, dataFile.content() );
+	ready();
+	// Use the native hidden-track representation, alongside the regular tracks.
+	m_globalAutomationTrack->saveState(dataFile, dataFile.content());
+	ready();
 
 	Engine::mixer()->saveState( dataFile, dataFile.content() );
+	ready();
 	if( getGUI() != nullptr )
 	{
 		getGUI()->getControllerRackView()->saveState( dataFile, dataFile.content() );
+		ready();
 		getGUI()->pianoRoll()->saveState( dataFile, dataFile.content() );
+		ready();
 		getGUI()->automationEditor()->m_editor->saveState( dataFile, dataFile.content() );
+		ready();
 		getGUI()->getProjectNotes()->SerializingObject::saveState( dataFile, dataFile.content() );
-		getTimeline(PlayMode::Song).saveState(dataFile, dataFile.content());
+		ready();
 	}
+	else
+	{
+		// Views cannot serialize their state in a QCoreApplication. Retain the
+		// original nodes, including project notes and future extension metadata.
+		for (auto node = m_preservedProjectData.documentElement().firstChild();
+			!node.isNull(); node = node.nextSibling())
+		{
+			const auto name = node.nodeName();
+			const bool globalTrack = name == "track" && static_cast<Track::Type>(node.toElement().attribute("type").toInt()) == Track::Type::HiddenAutomation;
+			if (!globalTrack && name != "trackcontainer" && name != Engine::mixer()->nodeName()
+				&& name != "controllers" && name != "scales" && name != "keymaps" && name != "nativeLinkedControls"
+				&& name != getTimeline(PlayMode::Song).nodeName())
+			{
+				dataFile.content().appendChild(dataFile.importNode(node, true));
+			}
+		}
+	}
+	getTimeline(PlayMode::Song).saveState(dataFile, dataFile.content());
+	ready();
 
 	saveControllerStates( dataFile, dataFile.content() );
+	ready();
 
 	saveScaleStates(dataFile, dataFile.content());
+	ready();
 	saveKeymapStates(dataFile, dataFile.content());
+	ready();
+	QString linkedError;
+	if (!linkedControls.finish(dataFile.content(), linkedError))
+	{ DataFile::recordSerializationError(dataFile, linkedError); collectError("Native linked controls could not be saved: " + linkedError); }
+	ready(); source.validate();
 
-	m_savingProject = false;
-
-	bool writeStatus = dataFile.writeFile(filename, withResources);
-
-	// revert to a randomized global seed for Qt
-#if QT_VERSION < QT_VERSION_CHECK(6, 6, 0)
-	qSetGlobalQHashSeed(-1);
-#else
-	QHashSeed::resetRandomGlobalSeed();
-#endif
+	const bool pathsResolved = dataFile.serializationError().isEmpty()
+		&& (!absoluteLocalResources || dataFile.makeLocalResourcePathsAbsolute());
+	ready();
+	const bool assetsPreserved = !checkpointAssets || (pathsResolved
+		&& dataFile.copyResources(QFileInfo(filename).absoluteDir().filePath("assets"), checkpointAssets));
+	ready();
+	bool writeStatus = pathsResolved && assetsPreserved && dataFile.writeFile(filename, withResources, [&] { ready(); source.validate(); });
 
 	return writeStatus;
+	}
+	catch (const std::exception& error) { if (owner) { owner->collectError(QString("Native project save failed: ") + QString::fromUtf8(error.what())); } return false; }
+	catch (...) { if (owner) { owner->collectError("Native project save failed with a nonstandard serializer exception"); } return false; }
 }
 
 
@@ -1276,12 +1776,14 @@ bool Song::guiSaveProject()
 // Save the current song with the given filename
 bool Song::guiSaveProjectAs(const QString & filename)
 {
+	const QPointer<Song> owner(this);
 	DataFile dataFile(DataFile::Type::SongProject);
 	QString fileNameWithExtension = dataFile.nameWithExtension(filename);
 
 	bool withResources = m_saveOptions.saveAsProjectBundle.value();
 
 	bool const saveResult = saveProjectFile(fileNameWithExtension, withResources);
+	if (!owner) { return false; }
 
 	// After saving, restore default save options.
 	m_saveOptions.setDefaultOptions();
@@ -1291,6 +1793,7 @@ bool Song::guiSaveProjectAs(const QString & filename)
 	if (saveResult && !withResources)
 	{
 		setModified(false);
+		if (!owner) { return false; }
 		setProjectFileName(fileNameWithExtension);
 	}
 
@@ -1302,12 +1805,22 @@ bool Song::guiSaveProjectAs(const QString & filename)
 
 void Song::saveControllerStates( QDomDocument & doc, QDomElement & element )
 {
+	const QPointer<Song> owner(this);
+	std::vector<QPointer<Controller>> roster;
+	for (auto controller : m_controllers) { roster.emplace_back(controller); }
+	const auto ready = [&] {
+		if (!owner || owner->m_controllers.size() != roster.size()) { throw std::runtime_error("Native controller rack changed during serialization"); }
+		for (std::size_t index = 0; index < roster.size(); ++index)
+		{ if (!roster[index] || owner->m_controllers[index] != roster[index].data()) { throw std::runtime_error("Native controller identity changed during serialization"); } }
+	};
 	// save settings of controllers
 	QDomElement controllersNode = doc.createElement( "controllers" );
 	element.appendChild( controllersNode );
-	for (const auto& controller : m_controllers)
+	for (const auto& controller : roster)
 	{
+		ready();
 		controller->saveState(doc, controllersNode);
+		ready();
 	}
 }
 
@@ -1316,18 +1829,41 @@ void Song::saveControllerStates( QDomDocument & doc, QDomElement & element )
 
 void Song::restoreControllerStates( const QDomElement & element )
 {
-	QDomNode node = element.firstChild();
+	const QPointer<Song> owner(this);
+	Song* const ownerIdentity = this;
+	std::vector<QPointer<Controller>> restored;
+	for (auto controller : m_controllers) { restored.emplace_back(controller); }
+	const auto ready = [&] {
+		if (!owner) { throw std::runtime_error("Native project retired during controller restoration"); }
+		for (const auto& controller : restored)
+		{ if (!controller || !owner->containsController(controller.data())) { throw std::runtime_error("Native restored rack controller retired or detached"); } }
+	};
+	// Only element nodes occupy persisted controller indices. Comments and
+	// formatting are not unavailable controllers and must not shift bindings.
+	QDomElement node = element.firstChildElement();
 	while( !node.isNull() && !isCancelled() )
 	{
-		Controller * c = Controller::create( node.toElement(), this );
-		if (c) {addController(c);}
+		ready(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready();
+		const QPointer<Controller> c(Controller::create(node.toElement(), this));
+		const bool owned = c && (c->type() == Controller::ControllerType::Lfo || c->type() == Controller::ControllerType::Midi);
+		const auto cleanup = qScopeGuard([&] { if (owned && c && c->parent() == ownerIdentity && c->connectionCount() == 0 && (!owner || !owner->containsController(c.data()))) { delete c.data(); } });
+		ready();
+		if (c && c->type() != Controller::ControllerType::Dummy)
+		{
+			addController(c.data());
+			if (!owner || !c || !owner->containsController(c.data())) { throw std::runtime_error("Native controller registration did not survive project restoration"); }
+			restored.push_back(c);
+		}
 		else
 		{
-			// Fix indices to ensure correct connections
+			// Every unavailable element occupies its own index, even though the
+			// native dummy controller is shared and addController deduplicates it.
 			m_controllers.push_back(Controller::create(Controller::ControllerType::Dummy, this));
+			collectError(tr("Unavailable project controller"));
 		}
+		ready();
 
-		node = node.nextSibling();
+		node = node.nextSiblingElement();
 	}
 }
 
@@ -1335,36 +1871,45 @@ void Song::restoreControllerStates( const QDomElement & element )
 
 void Song::removeAllControllers()
 {
-	while (m_controllers.size() != 0)
+	const QPointer<Song> owner(this);
+	while (owner && !owner->m_controllers.empty())
 	{
 		removeController(m_controllers.at(0));
 	}
 
-	m_controllers.clear();
+	if (owner) { owner->m_controllers.clear(); }
 }
 
 
 
 void Song::saveScaleStates(QDomDocument &doc, QDomElement &element)
 {
+	const QPointer<Song> owner(this);
+	std::vector<std::shared_ptr<Scale>> scales;
+	for (unsigned int index = 0; index < MaxScaleCount; ++index) { scales.push_back(std::atomic_load(&m_scales[index])); }
 	QDomElement scalesNode = doc.createElement("scales");
 	element.appendChild(scalesNode);
 
-	for (const auto& scale : m_scales)
+	for (const auto& scale : scales)
 	{
 		scale->saveState(doc, scalesNode);
+		if (!owner) { throw std::runtime_error("Native project retired during scale serialization"); }
 	}
 }
 
 
 void Song::restoreScaleStates(const QDomElement &element)
 {
-	QDomNode node = element.firstChild();
+	QDomElement node = element.firstChildElement("scale");
 
 	for (auto i = std::size_t{0}; i < MaxScaleCount && !node.isNull() && !isCancelled(); i++)
 	{
-		m_scales[i]->restoreState(node.toElement());
-		node = node.nextSibling();
+		auto scale = std::make_shared<Scale>();
+		scale->restoreState(node);
+		QString error;
+		if (TuningFile::validateScale(*scale, error)) { std::atomic_store(&m_scales[i], scale); }
+		else { collectError(tr("Invalid native scale %1: %2").arg(i).arg(error)); }
+		node = node.nextSiblingElement("scale");
 	}
 	emit scaleListChanged(-1);
 }
@@ -1372,45 +1917,54 @@ void Song::restoreScaleStates(const QDomElement &element)
 
 void Song::saveKeymapStates(QDomDocument &doc, QDomElement &element)
 {
+	const QPointer<Song> owner(this);
+	std::vector<std::shared_ptr<Keymap>> keymaps;
+	for (unsigned int index = 0; index < MaxKeymapCount; ++index) { keymaps.push_back(std::atomic_load(&m_keymaps[index])); }
 	QDomElement keymapsNode = doc.createElement("keymaps");
 	element.appendChild(keymapsNode);
 
-	for (const auto& keymap : m_keymaps)
+	for (const auto& keymap : keymaps)
 	{
 		keymap->saveState(doc, keymapsNode);
+		if (!owner) { throw std::runtime_error("Native project retired during keymap serialization"); }
 	}
 }
 
 
 void Song::restoreKeymapStates(const QDomElement &element)
 {
-	QDomNode node = element.firstChild();
+	QDomElement node = element.firstChildElement("keymap");
 
 	for (auto i = std::size_t{0}; i < MaxKeymapCount && !node.isNull() && !isCancelled(); i++)
 	{
-		m_keymaps[i]->restoreState(node.toElement());
-		node = node.nextSibling();
+		auto keymap = std::make_shared<Keymap>();
+		keymap->restoreState(node);
+		QString error;
+		if (TuningFile::validateKeymap(*keymap, error)) { std::atomic_store(&m_keymaps[i], keymap); }
+		else { collectError(tr("Invalid native keymap %1: %2").arg(i).arg(error)); }
+		node = node.nextSiblingElement("keymap");
 	}
 	emit keymapListChanged(-1);
 }
 
 
-void Song::exportProjectMidi(const std::filesystem::path& filePath) const
+bool Song::exportProjectMidi(const std::filesystem::path& filePath) const
 {
 	// instantiate midi export plugin
 	TrackContainer::TrackList const & tracks = this->tracks();
 	TrackContainer::TrackList const & patternStoreTracks = Engine::patternStore()->tracks();
 
-	ExportFilter *exf = dynamic_cast<ExportFilter *> (Plugin::instantiate("midiexport", nullptr, nullptr));
+	std::unique_ptr<Plugin> plugin(Plugin::instantiate("midiexport", nullptr, nullptr));
+	auto exf = dynamic_cast<ExportFilter*>(plugin.get());
 	if (exf)
 	{
-		exf->tryExport(tracks, patternStoreTracks, getTempo(), m_masterPitchModel.value(), filePath);
+		return exf->tryExport(tracks, patternStoreTracks, getTempo(), m_masterPitchModel.value(), filePath);
 	}
 	else
 	{
 		qDebug() << "failed to load midi export filter!";
 	}
-
+	return false;
 }
 
 
@@ -1437,19 +1991,77 @@ void Song::setProjectFileName(QString const & projectFileName)
 	}
 }
 
+void Song::advanceReplacementGeneration()
+{
+	if (m_replacementGeneration == std::numeric_limits<std::uint64_t>::max()) { throw std::length_error("Native project replacement generation exhausted"); }
+	++m_replacementGeneration;
+}
 
 
+
+
+bool Song::reportControllerNotificationFailure(std::exception_ptr failure) noexcept
+{
+	if (QThread::currentThread() != thread() || !failure) { return false; }
+	for (auto frame = controllerNotificationFrame; frame; frame = frame->previous)
+	{
+		if (frame->owner.data() != this) { continue; }
+		if (!frame->failure) { frame->failure = std::move(failure); }
+		return true;
+	}
+	return false;
+}
+
+void Song::notifyControllerChange(ControllerNotification kind, Controller* controller)
+{
+	ControllerNotificationFrame frame(this);
+	if (kind == ControllerNotification::Added) { emit controllerAdded(controller); }
+	else if (kind == ControllerNotification::Removed) { emit controllerRemoved(controller); }
+	else { emit controllerRosterChanged(); }
+	frame.rethrow();
+}
 
 void Song::addController( Controller * controller )
 {
-	bool containsController = std::find(m_controllers.begin(), m_controllers.end(), controller) != m_controllers.end();
-	if (controller && !containsController)
+	if (!m_controllerLifecycleContext || !controller || containsController(controller)) { return; }
+	const auto engine = Engine::audioEngine();
+	const auto changes = engine ? engine->requestChangesGuard() : AudioEngine::RequestChangesGuard{};
+	const QPointer<Song> owner(this); const QPointer<Controller> target(controller);
+	if (!target || target->isRetiring() || std::find(m_controllerRemovals.begin(), m_controllerRemovals.end(), target) != m_controllerRemovals.end()) { return; }
+	m_controllers.push_back(controller);
+	// Direct native retirement must not leave a dangling entry. Use identity
+	// only after QObject destruction and a weak owner through its teardown.
+	const bool sharedDummy = target->type() == Controller::ControllerType::Dummy
+		&& target.data() == Controller::create(Controller::ControllerType::Dummy, nullptr);
+	if (!sharedDummy)
 	{
-		m_controllers.push_back(controller);
-		emit controllerAdded( controller );
-
-		this->setModified();
+		QObject::connect(target.data(), &QObject::destroyed, m_controllerLifecycleContext.get(), [owner, controller] {
+			if (!owner) { return; }
+			try
+			{
+				owner->m_controllers.erase(std::remove(owner->m_controllers.begin(), owner->m_controllers.end(), controller), owner->m_controllers.end());
+				owner->notifyControllerChange(ControllerNotification::Roster);
+				if (owner) { owner->setModified(); }
+			}
+			catch (...)
+			{
+				// QObject destruction must finish inside Qt. An explicit removal
+				// retains this error in its outer native destruction frame.
+				if (!owner || !owner->reportControllerNotificationFailure(std::current_exception()))
+				{ qWarning("Native controller roster notification failed during destruction"); }
+			}
+		}, Qt::DirectConnection);
 	}
+	if (!owner || !target || !owner->containsController(target.data())) { return; }
+	owner->notifyControllerChange(ControllerNotification::Added, target.data());
+	if (!owner || !target || !owner->containsController(target.data())) { return; }
+	owner->notifyControllerChange(ControllerNotification::Roster);
+	if (owner) { owner->setModified(); }
+}
+
+bool Song::containsController(const Controller* controller) const
+{
+	return controller && std::find(m_controllers.begin(), m_controllers.end(), controller) != m_controllers.end();
 }
 
 
@@ -1457,16 +2069,35 @@ void Song::addController( Controller * controller )
 
 void Song::removeController( Controller * controller )
 {
-	auto it = std::find(m_controllers.begin(), m_controllers.end(), controller);
-	if (it != m_controllers.end())
-	{
-		m_controllers.erase(it);
-
-		emit controllerRemoved( controller );
-		delete controller;
-
-		this->setModified();
-	}
+	if (!controller) { return; }
+	const auto engine = Engine::audioEngine();
+	const auto changes = engine ? engine->requestChangesGuard() : AudioEngine::RequestChangesGuard{};
+	const auto found = std::find(m_controllers.begin(), m_controllers.end(), controller);
+	if (found == m_controllers.end()) { return; }
+	const QPointer<Song> owner(this); const QPointer<Controller> target(controller);
+	if (!target) { return; }
+	const bool alreadyRetiring = target->isRetiring();
+	m_controllerRemovals.push_back(target);
+	m_controllers.erase(found);
+	const auto finish = qScopeGuard([owner, target] {
+		if (owner) { std::erase_if(owner->m_controllerRemovals, [&](const auto& entry) { return !entry || entry == target; }); }
+	});
+	// Unavailable project slots use a process-wide dummy singleton. Removing
+	// one slot must never destroy that shared fallback controller.
+	const bool sharedDummy = !alreadyRetiring && target->type() == Controller::ControllerType::Dummy
+		&& target.data() == Controller::create(Controller::ControllerType::Dummy, nullptr);
+	const auto retire = [&] { if (!sharedDummy && !alreadyRetiring) { delete target.data(); } };
+	const auto cleanup = qScopeGuard(retire);
+	// An independently running destructor owns completion. Its registered
+	// QObject hook will publish the final roster after all early detach slots.
+	if (alreadyRetiring) { return; }
+	if (!sharedDummy) { target->beginRetirement(); }
+	if (owner && target) { owner->notifyControllerChange(ControllerNotification::Removed, target.data()); }
+	if (owner) { owner->notifyControllerChange(ControllerNotification::Roster); }
+	ControllerNotificationFrame destruction(this);
+	retire();
+	if (owner) { owner->setModified(); }
+	destruction.rethrow();
 }
 
 
@@ -1474,15 +2105,29 @@ void Song::removeController( Controller * controller )
 
 void Song::clearErrors()
 {
+	if (!m_errors.isEmpty() || m_hasFatalErrors) { ++m_errorGeneration; }
 	m_errors.clear();
+	m_hasFatalErrors = false;
 }
 
 
 
 void Song::collectError( const QString error )
 {
-	if (!m_errors.contains(error)) { m_errors[error] = 1; }
-	else { m_errors[ error ]++; }
+	const bool becameFatal = !m_hasFatalErrors; m_hasFatalErrors = true;
+	++m_fatalErrorGeneration;
+	auto& count = m_errors[error];
+	// Error repetition can continue for the lifetime of an autonomous session.
+	// Preserve the existing signed count format without overflowing it.
+	if (count < std::numeric_limits<int>::max()) { ++count; ++m_errorGeneration; }
+	else if (becameFatal) { ++m_errorGeneration; }
+}
+
+void Song::collectUnresolvedResource(const QString& path)
+{
+	if (path.isEmpty()) { collectError(tr("An unresolved native sample has no filename")); return; }
+	auto& count = m_errors[tr("Unresolved sample (silent until relinked): %1").arg(path)];
+	if (count < std::numeric_limits<int>::max()) { ++count; ++m_errorGeneration; }
 }
 
 
@@ -1539,22 +2184,28 @@ std::shared_ptr<const Keymap> Song::getKeymap(unsigned int index) const
 
 void Song::setScale(unsigned int index, std::shared_ptr<Scale> newScale)
 {
-	if (index >= MaxScaleCount) {index = 0;}
-
-	Engine::audioEngine()->requestChangeInModel();
+	QString error;
+	if (index >= MaxScaleCount || !newScale || !TuningFile::validateScale(*newScale, error))
+	{
+		collectError(error.isEmpty() ? tr("Invalid native scale slot or object") : error); return;
+	}
+	auto guard = Engine::audioEngine()->requestChangesGuard();
 	std::atomic_store(&m_scales[index], newScale);
 	emit scaleListChanged(index);
-	Engine::audioEngine()->doneChangeInModel();
+	setModified();
 }
 
 
 void Song::setKeymap(unsigned int index, std::shared_ptr<Keymap> newMap)
 {
-	if (index >= MaxKeymapCount) {index = 0;}
-
-	Engine::audioEngine()->requestChangeInModel();
+	QString error;
+	if (index >= MaxKeymapCount || !newMap || !TuningFile::validateKeymap(*newMap, error))
+	{
+		collectError(error.isEmpty() ? tr("Invalid native keymap slot or object") : error); return;
+	}
+	auto guard = Engine::audioEngine()->requestChangesGuard();
 	std::atomic_store(&m_keymaps[index], newMap);
 	emit keymapListChanged(index);
-	Engine::audioEngine()->doneChangeInModel();
+	setModified();
 }
 } // namespace lmms

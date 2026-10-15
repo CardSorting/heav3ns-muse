@@ -27,8 +27,12 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QMessageBox>
+#include <QDebug>
+#include <exception>
 
 #include "AudioEngine.h"
+#include "NativeValueNotification.h"
+#include "AutoDetectMidiController.h"
 #include "ControllerConnectionDialog.h"
 #include "ControllerConnection.h"
 #include "MidiController.h"
@@ -47,80 +51,6 @@
 
 namespace lmms
 {
-
-class AutoDetectMidiController : public MidiController
-{
-public:
-	AutoDetectMidiController( Model* parent ) :
-		MidiController( parent ),
-		m_detectedMidiChannel( 0 ),
-		m_detectedMidiController(NONE)
-	{
-		updateName();
-	}
-
-
-	~AutoDetectMidiController() override = default;
-
-
-	void processInEvent( const MidiEvent& event, const TimePos& time, f_cnt_t offset = 0 ) override
-	{
-		if( event.type() == MidiControlChange &&
-			( m_midiPort.inputChannel() == 0 || m_midiPort.inputChannel() == event.channel() + 1 ) )
-		{
-			m_detectedMidiChannel = event.channel() + 1;
-			m_detectedMidiController = event.controllerNumber();
-			m_detectedMidiPort = Engine::audioEngine()->midiClient()->sourcePortName( event );
-
-			emit valueChanged();
-		}
-	}
-
-
-	// Would be a nice copy ctor, but too hard to add copy ctor because
-	// model has none.
-	MidiController* copyToMidiController( Model* parent )
-	{
-		auto c = new MidiController(parent);
-		c->m_midiPort.setInputChannel( m_midiPort.inputChannel() );
-		c->m_midiPort.setInputController( m_midiPort.inputController() );
-		c->subscribeReadablePorts( m_midiPort.readablePorts() );
-		c->updateName();
-
-		return c;
-	}
-
-
-	void useDetected()
-	{
-		m_midiPort.setInputChannel( m_detectedMidiChannel );
-		m_midiPort.setInputController( m_detectedMidiController );
-
-		const MidiPort::Map& map = m_midiPort.readablePorts();
-		for( MidiPort::Map::ConstIterator it = map.begin(); it != map.end(); ++it )
-		{
-			m_midiPort.subscribeReadablePort( it.key(),
-									m_detectedMidiPort.isEmpty() || ( it.key() == m_detectedMidiPort ) );
-		}
-	}
-
-
-public slots:
-	void reset()
-	{
-		m_midiPort.setInputChannel( 0 );
-		m_midiPort.setInputController( 0 );
-	}
-
-
-private:
-	int m_detectedMidiChannel;
-	int m_detectedMidiController;
-	QString m_detectedMidiPort;
-
-} ;
-
-
 
 namespace gui
 {
@@ -167,12 +97,13 @@ ControllerConnectionDialog::ControllerConnectionDialog( QWidget * _parent,
 
 	// when using with non-raw-clients we can provide buttons showing
 	// our port-menus when being clicked
-	if( !Engine::audioEngine()->midiClient()->isRaw() )
 	{
 		m_readablePorts = new MidiPortMenu( MidiPort::Mode::Input );
 		connect( m_readablePorts, SIGNAL(triggered(QAction*)),
 				this, SLOT(enableAutoDetect(QAction*)));
-		auto rp_btn = new ToolButton(m_midiGroupBox);
+		m_portsButton = new ToolButton(m_midiGroupBox);
+		auto rp_btn = m_portsButton;
+		rp_btn->setVisible(!Engine::audioEngine()->midiClient()->isRaw());
 		rp_btn->setText( tr( "MIDI-devices to receive "
 						"MIDI-events from" ) );
 		rp_btn->setIcon( embed::getIconPixmap( "piano" ) );
@@ -297,7 +228,7 @@ void ControllerConnectionDialog::selectController()
 	// Midi
 	if (m_midiGroupBox->model()->value())
 	{
-		if( m_midiControllerSpinBox->model()->value() > 0 )
+		if( m_midiControllerSpinBox->model()->value() >= 0 )
 		{
 			auto mc = m_midiController->copyToMidiController(Engine::getSong());
 
@@ -368,9 +299,22 @@ void ControllerConnectionDialog::midiToggled()
 			if( m_readablePorts )
 			{
 				m_readablePorts->setModel( &m_midiController->m_midiPort );
+				const auto updatePorts = [this] {
+					const auto client = m_midiController->m_midiPort.client();
+					m_portsButton->setVisible(client && !client->isRaw());
+				};
+				connect(&m_midiController->m_midiPort, &MidiPort::modeChanged, this, updatePorts);
+				updatePorts();
 			}
 
-			connect( m_midiController, SIGNAL(valueChanged()), this, SLOT(midiValueChanged()));
+			connect(m_midiController, &Controller::valueChanged, this, [this] {
+				try { midiValueChanged(); }
+				catch (...)
+				{
+					if (!NativeValueNotification::report(std::current_exception()))
+					{ qWarning("MIDI autodetection view update failed outside a native value notification frame"); }
+				}
+			});
 		}
 	}
 	m_midiAutoDetect.setValue( enabled );

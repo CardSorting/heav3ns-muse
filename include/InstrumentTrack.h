@@ -26,6 +26,11 @@
 #ifndef LMMS_INSTRUMENT_TRACK_H
 #define LMMS_INSTRUMENT_TRACK_H
 
+#include <array>
+#include <bitset>
+#include <cstdint>
+#include <QPointer>
+
 
 #include "AudioBusHandle.h"
 #include "InstrumentFunctions.h"
@@ -76,6 +81,11 @@ public:
 	void processOutEvent( const MidiEvent& event, const TimePos& time = TimePos(), f_cnt_t offset = 0 ) override;
 	// silence all running notes played by this track
 	void silenceAllNotes( bool removeIPH = false );
+	// Complete held/sustained input notes using elapsed musical time, even after
+	// a pattern wraps. Caller holds the engine model guard before stopping.
+	void finishMidiInputRecording();
+	void recordMidiInputPitch(f_cnt_t offset = 0);
+	bool canRecordMidiPitch() const { return !m_pitchModel.isAutomatedOrControlled() && m_pitchModel.countLinks() == 0; }
 
 	bool isSustainPedalPressed() const
 	{
@@ -90,15 +100,12 @@ public:
 	void playNote( NotePlayHandle * _n, SampleFrame* _working_buffer );
 
 	QString instrumentName() const;
-	const Instrument *instrument() const
-	{
-		return m_instrument;
-	}
-
-	Instrument *instrument()
-	{
-		return m_instrument;
-	}
+	const Instrument* instrument() const;
+	Instrument* instrument();
+	InstrumentSoundShaping* soundShaping() { return &m_soundShaping; }
+	const InstrumentSoundShaping* soundShaping() const { return &m_soundShaping; }
+	bool isReplacingInstrument() const noexcept { return m_replacingInstrument || m_replacingPreset || m_loadingMidiCC || m_savingInstrumentSettings || isLoadingTrackState() || isSavingTrackState(); }
+	bool isRetiring() const noexcept { return m_retiring; }
 
 	void deleteNotePluginData( NotePlayHandle * _n );
 
@@ -193,6 +200,8 @@ public:
 	//! @brief Return frequency assigned to the base key, based on currently selected keymap.
 	//! @return Frequency in Hz
 	float baseFreq() const;
+	//! Native frequency before master/instrument pitch and per-note detuning.
+	float nominalFrequency(int key) const;
 
 	Piano *pianoModel()
 	{
@@ -248,7 +257,7 @@ public:
 	{
 		return m_previewMode;
 	}
-	
+
 	void replaceInstrument(DataFile dataFile);
 
 	//! @brief Automatically assign a midi controller to this track, based on the midiautoassign setting
@@ -257,15 +266,28 @@ public:
 
 	//! Returns a non-owning pointer to the model for the knob at the given index in the track's MIDI CC rack
 	FloatModel* midiCCModel(int index) const { return m_midiCCModel[index].get(); }
+	BoolModel* midiCCEnabledModel() const { return m_midiCCEnable.get(); }
+	//! Include a controller in native rack replay, including an explicit zero.
+	bool activateMidiCC(int controller);
+	//! Set an imported/preset initial value without activating an unused knob.
+	bool initializeMidiCC(int controller, float value);
 
 signals:
 	void instrumentChanged();
 	void midiNoteOn( const lmms::Note& );
 	void midiNoteOff( const lmms::Note& );
+	void midiNotePitch(const lmms::Note& elapsedNote, float pitchCents);
 	void newNote();
 	void endNote();
 
 protected:
+	bool canLoadTrackState() const override
+	{ return !m_retiring && !m_replacingInstrument && !m_loadingMidiCC && !m_savingInstrumentSettings && (!m_replacingPreset || m_permitPresetTrackLoad); }
+	bool canSaveTrackState() const override { return !m_retiring && !m_replacingInstrument && !m_replacingPreset && !m_loadingMidiCC && !m_savingInstrumentSettings; }
+	//! Shared native construction boundary for selection and project restoration.
+	virtual Instrument* createInstrument(const QString& name,
+		const Plugin::Descriptor::SubPluginFeatures::Key* key, bool keyFromDnd);
+
 	QString nodeName() const override
 	{
 		return "instrumenttrack";
@@ -284,6 +306,11 @@ protected slots:
 
 private:
 	void processCCEvent(int controller);
+	void refreshMidiCC(const TimePos& time = TimePos(), f_cnt_t offset = 0);
+	void invalidateMidiCC(int controller = -1);
+	bool sendMidiEventToInstrument(const MidiEvent& event, const TimePos& time, f_cnt_t offset);
+	void silenceAllNotesImpl(bool removeIPH, bool preserveMidiCC);
+	void releaseMidiSustain(f_cnt_t offset);
 
 	MidiPort m_midiPort;
 
@@ -318,7 +345,12 @@ private:
 	IntModel m_mixerChannelModel;
 	BoolModel m_useMasterPitchModel;
 
-	Instrument * m_instrument;
+	QPointer<Instrument> m_instrument;
+	bool m_replacingInstrument = false;
+	bool m_replacingPreset = false;
+	bool m_savingInstrumentSettings = false;
+	bool m_permitPresetTrackLoad = false;
+	bool m_retiring = false;
 	InstrumentSoundShaping m_soundShaping;
 	InstrumentFunctionArpeggio m_arpeggio;
 	InstrumentFunctionNoteStacking m_noteStacking;
@@ -329,6 +361,14 @@ private:
 
 	std::unique_ptr<BoolModel> m_midiCCEnable;
 	std::unique_ptr<FloatModel> m_midiCCModel[MidiControllerCount];
+	std::bitset<MidiControllerCount> m_activeMidiCC;
+	std::bitset<MidiControllerCount> m_sentMidiCC;
+	std::array<int, MidiControllerCount> m_lastMidiCC{};
+	std::uint64_t m_midiCCDeliveryGeneration = 0;
+	const MidiEvent* m_midiCCRackEvent = nullptr;
+	int m_lastMidiCCChannel = -1;
+	bool m_loadingMidiCC = false;
+	bool m_refreshingMidiCC = false;
 
 	friend class gui::InstrumentTrackView;
 	friend class gui::InstrumentTrackWindow;

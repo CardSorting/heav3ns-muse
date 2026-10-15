@@ -34,6 +34,7 @@
 #include <QString>
 #include <QWidget>
 #include <portaudio.h>
+#include <stdexcept>
 
 #include "AudioDevice.h"
 #include "AudioDeviceSetupWidget.h"
@@ -44,10 +45,10 @@ namespace detail {
 class PortAudioInitializationGuard
 {
 public:
-	PortAudioInitializationGuard()
+	explicit PortAudioInitializationGuard(bool throwOnFailure = true)
 		: m_error(Pa_Initialize())
 	{
-		if (m_error != paNoError) { throw std::runtime_error{"PortAudio: could not initialize"}; }
+		if (throwOnFailure && m_error != paNoError) { throw std::runtime_error{"PortAudio: could not initialize"}; }
 	}
 
 	~PortAudioInitializationGuard()
@@ -59,6 +60,7 @@ public:
 	PortAudioInitializationGuard(PortAudioInitializationGuard&&) = delete;
 	PortAudioInitializationGuard& operator=(const PortAudioInitializationGuard&) = delete;
 	PortAudioInitializationGuard& operator=(PortAudioInitializationGuard&&) = delete;
+	PaError error() const { return m_error; }
 
 private:
 	PaError m_error = paNoError;
@@ -84,9 +86,12 @@ private:
 
 	static int processCallback(const void* input, void* output, unsigned long frameCount,
 		const PaStreamCallbackTimeInfo* timeInfo, PaStreamCallbackFlags statusFlags, void* userData);
+	static void streamFinished(void* userData);
 
 	detail::PortAudioInitializationGuard m_initGuard;
 	PaStream* m_paStream = nullptr;
+	ch_cnt_t m_inputChannels = 0;
+	ch_cnt_t m_outputChannels = 0;
 };
 } // namespace lmms
 

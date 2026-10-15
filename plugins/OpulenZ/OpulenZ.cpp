@@ -44,6 +44,13 @@
 #include <QFileInfo>
 #include <QByteArray>
 #include <QDomElement>
+#include <QDebug>
+#include <QMutexLocker>
+#include <QSignalBlocker>
+#include <QScopedValueRollback>
+#include <algorithm>
+
+#include "PathUtil.h"
 #include <cassert>
 #include <cmath>
 
@@ -139,12 +146,13 @@ OpulenzInstrument::OpulenzInstrument( InstrumentTrack * _instrument_track ) :
 {
 
 	// Create an emulator - samplerate, 16 bit, mono
-	emulatorMutex.lock();
-	theEmulator = new CTemuopl(Engine::audioEngine()->outputSampleRate(), true, false);
-	theEmulator->init();
-	// Enable waveform selection
-	theEmulator->write(0x01,0x20);
-	emulatorMutex.unlock();
+	{
+		const auto lock = QMutexLocker{&emulatorMutex};
+		theEmulator = std::make_unique<CTemuopl>(Engine::audioEngine()->outputSampleRate(), true, false);
+		theEmulator->init();
+		// Enable waveform selection
+		theEmulator->write(0x01, 0x20);
+	}
 
 	//Initialize voice values
 	// voiceNote[0] = 0;
@@ -155,12 +163,23 @@ OpulenzInstrument::OpulenzInstrument( InstrumentTrack * _instrument_track ) :
 	}
 
 	storedname = displayName();
+	QMap<int, QString> programs;
+	for (int program = 0; program < 128; ++program)
+	{
+		const auto name = tr("GM patch %1").arg(program);
+		m_programs.push_back({0, program, name}); programs.insert(program, name);
+	}
+	m_patchModel.setValueLabels(programs);
+	const QMap<int, QString> waves{{0, tr("Sine")}, {1, tr("Half sine")}, {2, tr("Absolute sine")}, {3, tr("Quarter sine")}};
+	op1_waveform_mdl.setValueLabels(waves); op2_waveform_mdl.setValueLabels(waves);
+	const auto controls = patchControls();
+	for (std::size_t index = 0; index < controls.size(); ++index) { m_factoryPatchValues[index] = controls[index]->storedValue(); }
 
 	updatePatch();
 
-	// Can the buffer size change suddenly? I bet that would break lots of stuff
+	// Native render periods are checked again when filling this buffer.
 	frameCount = Engine::audioEngine()->framesPerPeriod();
-	renderbuffer = new short[frameCount];
+	renderbuffer.resize(frameCount);
 
 	// Some kind of sane defaults
 	pitchbend = 0;
@@ -174,6 +193,7 @@ OpulenzInstrument::OpulenzInstrument( InstrumentTrack * _instrument_track ) :
 	// Connect knobs
 	// This one's for testing...
 	connect( &m_patchModel, SIGNAL( dataChanged() ), this, SLOT( loadGMPatch() ) );
+	connect(&m_patchModel, &AutomatableModel::dataUnchanged, this, &OpulenzInstrument::loadGMPatch);
 #define MOD_CON( model ) connect( &model, SIGNAL( dataChanged() ), this, SLOT( updatePatch() ) );
 	MOD_CON( op1_a_mdl );
 	MOD_CON( op1_d_mdl );
@@ -220,26 +240,29 @@ OpulenzInstrument::OpulenzInstrument( InstrumentTrack * _instrument_track ) :
 }
 
 OpulenzInstrument::~OpulenzInstrument() {
-	delete theEmulator;
+	auto guard = Engine::audioEngine()->requestChangesGuard();
 	Engine::audioEngine()->removePlayHandlesOfTypes( instrumentTrack(),
 				PlayHandle::Type::NotePlayHandle
 				| PlayHandle::Type::InstrumentPlayHandle );
-	delete [] renderbuffer;
+	const auto lock = QMutexLocker{&emulatorMutex};
+	theEmulator.reset();
 }
 
 // Samplerate changes when choosing oversampling, so this is more or less mandatory
 void OpulenzInstrument::reloadEmulator() {
-	delete theEmulator;
-	emulatorMutex.lock();
-	theEmulator = new CTemuopl(Engine::audioEngine()->outputSampleRate(), true, false);
-	theEmulator->init();
-	theEmulator->write(0x01,0x20);
-	emulatorMutex.unlock();
-	for(int i=0; i<OPL2_VOICES; ++i) {
-		voiceNote[i] = OPL2_VOICE_FREE;
-		voiceLRU[i] = i;
+	auto guard = Engine::audioEngine()->requestChangesGuard();
+	{
+		const auto lock = QMutexLocker{&emulatorMutex};
+		std::unique_ptr<Copl> candidate = std::make_unique<CTemuopl>(Engine::audioEngine()->outputSampleRate(), true, false);
+		candidate->init(); candidate->write(0x01, 0x20);
+		theEmulator.swap(candidate);
+		for (int index = 0; index < OPL2_VOICES; ++index)
+		{
+			voiceNote[index] = OPL2_VOICE_FREE; voiceLRU[index] = index;
+		}
+		std::fill_n(velocities, NumKeys, 0);
 	}
-	updatePatch();
+	writePatchRegisters();
 }
 
 // This shall only be called from code protected by the holy Mutex!
@@ -294,24 +317,29 @@ int OpulenzInstrument::pushVoice(int v) {
 
 bool OpulenzInstrument::handleMidiEvent( const MidiEvent& event, const TimePos& time, f_cnt_t offset )
 {
-	emulatorMutex.lock();
-
 	int key = event.key();
 	int vel = event.velocity();
+	if ((event.type() == MidiNoteOn || event.type() == MidiNoteOff || event.type() == MidiKeyPressure)
+		&& (key < 0 || key >= NumKeys || vel < 0 || vel > 127)) { return false; }
+	if (event.type() == MidiPitchBend && (event.pitchBend() < 0 || event.pitchBend() > 16383)) { return false; }
+	if (event.type() == MidiControlChange && (event.param(0) < 0 || event.param(0) > 127 || event.param(1) < 0 || event.param(1) > 127)) { return false; }
+	const auto lock = QMutexLocker{&emulatorMutex};
 	switch (event.type())
 	{
 	case MidiNoteOn:
-		if (int voice = popVoice(); voice != OPL2_NO_VOICE)
+		if (vel > 0)
 		{
-			// Turn voice on, NB! the frequencies are straight by voice number,
-			// not by the adlib_opadd table!
-			theEmulator->write(0xA0 + voice, fnums[key] & 0xff);
-			theEmulator->write(0xB0 + voice, 32 + ((fnums[key] & 0x1f00) >> 8));
-			setVoiceVelocity(voice, vel);
-			voiceNote[voice] = key;
-			velocities[key] = vel;
+			if (int voice = popVoice(); voice != OPL2_NO_VOICE)
+			{
+				// Frequencies are indexed by voice number, independently of the operator register table.
+				theEmulator->write(0xA0 + voice, fnums[key] & 0xff);
+				theEmulator->write(0xB0 + voice, 32 + ((fnums[key] & 0x1f00) >> 8));
+				setVoiceVelocity(voice, vel);
+				voiceNote[voice] = key; velocities[key] = vel;
+			}
+			break;
 		}
-		break;
+		[[fallthrough]];
 	case MidiNoteOff:
 		for (int voice = 0; voice < OPL2_VOICES; ++voice)
 		{
@@ -364,18 +392,17 @@ bool OpulenzInstrument::handleMidiEvent( const MidiEvent& event, const TimePos& 
 			break;
 		default:
 #ifdef LMMS_DEBUG
-			printf("Midi CC %02x %02x\n", event.controllerNumber(), event.controllerValue() );
+			qDebug("Midi CC %02x %02x", event.controllerNumber(), event.controllerValue());
 #endif
 			break;
 		}
 		break;
         default:
 #ifdef LMMS_DEBUG
-                printf("Midi event type %d\n",event.type());
+                qDebug("Midi event type %d", int(event.type()));
 #endif
 		break;
 		}
-	emulatorMutex.unlock();
 	return true;
 }
 
@@ -392,8 +419,11 @@ gui::PluginView* OpulenzInstrument::instantiateView( QWidget * _parent )
 
 void OpulenzInstrument::play( SampleFrame* _working_buffer )
 {
-	emulatorMutex.lock();
-	theEmulator->update(renderbuffer, frameCount);
+	if (!_working_buffer) { return; }
+	const auto lock = QMutexLocker{&emulatorMutex};
+	frameCount = Engine::audioEngine()->framesPerPeriod();
+	if (renderbuffer.size() != frameCount) { renderbuffer.resize(frameCount); }
+	theEmulator->update(renderbuffer.data(), frameCount);
 
 	for( f_cnt_t frame = 0; frame < frameCount; ++frame )
         {
@@ -403,7 +433,6 @@ void OpulenzInstrument::play( SampleFrame* _working_buffer )
                         _working_buffer[frame][ch] = s;
                 }
 	}
-	emulatorMutex.unlock();
 }
 
 
@@ -441,10 +470,16 @@ void OpulenzInstrument::saveSettings( QDomDocument & _doc, QDomElement & _this )
 	trem_depth_mdl.saveSettings( _doc, _this, "trem_depth" );
 
 	_this.setAttribute("version", 1);
+	_this.setAttribute("patchSource", m_patchSource);
+	_this.setAttribute("gmProgram", m_selectedProgram);
+	m_patchModel.saveSettings(_doc, _this, "patchIndex");
 }
 
 void OpulenzInstrument::loadSettings( const QDomElement & _this )
 {
+	auto guard = Engine::audioEngine()->requestChangesGuard();
+	QScopedValueRollback<bool> loading(m_loadingPatch, true);
+	m_patchModel.loadSettings(_this, "patchIndex");
 	if (_this.attribute("version", "0").toInt() < 1)
 	{
 		op1_scale_mdl.setValue(0);
@@ -484,26 +519,93 @@ void OpulenzInstrument::loadSettings( const QDomElement & _this )
 	fm_mdl.loadSettings( _this, "fm" );
 	vib_depth_mdl.loadSettings( _this, "vib_depth" );
 	trem_depth_mdl.loadSettings( _this, "trem_depth" );
-
+	m_selectedProgram = -1; m_patchSource = _this.attribute("patchSource"); m_importedPatchName.clear();
+	bool programOk = false; const int program = _this.attribute("gmProgram").toInt(&programOk);
+	if (programOk && program >= 0 && program < 128)
+	{
+		const auto current = patchRegisters();
+		bool matches = true;
+		for (std::size_t index = 0; index < 11; ++index)
+		{
+			const int mask = index == 8 || index == 9 ? 0x03 : (index == 10 ? 0x0f : 0xff);
+			matches &= current[index] == (midi_fm_instruments[program][index] & mask);
+		}
+		if (matches) { m_selectedProgram = program; m_patchModel.setValue(program); }
+		else { collectErrorForUI(tr("Stored GM program differs from native OpulenZ controls; retaining the controls")); }
+	}
+	writePatchRegisters(); emit dataChanged();
 }
 
-// Load a patch into the emulator
-void OpulenzInstrument::loadPatch(const unsigned char inst[14]) {
-	emulatorMutex.lock();
-	for(int v=0; v<OPL2_VOICES; ++v) {
-		theEmulator->write(0x20+adlib_opadd[v],inst[0]); // op1 AM/VIB/EG/KSR/Multiplier
-		theEmulator->write(0x23+adlib_opadd[v],inst[1]); // op2
-		// theEmulator->write(0x40+adlib_opadd[v],inst[2]); // op1 KSL/Output Level - these are handled by noteon/aftertouch code
-		// theEmulator->write(0x43+adlib_opadd[v],inst[3]); // op2
-		theEmulator->write(0x60+adlib_opadd[v],inst[4]); // op1 A/D
-		theEmulator->write(0x63+adlib_opadd[v],inst[5]); // op2
-		theEmulator->write(0x80+adlib_opadd[v],inst[6]); // op1 S/R
-		theEmulator->write(0x83+adlib_opadd[v],inst[7]); // op2
-		theEmulator->write(0xe0+adlib_opadd[v],inst[8]); // op1 waveform
-		theEmulator->write(0xe3+adlib_opadd[v],inst[9]); // op2
-		theEmulator->write(0xc0+v,inst[10]);             // feedback/algorithm
+std::array<AutomatableModel*, 29> OpulenzInstrument::patchControls()
+{
+	return {&m_patchModel, &op1_a_mdl, &op1_d_mdl, &op1_s_mdl, &op1_r_mdl, &op1_lvl_mdl,
+		&op1_scale_mdl, &op1_mul_mdl, &op1_ksr_mdl, &op1_perc_mdl, &op1_trem_mdl, &op1_vib_mdl, &op1_waveform_mdl,
+		&op2_a_mdl, &op2_d_mdl, &op2_s_mdl, &op2_r_mdl, &op2_lvl_mdl,
+		&op2_scale_mdl, &op2_mul_mdl, &op2_ksr_mdl, &op2_perc_mdl, &op2_trem_mdl, &op2_vib_mdl, &op2_waveform_mdl,
+		&feedback_mdl, &fm_mdl, &vib_depth_mdl, &trem_depth_mdl};
+}
+
+void OpulenzInstrument::applyPatchControls(const unsigned char inst[14], int program, const QString& source)
+{
+	auto engineGuard = Engine::audioEngine()->requestChangesGuard();
+	QScopedValueRollback<bool> loading(m_loadingPatch, true);
+	const auto controls = patchControls();
+	std::array<std::optional<QSignalBlocker>, 29> blockers;
+	for (std::size_t index = 0; index < controls.size(); ++index) { blockers[index].emplace(controls[index]); }
+	if (inst)
+	{
+		op1_trem_mdl.setValue((inst[0] & 0x80) != 0); op1_vib_mdl.setValue((inst[0] & 0x40) != 0);
+		op1_perc_mdl.setValue((inst[0] & 0x20) == 0); op1_ksr_mdl.setValue((inst[0] & 0x10) != 0);
+		op1_mul_mdl.setValue(inst[0] & 0x0f);
+		op2_trem_mdl.setValue((inst[1] & 0x80) != 0); op2_vib_mdl.setValue((inst[1] & 0x40) != 0);
+		op2_perc_mdl.setValue((inst[1] & 0x20) == 0); op2_ksr_mdl.setValue((inst[1] & 0x10) != 0);
+		op2_mul_mdl.setValue(inst[1] & 0x0f);
+		op1_scale_mdl.setValue((inst[2] & 0xc0) >> 6); op1_lvl_mdl.setValue(63 - (inst[2] & 0x3f));
+		op2_scale_mdl.setValue((inst[3] & 0xc0) >> 6); op2_lvl_mdl.setValue(63 - (inst[3] & 0x3f));
+		op1_a_mdl.setValue(15 - ((inst[4] & 0xf0) >> 4)); op1_d_mdl.setValue(15 - (inst[4] & 0x0f));
+		op2_a_mdl.setValue(15 - ((inst[5] & 0xf0) >> 4)); op2_d_mdl.setValue(15 - (inst[5] & 0x0f));
+		op1_s_mdl.setValue(15 - ((inst[6] & 0xf0) >> 4)); op1_r_mdl.setValue(15 - (inst[6] & 0x0f));
+		op2_s_mdl.setValue(15 - ((inst[7] & 0xf0) >> 4)); op2_r_mdl.setValue(15 - (inst[7] & 0x0f));
+		op1_waveform_mdl.setValue(inst[8] & 0x03); op2_waveform_mdl.setValue(inst[9] & 0x03);
+		fm_mdl.setValue((inst[10] & 0x01) == 0); feedback_mdl.setValue((inst[10] & 0x0e) >> 1);
+		if (program >= 0) { m_patchModel.setValue(program); }
 	}
-	emulatorMutex.unlock();
+	else
+	{
+		for (std::size_t index = 0; index < controls.size(); ++index) { controls[index]->setValue(m_factoryPatchValues[index]); }
+	}
+	m_selectedProgram = program; m_patchSource = source;
+	writePatchRegisters();
+	for (auto& blocker : blockers) { blocker.reset(); }
+	for (auto control : controls) { emit control->dataChanged(); }
+	emit dataChanged();
+}
+
+// Both imported and built-in patches update the models which own project state.
+void OpulenzInstrument::loadPatch(const unsigned char inst[14])
+{
+	applyPatchControls(inst, -1, {});
+}
+
+void OpulenzInstrument::writePatchRegisters()
+{
+	const auto inst = patchRegisters();
+	const auto lock = QMutexLocker{&emulatorMutex};
+	theEmulator->write(0xBD, (trem_depth_mdl.value() ? 128 : 0) + (vib_depth_mdl.value() ? 64 : 0));
+	for (int voice = 0; voice < OPL2_VOICES; ++voice)
+	{
+		theEmulator->write(0x20 + adlib_opadd[voice], inst[0]);
+		theEmulator->write(0x23 + adlib_opadd[voice], inst[1]);
+		theEmulator->write(0x60 + adlib_opadd[voice], inst[4]);
+		theEmulator->write(0x63 + adlib_opadd[voice], inst[5]);
+		theEmulator->write(0x80 + adlib_opadd[voice], inst[6]);
+		theEmulator->write(0x83 + adlib_opadd[voice], inst[7]);
+		theEmulator->write(0xe0 + adlib_opadd[voice], inst[8]);
+		theEmulator->write(0xe3 + adlib_opadd[voice], inst[9]);
+		theEmulator->write(0xc0 + voice, inst[10]);
+		// Retain the native velocity adjustment when editing a held voice's level.
+		if ((voiceNote[voice] & OPL2_VOICE_FREE) == 0) { setVoiceVelocity(voice, velocities[voiceNote[voice]]); }
+	}
 }
 
 void OpulenzInstrument::tuneEqual(int center, float Hz) {
@@ -524,14 +626,43 @@ int OpulenzInstrument::Hz2fnum(float Hz) {
 	return 0;
 }
 
-// Load one of the default patches
-void OpulenzInstrument::loadGMPatch() {
-	const unsigned char* inst = midi_fm_instruments[m_patchModel.value()];
-	loadPatch(inst);
+void OpulenzInstrument::loadGMPatch()
+{
+	if (m_loadingPatch) { return; }
+	QString error;
+	if (!selectProgram(0, m_patchModel.value(), error)) { collectErrorForUI(error); }
 }
 
-// Update patch from the models to the chip emulation
-void OpulenzInstrument::updatePatch() {
+auto OpulenzInstrument::midiPatch() const -> std::optional<MidiPatch>
+{
+	return m_selectedProgram >= 0 ? std::optional<MidiPatch>(MidiPatch{0, static_cast<std::uint8_t>(m_selectedProgram)}) : std::nullopt;
+}
+
+AutomatableModel* OpulenzInstrument::childModel(std::string_view name)
+{
+	return name == "patch" ? &m_patchModel : nullptr;
+}
+
+bool OpulenzInstrument::selectProgram(int bank, int program, QString& error)
+{
+	if (bank != 0 || program < 0 || program >= 128)
+	{
+		error = tr("OpulenZ provides native GM bank 0, programs 0 through 127"); return false;
+	}
+	applyPatchControls(midi_fm_instruments[program], program, {});
+	m_importedPatchName.clear(); error.clear(); return true;
+}
+
+void OpulenzInstrument::updatePatch()
+{
+	if (m_loadingPatch) { return; }
+	auto guard = Engine::audioEngine()->requestChangesGuard();
+	m_selectedProgram = -1;
+	writePatchRegisters();
+}
+
+std::array<unsigned char, 14> OpulenzInstrument::patchRegisters() const
+{
 	auto inst = std::array<unsigned char, 14>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 	inst[0] = ( op1_trem_mdl.value() ?  128 : 0  ) +
 		( op1_vib_mdl.value() ?  64 : 0 ) +
@@ -564,115 +695,51 @@ void OpulenzInstrument::updatePatch() {
 	inst[12] = 0;
 	inst[13] = 0;
 
-	// Not part of the per-voice patch info
-	theEmulator->write(0xBD, (trem_depth_mdl.value() ? 128 : 0 ) +
-			   (vib_depth_mdl.value() ? 64 : 0 ));
-
-	// have to do this, as the level knobs might've changed
-	for( int voice = 0; voice < OPL2_VOICES ; ++voice) {
-		if(voiceNote[voice] && OPL2_VOICE_FREE == 0) {
-			setVoiceVelocity(voice, velocities[voiceNote[voice]] );
-		}
-	}
-#ifdef false
-		printf("UPD: %02x %02x %02x %02x %02x -- %02x %02x %02x %02x %02x %02x\n",
-		       inst[0], inst[1], inst[2], inst[3], inst[4],
-		       inst[5], inst[6], inst[7], inst[8], inst[9], inst[10]);
-#endif
-
-
-	loadPatch(inst.data());
+	return inst;
 }
 
-// Load an SBI file into the knob models
-void OpulenzInstrument::loadFile( const QString& file ) {
-	// http://cd.textfiles.com/soundsensations/SYNTH/SBINS/
-	// http://cd.textfiles.com/soundsensations/SYNTH/SBI1198/1198SBI.ZIP
-	if( !file.isEmpty() && QFileInfo( file ).exists() )
+std::vector<Plugin::FileResource> OpulenzInstrument::fileResources() const
+{
+	return {{"patch", tr("Imported SBI patch"), m_patchSource, {"sbi"}, nullptr, 0, false}};
+}
+
+bool OpulenzInstrument::setFileResource(const QString& key, const QString& path, QString& error)
+{
+	if (key != "patch") { error = tr("Unknown OpulenZ resource"); return false; }
+	if (path.isEmpty())
 	{
-		QFile sbifile(file);
-		if (!sbifile.open(QIODevice::ReadOnly )) {
-			printf("Can't open file\n");
-			return;
-		}
-
-		QByteArray sbidata = sbifile.read(52);
-		if( !sbidata.startsWith("SBI\0x1a") ) {
-			printf("No SBI signature\n");
-			return;
-		}
-		if( sbidata.size() != 52 ) {
-			printf("SBI size error: expected 52, got %d\n", static_cast<int>(sbidata.size()));
-		}
-
-		// Minimum size of SBI if we ignore "reserved" bytes at end
-		// https://courses.engr.illinois.edu/ece390/resources/sound/cmf.txt.html
-		if( sbidata.size() < 47 ) {
-			return;
-		}
-
-		QString sbiname = sbidata.mid(4, 32);
-		// If user has changed track name... let's hope my logic is valid.
-		if( sbiname.size() > 0 && instrumentTrack()->displayName() == storedname ) {
-			instrumentTrack()->setName(sbiname);
-			storedname = sbiname;
-		}
-
-#ifdef false
-		printf("SBI: %02x %02x %02x %02x %02x -- %02x %02x %02x %02x %02x %02x\n",
-		       (unsigned char)sbidata[36], (unsigned char)sbidata[37], (unsigned char)sbidata[38], (unsigned char)sbidata[39], (unsigned char)sbidata[40],
-		       (unsigned char)sbidata[41], (unsigned char)sbidata[42], (unsigned char)sbidata[43], (unsigned char)sbidata[44], (unsigned char)sbidata[45], (unsigned char)sbidata[46]);
-#endif
-		// Modulator Sound Characteristic (Mult, KSR, EG, VIB, AM)
-		op1_trem_mdl.setValue( (sbidata[36] & 0x80 ) == 0x80 ? true : false );
-		op1_vib_mdl.setValue( (sbidata[36] & 0x40 ) == 0x40 ? true : false );
-		op1_perc_mdl.setValue( (sbidata[36] & 0x20 ) == 0x20 ? false : true );
-		op1_ksr_mdl.setValue( (sbidata[36] & 0x10 ) == 0x10 ? true : false );
-		op1_mul_mdl.setValue( sbidata[36] & 0x0f );
-
-		// Carrier Sound Characteristic
-		op2_trem_mdl.setValue( (sbidata[37] & 0x80 ) == 0x80 ? true : false );
-		op2_vib_mdl.setValue( (sbidata[37] & 0x40 ) == 0x40 ? true : false );
-		op2_perc_mdl.setValue( (sbidata[37] & 0x20 ) == 0x20 ? false : true );
-		op2_ksr_mdl.setValue( (sbidata[37] & 0x10 ) == 0x10 ? true : false );
-		op2_mul_mdl.setValue( sbidata[37] & 0x0f );
-
-		// Modulator Scaling/Output Level
-		op1_scale_mdl.setValue( (sbidata[38] & 0xc0 ) >> 6 );
-		op1_lvl_mdl.setValue( 63 - (sbidata[38] & 0x3f) );
-
-		// Carrier Scaling/Output Level
-		op2_scale_mdl.setValue( (sbidata[39] & 0xc0) >> 6 );
-		op2_lvl_mdl.setValue( 63 - (sbidata[39] & 0x3f) );
-
-		// Modulator Attack/Decay
-		op1_a_mdl.setValue( 15 - ( ( sbidata[40] & 0xf0 ) >> 4 ) );
-		op1_d_mdl.setValue( 15 - ( sbidata[40] & 0x0f ) );
-
-		// Carrier Attack/Decay
-		op2_a_mdl.setValue( 15 - ( ( sbidata[41] & 0xf0 ) >> 4 ) );
-		op2_d_mdl.setValue( 15 - ( sbidata[41] & 0x0f ) );
-
-		// Modulator Sustain/Release
-		op1_s_mdl.setValue( 15 - ( ( sbidata[42] & 0xf0 ) >> 4 ) );
-		op1_r_mdl.setValue( 15 - ( sbidata[42] & 0x0f ) );
-
-		// Carrier Sustain/Release
-		op2_s_mdl.setValue( 15 - ( ( sbidata[43] & 0xf0 ) >> 4 ) );
-		op2_r_mdl.setValue( 15 - ( sbidata[43] & 0x0f ) );
-
-		// Modulator Wave Select
-		op1_waveform_mdl.setValue( sbidata[44] & 0x03 );
-
-		// Carrier Wave Select
-		op2_waveform_mdl.setValue( sbidata[45] & 0x03 );
-
-		// Feedback/Connection
-		fm_mdl.setValue( (sbidata[46] & 0x01) == 0x01 ? false : true );
-		feedback_mdl.setValue( ( (sbidata[46] & 0x0e ) >> 1 ) );
+		applyPatchControls(nullptr, -1, {}); m_importedPatchName.clear(); error.clear(); return true;
 	}
+	bool invalid = false; const auto absolute = PathUtil::toAbsolute(path, &invalid);
+	const QFileInfo info(absolute); QFile file(absolute);
+	if (invalid || !info.isFile() || !info.isReadable() || !file.open(QIODevice::ReadOnly))
+	{
+		error = tr("SBI patch path is not a readable file"); return false;
+	}
+	// Preserve native support for omitted reserved bytes and ignore trailing data.
+	const auto bytes = file.read(52);
+	if (file.error() != QFile::NoError || bytes.size() < 47 || !bytes.startsWith(QByteArray("SBI\x1a", 4)))
+	{
+		error = tr("SBI patch requires its complete signature, name and eleven OPL2 register bytes"); return false;
+	}
+	std::array<unsigned char, 14> registers{};
+	for (std::size_t index = 0; index < 11; ++index) { registers[index] = static_cast<unsigned char>(bytes[36 + static_cast<int>(index)]); }
+	auto name = bytes.mid(4, 32); const auto terminator = name.indexOf('\0');
+	if (terminator >= 0) { name.truncate(terminator); }
+	const auto label = QString::fromLatin1(name).trimmed();
+	applyPatchControls(registers.data(), -1, path); m_importedPatchName = label;
+	error.clear(); return true;
 }
 
+void OpulenzInstrument::loadFile(const QString& file)
+{
+	QString error;
+	if (!setFileResource("patch", file, error)) { collectErrorForUI(error); return; }
+	if (!m_importedPatchName.isEmpty() && instrumentTrack()->displayName() == storedname)
+	{
+		instrumentTrack()->setName(m_importedPatchName); storedname = m_importedPatchName;
+	}
+}
 
 
 namespace gui

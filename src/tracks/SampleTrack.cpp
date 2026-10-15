@@ -49,7 +49,7 @@ SampleTrack::SampleTrack(TrackContainer* tc) :
 	m_volumeModel(DefaultVolume, MinVolume, MaxVolume, 0.1f, this, tr("Volume")),
 	m_panningModel(DefaultPanning, PanningLeft, PanningRight, 0.1f, this, tr("Panning")),
 	m_mixerChannelModel(0, 0, 0, this, tr("Mixer channel")),
-	m_audioBusHandle(tr("Sample track"), true, &m_volumeModel, &m_panningModel, &m_mutedModel),
+	m_audioBusHandle(tr("Sample track"), true, &m_volumeModel, &m_panningModel, &m_mutedModel, this),
 	m_isPlaying(false)
 {
 	setName(tr("Sample track"));
@@ -57,6 +57,7 @@ SampleTrack::SampleTrack(TrackContainer* tc) :
 	m_mixerChannelModel.setRange(0, Engine::mixer()->numChannels()-1, 1);
 
 	connect(&m_mixerChannelModel, SIGNAL(dataChanged()), this, SLOT(updateMixerChannel()));
+	connect(&m_mixerChannelModel, SIGNAL(propertiesChanged()), this, SLOT(updateMixerChannel()));
 }
 
 
@@ -65,6 +66,12 @@ SampleTrack::SampleTrack(TrackContainer* tc) :
 SampleTrack::~SampleTrack()
 {
 	Engine::audioEngine()->removePlayHandlesOfTypes( this, PlayHandle::Type::SamplePlayHandle );
+}
+
+void SampleTrack::setName(const QString& name)
+{
+	Track::setName(name);
+	m_audioBusHandle.setName(name);
 }
 
 
@@ -76,30 +83,31 @@ bool SampleTrack::play( const TimePos & _start, const f_cnt_t _frames,
 	bool played_a_note = false; // will be return variable
 
 
-	clipVector clips;
+	std::vector<std::pair<SampleClip*, Sample>> clips;
 	class PatternTrack * pattern_track = nullptr;
 	if( _clip_num >= 0 )
 	{
+		if (_clip_num >= numOfClips()) { return false; }
 		auto sClip = dynamic_cast<SampleClip*>(getClip(_clip_num));
-
-		if (_start > sClip->length())
+		if (_start >= sClip->length())
 		{
+			sClip->setIsPlaying(false);
 			setPlaying(false);
+			return false;
 		}
 		if (sClip->isPlaying())
 		{
 			return false;
 		}
-		clips.push_back(sClip);
+		auto playback = sClip->playbackSample(_start);
+		if (!playback && !sClip->isRecord()) { return false; }
+		clips.emplace_back(sClip, playback ? *playback : Sample());
 		if (trackContainer() == Engine::patternStore())
 		{
-			auto bufferFramesPerTick = Engine::framesPerTick(sClip->sample().sampleRate());
-			f_cnt_t sampleStart = bufferFramesPerTick * _start;
 			pattern_track = PatternTrack::findPatternTrack(_clip_num);
-			sClip->setSampleStartFrame(sampleStart);
-			sClip->setIsPlaying(true);
-			setPlaying(true);
 		}
+		sClip->setIsPlaying(true);
+		setPlaying(true);
 	}
 	else
 	{
@@ -113,19 +121,10 @@ bool SampleTrack::play( const TimePos & _start, const f_cnt_t _frames,
 			{
 				if( sClip->isPlaying() == false && _start >= (sClip->startPosition() + sClip->startTimeOffset()) )
 				{
-					auto bufferFramesPerTick = Engine::framesPerTick(sClip->sample().sampleRate());
-					f_cnt_t sampleStart = bufferFramesPerTick * ( _start - sClip->startPosition() - sClip->startTimeOffset() );
-					f_cnt_t clipFrameLength = bufferFramesPerTick * ( sClip->endPosition() - sClip->startPosition() - sClip->startTimeOffset() );
-					f_cnt_t sampleBufferLength = sClip->sample().sampleSize();
-					//if the Clip smaller than the sample length we play only until Clip end
-					//else we play the sample to the end but nothing more
-					f_cnt_t samplePlayLength = clipFrameLength > sampleBufferLength ? sampleBufferLength : clipFrameLength;
-					//we only play within the sampleBuffer limits
-					if( sampleStart < sampleBufferLength )
+					auto playback = sClip->playbackSample(_start - sClip->startPosition());
+					if (playback || sClip->isRecord())
 					{
-						sClip->setSampleStartFrame( sampleStart );
-						sClip->setSamplePlayLength( samplePlayLength );
-						clips.push_back( sClip );
+						clips.emplace_back(sClip, playback ? *playback : Sample());
 						sClip->setIsPlaying( true );
 						nowPlaying = true;
 					}
@@ -140,9 +139,8 @@ bool SampleTrack::play( const TimePos & _start, const f_cnt_t _frames,
 		setPlaying(nowPlaying);
 	}
 
-	for (const auto& clip : clips)
+	for (const auto& [st, playback] : clips)
 	{
-		auto st = dynamic_cast<SampleClip*>(clip);
 		if( !st->isMuted() )
 		{
 			PlayHandle* handle;
@@ -157,7 +155,7 @@ bool SampleTrack::play( const TimePos & _start, const f_cnt_t _frames,
 			}
 			else
 			{
-				auto smpHandle = new SamplePlayHandle(st);
+				auto smpHandle = new SamplePlayHandle(st, playback);
 				smpHandle->setPatternTrack(pattern_track);
 				handle = smpHandle;
 			}

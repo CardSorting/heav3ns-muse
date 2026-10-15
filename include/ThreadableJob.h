@@ -74,8 +74,12 @@ public:
 		auto expected = ProcessingState::Queued;
 		if (m_state.compare_exchange_strong(expected, ProcessingState::InProgress))
 		{
+			struct Completion
+			{
+				ThreadableJob& job;
+				~Completion() { job.done(); }
+			} completion{*this};
 			doProcessing();
-			m_state = ProcessingState::Done;
 		}
 	}
 

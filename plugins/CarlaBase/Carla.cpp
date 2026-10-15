@@ -25,6 +25,8 @@
 #include "Carla.h"
 
 #include "AudioEngine.h"
+#include "AutomationClip.h"
+#include "DataFile.h"
 #include "Engine.h"
 #include "GuiApplication.h"
 #include "InstrumentPlayHandle.h"
@@ -45,6 +47,8 @@
 #include <QMdiArea>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScopeGuard>
+#include <QScopedValueRollback>
 #include <QSizePolicy>
 #include <QSpacerItem>
 #include <QSplitter>
@@ -52,9 +56,16 @@
 #include <QStringList>
 #include <QStringListModel>
 #include <QTimerEvent>
+#include <QThread>
 #include <QVBoxLayout>
 
 #include <cstring>
+#include <array>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <memory>
+#include <stdexcept>
 
 #include "embed.h"
 
@@ -67,8 +78,6 @@ static const double ticksPerBeat = 48.0;
 /*
  * Current TODO items:
  *  - get plugin instance name (to use in external window title)
- *  - offline mode change callback
- *  - midi output
  *
  * All other items are to be done in Carla itself.
  */
@@ -97,9 +106,36 @@ static const NativeTimeInfo* host_get_time_info(NativeHostHandle handle)
     return handlePtr->handleGetTimeInfo();
 }
 
-static bool host_write_midi_event(NativeHostHandle, const NativeMidiEvent*)
+namespace
 {
-    return false; // unsupported?
+struct MidiOutputBlock
+{
+    CarlaInstrument* instrument;
+    uint32_t frames, count = 0;
+    bool enabled, failed = false;
+    std::array<NativeMidiEvent, CarlaInstrument::kMaxMidiEvents> events{};
+};
+thread_local MidiOutputBlock* currentMidiOutput = nullptr;
+}
+
+static bool host_write_midi_event(NativeHostHandle handle, const NativeMidiEvent* event) noexcept
+{
+    auto* block = currentMidiOutput;
+    if (!block || block->instrument != handle) { return false; }
+    if (!event) { block->failed |= block->enabled; return false; }
+    try
+    {
+        if (event->port != 0 || event->time >= block->frames
+            || !readFromByteSeq(event->data, event->size))
+        {
+            block->failed |= block->enabled; return false;
+        }
+        if (!block->enabled) { return true; } // Unselected/offline output has no external destination.
+        if (block->failed || block->count == block->events.size()) { block->failed = true; return false; }
+        block->events[block->count++] = *event;
+        return true; // Accepted by the host buffer, not acknowledgment from a device.
+    }
+    catch (...) { block->failed |= block->enabled; return false; }
 }
 
 static void host_ui_parameter_changed(NativeHostHandle handle, uint32_t index, float value)
@@ -128,6 +164,8 @@ static intptr_t host_dispatcher(NativeHostHandle handle, NativeHostDispatcherOpc
 
 static const char* host_ui_open_file(NativeHostHandle, bool isDir, const char* title, const char* filter)
 {
+    auto* app = qobject_cast<QApplication*>(QCoreApplication::instance());
+    if (!getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
     static QByteArray retStr;
     const QFileDialog::Options options(isDir ? QFileDialog::ShowDirsOnly : 0x0);
 
@@ -138,6 +176,8 @@ static const char* host_ui_open_file(NativeHostHandle, bool isDir, const char* t
 
 static const char* host_ui_save_file(NativeHostHandle, bool isDir, const char* title, const char* filter)
 {
+    auto* app = qobject_cast<QApplication*>(QCoreApplication::instance());
+    if (!getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
     static QByteArray retStr;
     const QFileDialog::Options options(isDir ? QFileDialog::ShowDirsOnly : 0x0);
 
@@ -149,14 +189,20 @@ static const char* host_ui_save_file(NativeHostHandle, bool isDir, const char* t
 // -----------------------------------------------------------------------
 
 
-CarlaInstrument::CarlaInstrument(InstrumentTrack* const instrumentTrack, const Descriptor* const descriptor, const bool isPatchbay)
+CarlaInstrument::CarlaInstrument(InstrumentTrack* const instrumentTrack, const Descriptor* const descriptor, const bool isPatchbay,
+    const CarlaPluginHost::Resolver& hostResolver)
     : Instrument(instrumentTrack, descriptor, nullptr, Flag::IsSingleStreamed | Flag::IsMidiBased | Flag::IsNotBendable),
       kIsPatchbay(isPatchbay),
       fHandle(nullptr),
       fDescriptor(isPatchbay ? carla_get_native_patchbay_plugin() : carla_get_native_rack_plugin()),
       fMidiEventCount(0),
-      m_paramModels()
+      m_paramModels(),
+      m_hostResolver(hostResolver)
 {
+    if (!fDescriptor || !fDescriptor->instantiate || !fDescriptor->process || !fDescriptor->cleanup)
+    {
+        throw std::runtime_error("Carla native engine is unavailable or incomplete");
+    }
     fHost.handle      = this;
     fHost.uiName      = nullptr;
     fHost.uiParentId  = 0;
@@ -172,6 +218,21 @@ CarlaInstrument::CarlaInstrument(InstrumentTrack* const instrumentTrack, const D
     QString resourcesPath = path.absolutePath() + "/resources";
 #endif
     fHost.resourceDir            = strdup(resourcesPath.toUtf8().constData());
+    bool activated = false;
+    auto failedConstruction = qScopeGuard([&]
+    {
+        if (m_pluginHost) { m_pluginHost->prepareForEngineCleanup(); }
+        const auto handle = fHandle;
+        fHandle = nullptr;
+        if (handle)
+        {
+            if (activated && fDescriptor->deactivate) { fDescriptor->deactivate(handle); }
+            fDescriptor->cleanup(handle);
+        }
+        m_pluginHost.reset();
+        std::free(const_cast<char*>(fHost.resourceDir));
+        fHost.resourceDir = nullptr;
+    });
     fHost.get_buffer_size        = host_get_buffer_size;
     fHost.get_sample_rate        = host_get_sample_rate;
     fHost.is_offline             = host_is_offline;
@@ -188,39 +249,50 @@ CarlaInstrument::CarlaInstrument(InstrumentTrack* const instrumentTrack, const D
     fTimeInfo.bbt.valid = true; // always valid
 
     fHandle = fDescriptor->instantiate(&fHost);
-    Q_ASSERT(fHandle != nullptr);
+    if (!fHandle)
+    {
+        throw std::runtime_error("Carla native engine could not create an instrument");
+    }
+
+    m_lastOffline = handleIsOffline();
+
+    // Carla's base callback slot is not synchronized with its runner threads.
+    // Install graph observation before activation or loading hosted plugins.
+    if (kIsPatchbay) { pluginHost(); }
 
     if (fHandle != nullptr && fDescriptor->activate != nullptr)
+    {
         fDescriptor->activate(fHandle);
-
-    // we need a play-handle which cares for calling play()
-	auto iph = new InstrumentPlayHandle(this, instrumentTrack);
-	Engine::audioEngine()->addPlayHandle( iph );
+        activated = true;
+    }
 
 #if CARLA_VERSION_HEX >= CARLA_MIN_PARAM_VERSION
-    // text filter completion
+    // The parameter name model is usable without any graphical presentation.
     m_completerModel = new QStringListModel(this);
-    m_paramsCompleter = new QCompleter(m_completerModel, this);
-    m_paramsCompleter->setCaseSensitivity(Qt::CaseInsensitive);
-    m_paramsCompleter->setCompletionMode(QCompleter::PopupCompletion);
-
-    // Add static amount of CarlaParamFloatModel's.
-    const auto paramCount = fDescriptor->get_parameter_count(fHandle);
-    m_paramModels.reserve(paramCount);
-    for (auto i = std::size_t{0}; i < paramCount; ++i)
-    {
-        m_paramModels.push_back(new CarlaParamFloatModel(this));
-        connect(m_paramModels[i], &CarlaParamFloatModel::dataChanged,
-            this, [this, i]() {paramModelChanged(i);}, Qt::DirectConnection);
-    }
+    refreshParams();
 #endif
 
+    // Register processing only after the instrument's native models are ready.
+    auto iph = new InstrumentPlayHandle(this, instrumentTrack);
+    Engine::audioEngine()->addPlayHandle(iph);
+
     connect(Engine::audioEngine(), SIGNAL(sampleRateChanged()), this, SLOT(sampleRateChanged()));
+    failedConstruction.dismiss();
 }
 
 CarlaInstrument::~CarlaInstrument()
 {
     Engine::audioEngine()->removePlayHandlesOfTypes(instrumentTrack(), PlayHandle::Type::NotePlayHandle | PlayHandle::Type::InstrumentPlayHandle);
+    if (m_pluginHost) { m_pluginHost->prepareForEngineCleanup(); }
+
+    const auto handle = fHandle;
+    fHandle = nullptr;
+    if (handle)
+    {
+        if (fDescriptor->deactivate) { fDescriptor->deactivate(handle); }
+        fDescriptor->cleanup(handle);
+    }
+    m_pluginHost.reset(); // Keep callback storage/library alive through native cleanup.
 
     if (fHost.resourceDir != nullptr)
     {
@@ -233,17 +305,6 @@ CarlaInstrument::~CarlaInstrument()
         std::free((char*)fHost.uiName);
         fHost.uiName = nullptr;
     }
-
-    if (fHandle == nullptr)
-        return;
-
-    if (fDescriptor->deactivate != nullptr)
-        fDescriptor->deactivate(fHandle);
-
-    if (fDescriptor->cleanup != nullptr)
-        fDescriptor->cleanup(fHandle);
-
-    fHandle = nullptr;
 
 #if CARLA_VERSION_HEX >= CARLA_MIN_PARAM_VERSION
     clearParamModels();
@@ -264,7 +325,7 @@ double CarlaInstrument::handleGetSampleRate() const
 
 bool CarlaInstrument::handleIsOffline() const
 {
-    return false; // TODO
+    return Engine::getSong() && Engine::getSong()->isExporting();
 }
 
 const NativeTimeInfo* CarlaInstrument::handleGetTimeInfo() const
@@ -272,8 +333,15 @@ const NativeTimeInfo* CarlaInstrument::handleGetTimeInfo() const
     return &fTimeInfo;
 }
 
-void CarlaInstrument::handleUiParameterChanged(const uint32_t index, const float value) const
+void CarlaInstrument::handleUiParameterChanged(const uint32_t index, const float value)
 {
+    if (QThread::currentThread() != thread())
+    {
+        QMetaObject::invokeMethod(this, [this, index, value] { handleUiParameterChanged(index, value); },
+            Qt::QueuedConnection);
+        return;
+    }
+    QScopedValueRollback<bool> updating(m_updatingParams, true);
 	if (m_paramModels.size() > index)
 	{
 		m_paramModels[index]->setValue(value);
@@ -309,7 +377,13 @@ intptr_t CarlaInstrument::handleDispatcher(const NativeHostDispatcherOpcode opco
         handleUiClosed();
         break;
     case NATIVE_HOST_OPCODE_HOST_IDLE:
-        qApp->processEvents();
+        // A plugin callback must not pump arbitrary studio commands while an
+        // instrument is being constructed, restored, or destroyed.
+        if (getGUI() && QCoreApplication::instance()
+            && QThread::currentThread() == QCoreApplication::instance()->thread())
+        {
+            QCoreApplication::processEvents();
+        }
         break;
 #if CARLA_VERSION_HEX >= CARLA_MIN_PARAM_VERSION
     case NATIVE_HOST_OPCODE_UI_TOUCH_PARAMETER:
@@ -324,6 +398,8 @@ intptr_t CarlaInstrument::handleDispatcher(const NativeHostDispatcherOpcode opco
         refreshParams();
         break;
     case NATIVE_HOST_OPCODE_UPDATE_PARAMETER:
+        if (index == -1) { refreshParams(); }
+        else if (index >= 0) { updateParamModel(static_cast<uint32_t>(index)); }
         break;
     case NATIVE_HOST_OPCODE_RELOAD_PARAMETERS:
         refreshParams();
@@ -348,37 +424,129 @@ QString CarlaInstrument::nodeName() const
     return  descriptor()->name;
 }
 
+static bool isCarlaState(const QDomElement& element)
+{
+    return element.tagName().compare("CARLA-PROJECT", Qt::CaseInsensitive) == 0
+        || element.tagName().compare("CARLA-PRESET", Qt::CaseInsensitive) == 0;
+}
+
 void CarlaInstrument::saveSettings(QDomDocument& doc, QDomElement& parent)
 {
-    if (fHandle == nullptr || fDescriptor->get_state == nullptr)
-        return;
-
-    char* const state = fDescriptor->get_state(fHandle);
-
-    if (state == nullptr)
-        return;
-
-    QDomDocument carlaDoc("carla");
-
-    if (carlaDoc.setContent(QString(state)))
+    try
     {
-        QDomNode n = doc.importNode(carlaDoc.documentElement(), true);
-        parent.appendChild(n);
-    }
-
-    std::free(state);
+        if (!m_stateError.isEmpty()) { throw std::runtime_error(m_stateError.toStdString()); }
+        if (!fHandle || !fDescriptor->get_state)
+        {
+            throw std::runtime_error("Native Carla state saving is unavailable");
+        }
+        const std::unique_ptr<char, decltype(&std::free)> state(fDescriptor->get_state(fHandle), std::free);
+        QDomDocument carlaDoc;
+        if (!state || !carlaDoc.setContent(QByteArray(state.get())) || !isCarlaState(carlaDoc.documentElement()))
+        {
+            throw std::runtime_error("Native Carla returned missing or invalid project state");
+        }
+        parent.appendChild(doc.importNode(carlaDoc.documentElement(), true));
 
 #if CARLA_VERSION_HEX >= CARLA_MIN_PARAM_VERSION
-    for (uint32_t index = 0; index < m_paramModels.size(); ++index)
-    {
-        QString idStr = CARLA_SETTING_PREFIX + QString::number(index);
-        m_paramModels[index]->saveSettings(doc, parent, idStr);
+        // Native changes may arrive while the Carla editor is closed. Snapshot
+        // their model values too, without overwriting controlled manual values.
+        refreshParams();
+        for (uint32_t index = 0; index < m_paramModels.size(); ++index)
+        {
+            QString idStr = CARLA_SETTING_PREFIX + QString::number(index);
+            m_paramModels[index]->saveSettings(doc, parent, idStr);
+        }
+#endif
     }
+    catch (const std::exception& error)
+    {
+        DataFile::recordSerializationError(doc, tr("Could not preserve Carla state: %1").arg(QString::fromUtf8(error.what())));
+    }
+    catch (...)
+    {
+        DataFile::recordSerializationError(doc, tr("Could not preserve Carla state: native plugin exception"));
+    }
+}
+
+void CarlaInstrument::refreshParameterModels()
+{
+#if CARLA_VERSION_HEX >= CARLA_MIN_PARAM_VERSION
+    refreshParams();
+#endif
+}
+
+PluginHost* CarlaInstrument::pluginHost()
+{
+    if (!m_pluginHost)
+    {
+        const auto library = m_hostResolver ? QString{} : QString::fromUtf8(carla_get_library_filename());
+        m_pluginHost = std::make_unique<CarlaPluginHost>(fDescriptor, fHandle, library, m_hostResolver,
+            [this](const CarlaPluginHost::LayoutChange& change, const std::function<void()>& edit)
+            { editHostedLayout(change, edit); }, kIsPatchbay);
+    }
+    return m_pluginHost.get();
+}
+
+void CarlaInstrument::editHostedLayout(const CarlaPluginHost::LayoutChange& change, const std::function<void()>& edit)
+{
+#if CARLA_VERSION_HEX >= CARLA_MIN_PARAM_VERSION
+	if (m_updatingParams) { throw std::runtime_error("Cannot edit the Carla layout during parameter restoration"); }
+	refreshParams();
+	for (std::size_t i = 0; i < m_paramModels.size(); ++i)
+	{
+		if (!m_paramModels[i]->isAutomatedOrControlled() && !AutomationClip::isConnected(m_paramModels[i])) { continue; }
+		if (!change.known)
+		{
+			throw std::runtime_error("Carla cannot establish the parameter layout needed to preserve existing automation");
+		}
+		if (i < change.oldToNew.size() && change.oldToNew[i] >= static_cast<int>(m_paramModels.size()))
+		{
+			throw std::runtime_error("This edit would move an automated Carla parameter outside the native automation window");
+		}
+	}
+	{
+		// Carla can synchronously announce reloads while its plugin order changes.
+		// Keep identities intact until the native edit has reported success.
+		QScopedValueRollback<bool> updating(m_updatingParams, true);
+		edit();
+		const auto count = fDescriptor->get_parameter_count ? fDescriptor->get_parameter_count(fHandle) : 0;
+		if (count > static_cast<uint32_t>(std::numeric_limits<int>::max())) { throw std::runtime_error("Carla returned an invalid automation window"); }
+		std::vector<CarlaParamFloatModel*> remapped(count, nullptr);
+		for (std::size_t i = 0; i < m_paramModels.size(); ++i)
+		{
+			const int target = change.known && i < change.oldToNew.size() ? change.oldToNew[i] : -1;
+			if (target >= 0 && static_cast<std::size_t>(target) < remapped.size())
+			{
+				if (remapped[target]) { throw std::runtime_error("Carla returned an ambiguous automation layout"); }
+				remapped[target] = m_paramModels[i];
+			}
+			else if (target >= 0 && (m_paramModels[i]->isAutomatedOrControlled() || AutomationClip::isConnected(m_paramModels[i])))
+			{
+				throw std::runtime_error("Carla changed its automation window during a structural edit");
+			}
+		}
+		for (auto* model : m_paramModels)
+		{
+			if (std::find(remapped.begin(), remapped.end(), model) == remapped.end()) { delete model; }
+		}
+		m_paramModels = std::move(remapped);
+	}
+	refreshParams();
+#else
+	Q_UNUSED(change)
+	edit();
 #endif
 }
 
 void CarlaInstrument::refreshParams(bool init)
 {
+	if (QThread::currentThread() != thread())
+	{
+		QMetaObject::invokeMethod(this, [this, init] { refreshParams(init); }, Qt::QueuedConnection);
+		return;
+	}
+	if (!fHandle || !m_completerModel || m_updatingParams) { return; }
+	QScopedValueRollback<bool> updating(m_updatingParams, true);
 	m_paramGroupCount = 0;
 	if (fDescriptor->get_parameter_count != nullptr &&
 		fDescriptor->get_parameter_info  != nullptr &&
@@ -389,13 +557,52 @@ void CarlaInstrument::refreshParams(bool init)
 		QList<QString> groups; // used to count no. groups.
 
 		uint32_t paramCount = fDescriptor->get_parameter_count(fHandle);
+		while (m_paramModels.size() > paramCount)
+		{
+			delete m_paramModels.back();
+			m_paramModels.pop_back();
+		}
+		m_paramModels.resize(paramCount, nullptr);
+		for (uint32_t index = 0; index < paramCount; ++index)
+		{
+			if (m_paramModels[index]) { continue; }
+			auto* model = new CarlaParamFloatModel(this);
+			m_paramModels[index] = model;
+			connect(model, &CarlaParamFloatModel::dataChanged,
+				this, [this, model]
+				{
+					const auto found = std::find(m_paramModels.begin(), m_paramModels.end(), model);
+					if (found != m_paramModels.end()) { paramModelChanged(static_cast<uint32_t>(found - m_paramModels.begin())); }
+				}, Qt::DirectConnection);
+		}
 		for (uint32_t i=0; i < paramCount; ++i)
 		{
 			const NativeParameter* paramInfo(fDescriptor->get_parameter_info(fHandle, i));
+			if (!paramInfo)
+			{
+				m_paramModels[i]->setEnabled(false);
+				m_paramModels[i]->setOutput(true);
+				continue;
+			}
 
 			m_paramModels[i]->setOutput((paramInfo->hints & NATIVE_PARAMETER_IS_OUTPUT));
 			m_paramModels[i]->setEnabled((paramInfo->hints & NATIVE_PARAMETER_IS_ENABLED));
-			m_paramModels[i]->setValue(fDescriptor->get_parameter_value(fHandle, i));
+			m_paramModels[i]->setNativeHints(paramInfo->hints);
+			QMap<int, QString> labels;
+			if ((paramInfo->hints & NATIVE_PARAMETER_USES_SCALEPOINTS) && paramInfo->scalePoints)
+			{
+				for (uint32_t point = 0; point < paramInfo->scalePointCount; ++point)
+				{
+					const auto& choice = paramInfo->scalePoints[point];
+					const double value = choice.value;
+					if (choice.label && std::isfinite(value) && std::floor(value) == value
+						&& value >= std::numeric_limits<int>::min() && value <= std::numeric_limits<int>::max())
+					{
+						labels.insert(static_cast<int>(value), QString::fromUtf8(choice.label));
+					}
+				}
+			}
+			m_paramModels[i]->setValueLabels(labels);
 
 			// Get parameter name
 			QString name = "_NO_NAME_";
@@ -415,19 +622,38 @@ void CarlaInstrument::refreshParams(bool init)
 				}
 				m_paramModels[i]->setGroupId(groups.indexOf(paramInfo->groupName));
 			}
+			else
+			{
+				m_paramModels[i]->setGroupName({});
+				m_paramModels[i]->setGroupId(0);
+			}
 
 			completerData.push_back(name);
 
 			m_paramModels[i]->setDisplayName(name);
 			m_paramModels[i]->setRange(paramInfo->ranges.min,
 										paramInfo->ranges.max,
-										paramInfo->ranges.step);
+				m_paramModels[i]->valueType() == AutomatableModel::ValueType::Number ? paramInfo->ranges.step : 1.f);
+			const auto nativeValue = fDescriptor->get_parameter_value(fHandle, i);
+			if (init || m_paramModels[i]->isOutput() || !m_paramModels[i]->isAutomatedOrControlled())
+			{
+				m_paramModels[i]->setValue(nativeValue, true);
+			}
 
 			// Load settings into model.
 			if (init)
 			{
+				// Older Carla states have no LMMS knob settings. Their default
+				// must come from the restored native state rather than zero.
+				m_paramModels[i]->setInitValue(nativeValue);
 				QString idStr = CARLA_SETTING_PREFIX + QString::number(i);
 				m_paramModels[i]->loadSettings(m_settingsElem, idStr);
+				if (!m_paramModels[i]->isWritable()) { m_paramModels[i]->setValue(nativeValue, true); }
+				if (m_paramModels[i]->enabled() && !m_paramModels[i]->isOutput()
+					&& m_paramModels[i]->value() != nativeValue)
+				{
+					fDescriptor->set_parameter_value(fHandle, i, m_paramModels[i]->value());
+				}
 			}
 		}
 		// Set completer data
@@ -452,7 +678,8 @@ void CarlaInstrument::clearParamModels()
 
 void CarlaInstrument::paramModelChanged(uint32_t index)
 { // Update Carla param (LMMS -> Carla)
-	if (!m_paramModels[index]->isOutput())
+	if (m_updatingParams || !fHandle || index >= m_paramModels.size()) { return; }
+	if (m_paramModels[index]->enabled() && !m_paramModels[index]->isOutput())
 	{
 		if (fDescriptor->set_parameter_value != nullptr)
 		{
@@ -461,7 +688,7 @@ void CarlaInstrument::paramModelChanged(uint32_t index)
 		}
 
 		// TODO? Shouldn't Carla be doing this?
-		if (fDescriptor->ui_set_parameter_value != nullptr)
+		if (getGUI() && fDescriptor->ui_set_parameter_value != nullptr)
 		{
 			fDescriptor->ui_set_parameter_value(fHandle, index, m_paramModels[index]->value());
 		}
@@ -470,7 +697,13 @@ void CarlaInstrument::paramModelChanged(uint32_t index)
 
 void CarlaInstrument::updateParamModel(uint32_t index)
 { // Called on param changed (Carla -> LMMS)
-	if (fDescriptor->get_parameter_value != nullptr)
+	if (QThread::currentThread() != thread())
+	{
+		QMetaObject::invokeMethod(this, [this, index] { updateParamModel(index); }, Qt::QueuedConnection);
+		return;
+	}
+	QScopedValueRollback<bool> updating(m_updatingParams, true);
+	if (fHandle && index < m_paramModels.size() && fDescriptor->get_parameter_value != nullptr)
 	{
 		m_paramModels[index]->setValue(
 			fDescriptor->get_parameter_value(fHandle, index)
@@ -481,18 +714,57 @@ void CarlaInstrument::updateParamModel(uint32_t index)
 void CarlaInstrument::loadSettings(const QDomElement& elem)
 {
     if (fHandle == nullptr || fDescriptor->set_state == nullptr)
+    {
+        collectErrorForUI(tr("Native Carla state restoration is unavailable"));
         return;
+    }
 
-    QDomDocument carlaDoc("carla");
-    carlaDoc.appendChild(carlaDoc.importNode(elem.firstChildElement(), true ));
+    QDomElement state;
+    for (auto child = elem.firstChildElement(); !child.isNull(); child = child.nextSiblingElement())
+    {
+        if (!isCarlaState(child)) { continue; }
+        if (!state.isNull())
+        {
+            collectErrorForUI(tr("Carla settings contain more than one native project state"));
+            return;
+        }
+        state = child;
+    }
+    if (state.isNull())
+    {
+        collectErrorForUI(tr("Carla settings have no native project or preset state"));
+        return;
+    }
 
-    fDescriptor->set_state(fHandle, carlaDoc.toString(0).toUtf8().constData());
+    QDomDocument carlaDoc;
+    carlaDoc.appendChild(carlaDoc.importNode(state, true));
+
+    try
+    {
+        // set_state may synchronously announce parameter changes. Restore the
+        // native state completely before exposing the resulting model values.
+        {
+            QScopedValueRollback<bool> updating(m_updatingParams, true);
+            fDescriptor->set_state(fHandle, carlaDoc.toString(0).toUtf8().constData());
+        }
 
 #if CARLA_VERSION_HEX >= CARLA_MIN_PARAM_VERSION
-    // Store to load parameter knobs settings when added.
-    m_settingsElem = const_cast<QDomElement&>(elem);
-    refreshParams(true);
+        // Store to load parameter knobs settings when added.
+        m_settingsElem = elem;
+        refreshParams(true);
 #endif
+        m_stateError.clear();
+    }
+    catch (const std::exception& error)
+    {
+        m_stateError = tr("Native Carla state restoration failed: %1").arg(QString::fromUtf8(error.what()));
+        collectErrorForUI(m_stateError);
+    }
+    catch (...)
+    {
+        m_stateError = tr("Native Carla state restoration failed with a plugin exception");
+        collectErrorForUI(m_stateError);
+    }
 }
 
 void CarlaInstrument::play(SampleFrame* workingBuffer)
@@ -532,8 +804,23 @@ void CarlaInstrument::play(SampleFrame* workingBuffer)
     std::memset(buf1, 0, sizeof(float)*bufsize);
     std::memset(buf2, 0, sizeof(float)*bufsize);
 
+    auto* outputPort = instrumentTrack()->midiPort();
+    MidiOutputBlock midiOutput{this, bufsize, 0,
+        supportsMidiOutput() && !handleIsOffline() && outputPort->acceptsOutput(MidiPort::OutputSource::Instrument)};
+    try
     {
         const QMutexLocker ml(&fMutex);
+        const auto clearInput = qScopeGuard([this] { fMidiEventCount = 0; });
+        const bool offline = handleIsOffline();
+        if (offline != m_lastOffline)
+        {
+            m_lastOffline = offline;
+            if (fDescriptor->dispatcher)
+            {
+                fDescriptor->dispatcher(fHandle, NATIVE_PLUGIN_OPCODE_OFFLINE_CHANGED, 0, offline, nullptr, 0.0f);
+            }
+        }
+        const QScopedValueRollback capture(currentMidiOutput, &midiOutput);
 // TODO FIXME this is just here so it compiles.
 // https://github.com/falkTX/Carla/blob/8bceb9ed173a10b29038f8abb4383710c0e497c1/source/includes/CarlaNative.h
 //     FIXME for v3.0, use const for the input buffer
@@ -542,7 +829,40 @@ void CarlaInstrument::play(SampleFrame* workingBuffer)
 #else
         fDescriptor->process(fHandle, rBuf, rBuf, bufsize, fMidiEvents, fMidiEventCount);
 #endif
-        fMidiEventCount = 0;
+    }
+    catch (...)
+    {
+        if (midiOutput.enabled) { try { outputPort->releaseOutput(); } catch (...) {} }
+        throw;
+    }
+    if (midiOutput.failed)
+    {
+        outputPort->releaseOutput();
+        throw std::runtime_error("Carla MIDI output was invalid or exceeded the 512-event block limit");
+    }
+    // Stable in-place insertion sort avoids allocating on the audio thread.
+    for (uint32_t i = 1; i < midiOutput.count; ++i)
+    {
+        const auto event = midiOutput.events[i]; auto destination = i;
+        while (destination > 0 && midiOutput.events[destination - 1].time > event.time)
+        {
+            midiOutput.events[destination] = midiOutput.events[destination - 1]; --destination;
+        }
+        midiOutput.events[destination] = event;
+    }
+    try
+    {
+        for (uint32_t i = 0; i < midiOutput.count; ++i)
+        {
+            const auto& event = midiOutput.events[i];
+            const auto decoded = readFromByteSeq(event.data, event.size);
+            outputPort->processOutEvent(*decoded, TimePos::fromFrames(event.time, Engine::framesPerTick()), MidiPort::OutputSource::Instrument);
+        }
+    }
+    catch (...)
+    {
+        try { outputPort->releaseOutput(); } catch (...) {}
+        throw;
     }
 
     for (uint i=0; i < bufsize; ++i)
@@ -556,7 +876,7 @@ bool CarlaInstrument::handleMidiEvent(const MidiEvent& event, const TimePos&, f_
 {
     const QMutexLocker ml(&fMutex);
 
-    if (fMidiEventCount >= kMaxMidiEvents)
+    if (!fHandle || offset >= Engine::audioEngine()->framesPerPeriod() || fMidiEventCount >= kMaxMidiEvents)
         return false;
 
     NativeMidiEvent& nEvent(fMidiEvents[fMidiEventCount++]);
@@ -565,17 +885,17 @@ bool CarlaInstrument::handleMidiEvent(const MidiEvent& event, const TimePos&, f_
     nEvent.port    = 0;
     nEvent.time    = offset;
     std::size_t written = writeToByteSeq(event, nEvent.data, sizeof(NativeMidiEvent::data));
-    if(written) { nEvent.size = written; }
-    else { --fMidiEventCount; }
-
-    return true;
+    if (written) { nEvent.size = written; return true; }
+    --fMidiEventCount; return false;
 }
 
 gui::PluginView* CarlaInstrument::instantiateView(QWidget* parent)
 {
+    auto* app = qobject_cast<QApplication*>(QCoreApplication::instance());
+    if (!getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
 // Disable plugin focus per https://bugreports.qt.io/browse/QTBUG-30181
 #ifndef CARLA_OS_MAC
-    if (QWidget* const window = parent->window())
+    if (QWidget* const window = parent ? parent->window() : nullptr)
         // TODO: Remove cast; Only needed for Qt4
         fHost.uiParentId = (uintptr_t)window->winId();
     else
@@ -593,7 +913,10 @@ gui::PluginView* CarlaInstrument::instantiateView(QWidget* parent)
 
 void CarlaInstrument::sampleRateChanged()
 {
-    fDescriptor->dispatcher(fHandle, NATIVE_PLUGIN_OPCODE_SAMPLE_RATE_CHANGED, 0, 0, nullptr, handleGetSampleRate());
+    if (fHandle && fDescriptor->dispatcher)
+    {
+        fDescriptor->dispatcher(fHandle, NATIVE_PLUGIN_OPCODE_SAMPLE_RATE_CHANGED, 0, 0, nullptr, handleGetSampleRate());
+    }
 }
 
 // -------------------------------------------------------------------
@@ -756,7 +1079,10 @@ CarlaParamsView::CarlaParamsView(CarlaInstrumentView* const instrumentView, QWid
 	// Params filter line edit
 	m_paramsFilterLineEdit = new QLineEdit(this);
 	m_paramsFilterLineEdit->setPlaceholderText(tr("Search.."));
-	m_paramsFilterLineEdit->setCompleter(m_carlaInstrument->m_paramsCompleter);
+	auto* completer = new QCompleter(m_carlaInstrument->m_completerModel, m_paramsFilterLineEdit);
+	completer->setCaseSensitivity(Qt::CaseInsensitive);
+	completer->setCompletionMode(QCompleter::PopupCompletion);
+	m_paramsFilterLineEdit->setCompleter(completer);
 
 	// Clear filter line edit button
 	m_clearFilterButton = new QPushButton(tr(""), this);

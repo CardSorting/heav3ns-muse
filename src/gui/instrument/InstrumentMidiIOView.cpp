@@ -25,6 +25,11 @@
 #include <QToolButton>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
+#include <QComboBox>
+#include <QLabel>
+#include <QSignalBlocker>
+#include <QMessageBox>
+#include <exception>
 
 #include "InstrumentMidiIOView.h"
 #include "MidiPortMenu.h"
@@ -115,6 +120,33 @@ InstrumentMidiIOView::InstrumentMidiIOView( QWidget* parent ) :
 	m_fixedOutputNoteSpinBox->setEnabled( false );
 	midiOutputLayout->addWidget( m_fixedOutputNoteSpinBox );
 	midiOutputLayout->addStretch();
+	auto sourceLayout = new QHBoxLayout;
+	sourceLayout->addWidget(new QLabel(tr("MIDI output source"), this));
+	m_outputSourceComboBox = new QComboBox(this);
+	m_outputSourceComboBox->addItems({tr("Track MIDI"), tr("Instrument MIDI")});
+	m_outputSourceComboBox->setToolTip(tr("Instrument MIDI requires an instrument that generates MIDI output, such as Carla."));
+	sourceLayout->addWidget(m_outputSourceComboBox); layout->addLayout(sourceLayout);
+	connect(m_outputSourceComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index)
+	{
+		auto* port = castModel<MidiPort>(); if (!port) { return; }
+		QString failure;
+		try
+		{
+			const auto guard = Engine::audioEngine()->requestChangesGuard();
+			port->setOutputSource(index == 0 ? MidiPort::OutputSource::Track : MidiPort::OutputSource::Instrument);
+		}
+		catch (const std::exception& error)
+		{
+			failure = QString::fromUtf8(error.what());
+		}
+		catch (...) { failure = tr("Native MIDI output cleanup failed."); }
+		if (!failure.isEmpty())
+		{
+			const QSignalBlocker blocker(m_outputSourceComboBox);
+			m_outputSourceComboBox->setCurrentIndex(static_cast<int>(port->outputSource()));
+			QMessageBox::warning(this, tr("MIDI output source"), failure);
+		}
+	});
 
 	connect( m_midiOutputGroupBox->ledButton(), SIGNAL(toggled(bool)),
 		m_fixedOutputVelocitySpinBox, SLOT(setEnabled(bool)));
@@ -123,7 +155,6 @@ InstrumentMidiIOView::InstrumentMidiIOView( QWidget* parent ) :
 	connect( m_midiOutputGroupBox->ledButton(), SIGNAL(toggled(bool)),
 		m_fixedOutputNoteSpinBox, SLOT(setEnabled(bool)));
 
-	if( !Engine::audioEngine()->midiClient()->isRaw() )
 	{
 		m_rpBtn = new QToolButton;
 		m_rpBtn->setMinimumSize( 32, 32 );
@@ -165,6 +196,21 @@ InstrumentMidiIOView::InstrumentMidiIOView( QWidget* parent ) :
 void InstrumentMidiIOView::modelChanged()
 {
 	auto mp = castModel<MidiPort>();
+	const auto updateSource = [this, mp]
+	{
+		const QSignalBlocker blocker(m_outputSourceComboBox);
+		m_outputSourceComboBox->setCurrentIndex(static_cast<int>(mp->outputSource()));
+	};
+	updateSource();
+	const auto updatePorts = [this, mp] {
+		const bool named = mp->client() && !mp->client()->isRaw();
+		m_rpBtn->setVisible(named); m_wpBtn->setVisible(named);
+	};
+	updatePorts();
+	disconnect(m_portVisibilityConnection);
+	m_portVisibilityConnection = connect(mp, &MidiPort::modeChanged, this, updatePorts);
+	disconnect(m_outputSourceConnection);
+	m_outputSourceConnection = connect(mp, &MidiPort::outputSourceChanged, this, updateSource);
 
 	m_midiInputGroupBox->setModel( &mp->m_readableModel );
 	m_inputChannelSpinBox->setModel( &mp->m_inputChannelModel );

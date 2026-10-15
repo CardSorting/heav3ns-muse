@@ -230,6 +230,15 @@ auto AudioBuffer::sanitize(const ChannelFlags& channels, ch_cnt_t upperBound) ->
 	return changesMade;
 }
 
+bool AudioBuffer::hasNonfiniteAudio() const
+{
+	for (ch_cnt_t channel = 0; channel < totalChannels(); ++channel)
+	{
+		if (std::ranges::any_of(buffer(channel), [](auto value) { return !std::isfinite(value); })) { return true; }
+	}
+	return false;
+}
+
 auto AudioBuffer::sanitizeAll() -> bool
 {
 	bool changesMade = false;

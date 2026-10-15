@@ -30,8 +30,10 @@
 #ifdef LMMS_HAVE_PULSEAUDIO
 
 #include <pulse/pulseaudio.h>
+#include <QByteArray>
 #include <QSemaphore>
 #include <QThread>
+#include <mutex>
 
 #include "AudioDevice.h"
 #include "AudioDeviceSetupWidget.h"
@@ -40,6 +42,8 @@ class QLineEdit;
 
 namespace lmms
 {
+
+namespace detail { struct PulseAudioApi; }
 
 namespace gui
 {
@@ -52,6 +56,7 @@ class AudioPulseAudio : public QThread, public AudioDevice
 	Q_OBJECT
 public:
 	AudioPulseAudio( bool & _success_ful, AudioEngine* audioEngine );
+	~AudioPulseAudio() override;
 
 	inline static QString name()
 	{
@@ -76,21 +81,33 @@ public:
 	} ;
 
 
-	void streamWriteCallback( pa_stream * s, size_t length );
-
-	void signalConnected( bool connected );
-
-	pa_stream * m_s;
-	pa_sample_spec m_sampleSpec;
-	double m_latency;
-
 private:
+	friend class PulseAudioTestAccess;
+	AudioPulseAudio(bool& successful, AudioEngine* engine, const detail::PulseAudioApi& api, int startupTimeoutMs);
 	void startProcessingImpl() override;
 	void stopProcessingImpl() override;
 	void run() override;
+	void requestStop();
+	void fail(ProcessingFailure failure, int error) noexcept;
+	void connectionFailed(pa_context* context) noexcept;
+	void contextStateChanged(pa_context* context);
+	void streamStateChanged(pa_stream* stream);
+	void writeStream(pa_stream* stream, std::size_t length);
+	static void contextStateCallback(pa_context* context, void* userdata) noexcept;
+	static void streamStateCallback(pa_stream* stream, void* userdata) noexcept;
+	static void streamWriteCallback(pa_stream* stream, std::size_t length, void* userdata) noexcept;
 
-	bool m_connected;
-	QSemaphore m_connectedSemaphore;
+	const detail::PulseAudioApi& m_api;
+	const int m_startupTimeoutMs;
+	const QByteArray m_device;
+	const std::size_t m_periodBytes;
+	pa_sample_spec m_sampleSpec{};
+	pa_stream* m_stream = nullptr; // Worker thread only, including cleanup.
+	std::mutex m_mainLoopMutex;
+	pa_mainloop* m_mainLoop = nullptr; // Protected against concurrent wakeup/free.
+	std::atomic_bool m_stopRequested{true};
+	std::atomic_bool m_streamReady{false};
+	QSemaphore m_startupSemaphore;
 
 } ;
 

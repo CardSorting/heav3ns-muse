@@ -80,6 +80,12 @@ public:
 	{
 		return m_items.size();
 	}
+	QMap<int, QString> valueLabels() const override
+	{
+		QMap<int, QString> result;
+		for (int i = 0; i < size(); ++i) { result.insert(i, itemText(i)); }
+		return result;
+	}
 
 
 private:

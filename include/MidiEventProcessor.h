@@ -38,6 +38,9 @@ public:
 	MidiEventProcessor() = default;
 
 	virtual ~MidiEventProcessor() = default;
+	// Input loss requires note cleanup for voice processors. Parameter-only
+	// processors must not interpret synthetic all-sound-off as a captured CC.
+	virtual bool requiresNoteCleanup() const { return true; }
 
 	// to be implemented by inheriting classes
 	virtual void processInEvent( const MidiEvent& event, const TimePos& time = TimePos(), f_cnt_t offset = 0 ) = 0;

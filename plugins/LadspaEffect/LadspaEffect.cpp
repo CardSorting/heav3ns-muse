@@ -25,11 +25,14 @@
 
 
 #include <QVarLengthArray>
+#include <QDebug>
 #include <QMessageBox>
 
 #include "LadspaEffect.h"
 #include "DataFile.h"
 #include "AudioEngine.h"
+#include "Engine.h"
+#include "GuiApplication.h"
 #include "Ladspa2LMMS.h"
 #include "LadspaBase.h"
 #include "LadspaControl.h"
@@ -44,6 +47,15 @@
 
 namespace lmms
 {
+
+namespace
+{
+void reportLadspaError(const QString& message)
+{
+	if (gui::getGUI() != nullptr) { QMessageBox::warning(nullptr, "Effect", message); }
+	else { Engine::getSong()->collectError(message); qWarning().noquote() << message; }
+}
+} // namespace
 
 
 extern "C"
@@ -442,17 +454,13 @@ void LadspaEffect::pluginInstantiation()
 	m_descriptor = manager->getDescriptor( m_key );
 	if( m_descriptor == nullptr )
 	{
-		QMessageBox::warning( 0, "Effect",
-			"Can't get LADSPA descriptor function: " + m_key.second,
-			QMessageBox::Ok, QMessageBox::NoButton );
+		reportLadspaError("Can't get LADSPA descriptor function: " + m_key.second);
 		setOkay( false );
 		return;
 	}
 	if( m_descriptor->run == nullptr )
 	{
-		QMessageBox::warning( 0, "Effect",
-			"Plugin has no processor: " + m_key.second,
-			QMessageBox::Ok, QMessageBox::NoButton );
+		reportLadspaError("Plugin has no processor: " + m_key.second);
 		setDontRun( true );
 	}
 	for( ch_cnt_t proc = 0; proc < processorCount(); proc++ )
@@ -460,9 +468,7 @@ void LadspaEffect::pluginInstantiation()
 		LADSPA_Handle effect = manager->instantiate(m_key, Engine::audioEngine()->outputSampleRate());
 		if( effect == nullptr )
 		{
-			QMessageBox::warning( 0, "Effect",
-				"Can't get LADSPA instance: " + m_key.second,
-				QMessageBox::Ok, QMessageBox::NoButton );
+			reportLadspaError("Can't get LADSPA instance: " + m_key.second);
 			setOkay( false );
 			return;
 		}
@@ -480,9 +486,7 @@ void LadspaEffect::pluginInstantiation()
 						port,
 						pp->buffer ) )
 			{
-				QMessageBox::warning( 0, "Effect",
-				"Failed to connect port: " + m_key.second,
-				QMessageBox::Ok, QMessageBox::NoButton );
+				reportLadspaError("Failed to connect port: " + m_key.second);
 				setDontRun( true );
 				return;
 			}

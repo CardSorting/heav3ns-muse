@@ -30,6 +30,7 @@
 #include "AudioFileDevice.h"
 
 #include <sndfile.h>
+#include <vector>
 
 namespace lmms
 {
@@ -43,6 +44,7 @@ public:
 			const QString & file,
 			AudioEngine* audioEngine );
 	~AudioFileWave() override;
+	bool finalizeOutput() override;
 
 	static AudioFileDevice * getInst( const QString & outputFilename,
 					  OutputSettings const & outputSettings,
@@ -59,11 +61,13 @@ private:
 	void writeBuffer(const SampleFrame* _ab, const f_cnt_t _frames) override;
 
 	bool startEncoding();
-	void finishEncoding();
 
 private:
-	SF_INFO m_si;
+	SF_INFO m_si{};
 	SNDFILE * m_sf;
+	std::vector<float> m_floatBuffer;
+	std::vector<int_sample_t> m_integerBuffer;
+	friend class NativeAudioEncoderTestAccess;
 } ;
 
 

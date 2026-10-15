@@ -26,9 +26,19 @@
 
 #include "AutomationClip.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <QCoreApplication>
+#include <QThread>
+
 #include "AutomationNode.h"
 #include "AutomationClipView.h"
 #include "AutomationTrack.h"
+#include "AudioEngine.h"
+#include "Engine.h"
+#include "FileResourceIO.h"
 #include "KeyboardShortcuts.h"
 #include "LocaleHelper.h"
 #include "Note.h"
@@ -61,9 +71,12 @@ AutomationClip::AutomationClip( AutomationTrack * _auto_track ) :
 
 
 
-AutomationClip::AutomationClip( const AutomationClip & _clip_to_copy ) :
-	Clip(_clip_to_copy),
-	m_autoTrack( _clip_to_copy.m_autoTrack ),
+AutomationClip::AutomationClip(const AutomationClip& other) : AutomationClip(other, other.m_autoTrack) { }
+
+AutomationClip::AutomationClip(const AutomationClip& _clip_to_copy, AutomationTrack* destination) :
+	Clip(_clip_to_copy, destination),
+	m_autoTrack(destination),
+	m_idsToResolve(_clip_to_copy.m_idsToResolve),
 	m_objects( _clip_to_copy.m_objects ),
 	m_tension( _clip_to_copy.m_tension ),
 	m_progressionType(_clip_to_copy.m_progressionType),
@@ -82,6 +95,14 @@ AutomationClip::AutomationClip( const AutomationClip & _clip_to_copy ) :
 		m_timeMap[POS(it)] = it.value();
 		// Sets the node's clip to this one
 		m_timeMap[POS(it)].setClip(this);
+	}
+	for (const auto& object : m_objects)
+	{
+		if (object)
+		{
+			connect(object, SIGNAL(destroyed(lmms::jo_id_t)), this, SLOT(objectDestroyed(lmms::jo_id_t)),
+				static_cast<Qt::ConnectionType>(Qt::DirectConnection | Qt::UniqueConnection));
+		}
 	}
 }
 
@@ -106,11 +127,50 @@ bool AutomationClip::addObject( AutomatableModel * _obj, bool _search_dup )
 
 	connect( _obj, SIGNAL(destroyed(lmms::jo_id_t)),
 			this, SLOT(objectDestroyed(lmms::jo_id_t)),
-						Qt::DirectConnection );
+			static_cast<Qt::ConnectionType>(Qt::DirectConnection | Qt::UniqueConnection));
 
 	emit dataChanged();
 
 	return true;
+}
+
+bool AutomationClip::removeObject(AutomatableModel* object)
+{
+	if (!object) { return false; }
+	QMutexLocker lock(&m_clipMutex);
+	const auto size = m_objects.size();
+	m_objects.erase(std::remove(m_objects.begin(), m_objects.end(), object), m_objects.end());
+	const auto id = object->id();
+	m_idsToResolve.erase(std::remove_if(m_idsToResolve.begin(), m_idsToResolve.end(), [id](jo_id_t pending) {
+		return pending == id || ProjectJournal::idFromSave(pending) == id || ProjectJournal::idToSave(pending) == id;
+	}), m_idsToResolve.end());
+	if (size == m_objects.size()) { return false; }
+	disconnect(object, SIGNAL(destroyed(lmms::jo_id_t)), this, SLOT(objectDestroyed(lmms::jo_id_t)));
+	emit dataChanged();
+	return true;
+}
+
+void AutomationClip::clearObjects()
+{
+	QMutexLocker lock(&m_clipMutex);
+	for (const auto& object : m_objects)
+	{
+		if (object) { disconnect(object, SIGNAL(destroyed(lmms::jo_id_t)), this, SLOT(objectDestroyed(lmms::jo_id_t))); }
+	}
+	m_objects.clear();
+	m_idsToResolve.clear();
+	emit dataChanged();
+}
+
+void AutomationClip::bindInlineObject(AutomatableModel* model)
+{
+	QMutexLocker lock(&m_clipMutex);
+	for (const auto& object : m_objects)
+	{ if (object) { disconnect(object, SIGNAL(destroyed(lmms::jo_id_t)), this, SLOT(objectDestroyed(lmms::jo_id_t))); } }
+	m_objects.clear(); m_idsToResolve.clear(); m_objects.push_back(model);
+	connect(model, SIGNAL(destroyed(lmms::jo_id_t)), this, SLOT(objectDestroyed(lmms::jo_id_t)), Qt::DirectConnection);
+	// Rebinding must preserve an empty native curve instead of inserting a point.
+	emit dataChanged();
 }
 
 
@@ -140,9 +200,16 @@ void AutomationClip::setTension( QString _new_tension )
 	bool ok;
 	float nt = LocaleHelper::toFloat(_new_tension, & ok);
 
-	if( ok && nt > -0.01 && nt < 1.01 )
+	if (ok) { setTension(nt); }
+}
+
+void AutomationClip::setTension(float tension)
+{
+	QMutexLocker lock(&m_clipMutex);
+	if (std::isfinite(tension) && tension > -0.01f && tension < 1.01f && tension != m_tension)
 	{
-		m_tension = nt;
+		m_tension = tension;
+		emit dataChanged();
 	}
 }
 
@@ -204,7 +271,7 @@ void AutomationClip::updateLength()
 			changeLength(TimePos::ticksPerBar() * Engine::patternStore()->lengthOfPattern(m_autoTrack->getClipNum(this)));
 			return;
 		}
-		// Using 1 bar as the min length for an un-resized clip. 
+		// Using 1 bar as the min length for an un-resized clip.
 		// This does not prevent the user from resizing the clip to be less than a bar later on.
 		changeLength(std::max(TimePos::ticksPerBar(), static_cast<tick_t>(timeMapLength())));
 		setStartTimeOffset(TimePos(0));
@@ -404,11 +471,469 @@ void AutomationClip::resetTangents(const int tick0, const int tick1)
 
 
 
+bool AutomationClip::setNodeTangents(const TimePos& time, float inTangent, float outTangent, bool locked)
+{
+	if (!std::isfinite(inTangent) || !std::isfinite(outTangent)) { return false; }
+	QMutexLocker lock(&m_clipMutex);
+	auto node = m_timeMap.find(time);
+	if (node == m_timeMap.end()) { return false; }
+	node->setLockedTangents(locked);
+	if (locked)
+	{
+		node->setInTangent(inTangent);
+		node->setOutTangent(outTangent);
+	}
+	else { generateTangents(node, 1); }
+	emit dataChanged();
+	return true;
+}
+
+struct AutomationClip::RecordingSource
+{
+	struct Binding
+	{
+		QPointer<AutomatableModel> model;
+		AutomatableModel* identity;
+		float minimum, maximum, step;
+		AutomatableModel::ScaleType scale;
+		bool supportsAutomation;
+	};
+	timeMap points;
+	std::vector<Binding> bindings;
+	std::vector<jo_id_t> pendingIds;
+	QPointer<Track> owner;
+	TimePos position, size, offset;
+	ProgressionType progression;
+	float tension;
+	int meter;
+	bool automatic;
+};
+
+bool AutomationClip::recordingSourceMatches(const RecordingSource& source, bool contents) const
+{
+	if ((contents && m_timeMap != source.points) || m_idsToResolve != source.pendingIds
+		|| m_objects.size() != source.bindings.size() || getTrack() != source.owner.data()
+		|| startPosition() != source.position || length() != source.size || startTimeOffset() != source.offset
+		|| getAutoResize() != source.automatic || m_progressionType != source.progression || m_tension != source.tension
+		|| TimePos::ticksPerBar() != source.meter) { return false; }
+	for (std::size_t index = 0; index < source.bindings.size(); ++index)
+	{
+		const auto& binding = source.bindings[index]; const auto model = binding.model.data();
+		if (model != binding.identity || m_objects[index].data() != model) { return false; }
+		if (model && (model->minValue<float>() != binding.minimum || model->maxValue<float>() != binding.maximum
+			|| model->step<float>() != binding.step || model->scaleType() != binding.scale
+			|| model->supportsAutomation() != binding.supportsAutomation)) { return false; }
+	}
+	return !source.owner || std::find(source.owner->getClips().begin(), source.owner->getClips().end(), this) != source.owner->getClips().end();
+}
+
+std::shared_ptr<AutomationClip::RecordingSource> AutomationClip::captureSource() const
+{
+	auto source = std::make_shared<RecordingSource>();
+	// Caller holds the clip mutex. Native callers can retain mutable node
+	// references, so the baseline must own an independent tree.
+	source->points = m_timeMap; source->points.detach();
+	source->pendingIds = m_idsToResolve; source->owner = getTrack();
+	source->position = startPosition(); source->size = length(); source->offset = startTimeOffset();
+	source->automatic = getAutoResize(); source->progression = m_progressionType; source->tension = m_tension; source->meter = TimePos::ticksPerBar();
+	source->bindings.reserve(m_objects.size());
+	for (const auto& model : m_objects)
+	{
+		source->bindings.push_back({model, model.data(), model ? model->minValue<float>() : 0.f,
+			model ? model->maxValue<float>() : 0.f, model ? model->step<float>() : 0.f,
+			model ? model->scaleType() : AutomatableModel::ScaleType::Linear, model && model->supportsAutomation()});
+	}
+	return source;
+}
+
+bool AutomationClip::editCurve(const CurveEdit& input, bool& changed, QString& error)
+{
+	changed = false;
+	try
+	{
+		if (!QCoreApplication::instance() || QThread::currentThread() != QCoreApplication::instance()->thread()
+			|| thread() != QThread::currentThread() || !Engine::audioEngine() || !Engine::getSong() || Engine::getSong()->isLoadingProject())
+		{ throw std::invalid_argument("Native curve editing requires a ready project on the model owner thread"); }
+		const CurveEdit options = input;
+		const bool updateGeometry = options.point.has_value() || options.removePoint.has_value();
+		if (int(options.point.has_value()) + int(options.removePoint.has_value()) + int(options.clear) > 1)
+		{ throw std::invalid_argument("Choose one native curve point, removal or clear action"); }
+		const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events;
+		const QPointer<AutomationClip> receiver(this);
+		std::shared_ptr<RecordingSource> source;
+		{
+			QMutexLocker lock(&m_clipMutex);
+			if (m_isRecording || m_recordingTake || m_dragging) { throw std::invalid_argument("Complete native recording or curve dragging before editing its curve"); }
+			if (TimePos::ticksPerBar() <= 0) { throw std::invalid_argument("Native curve editing requires a positive meter"); }
+			if (options.progression && (*options.progression < ProgressionType::Discrete || *options.progression > ProgressionType::CubicHermite))
+			{ throw std::invalid_argument("Invalid native curve progression"); }
+			if (options.tension && (!std::isfinite(*options.tension) || *options.tension < 0 || *options.tension > 1))
+			{ throw std::invalid_argument("Invalid native curve tension"); }
+			if (options.point)
+			{
+				const auto& point = *options.point; const auto model = firstObject();
+				if (point.position < 0 || point.position > MaxSongLength || !std::isfinite(point.value) || !std::isfinite(point.outValue)
+					|| point.value < model->minValue<float>() || point.value > model->maxValue<float>()
+					|| point.outValue < model->minValue<float>() || point.outValue > model->maxValue<float>()
+					|| (point.inTangent && !std::isfinite(*point.inTangent)) || (point.outTangent && !std::isfinite(*point.outTangent))
+					|| (point.locked && !*point.locked && (point.inTangent || point.outTangent)))
+				{ throw std::invalid_argument("Invalid native curve point or tangents"); }
+			}
+			source = captureSource();
+		}
+		const auto validate = [&](bool contents) {
+			if (!receiver) { throw std::runtime_error("Native curve retired during edit preparation"); }
+			QMutexLocker lock(&receiver->m_clipMutex);
+			if (receiver->m_isRecording || receiver->m_recordingTake || receiver->m_dragging || !receiver->recordingSourceMatches(*source, contents))
+			{ throw std::runtime_error("Native curve changed during edit preparation"); }
+		};
+		const auto check = [&] { QString failure; if (!FileResourceIO::check(failure)) { throw std::runtime_error(failure.toStdString()); } validate(false); };
+		check();
+		const auto progression = options.progression.value_or(source->progression); const auto tension = options.tension.value_or(source->tension);
+		if (!updateGeometry && !options.clear && progression == source->progression && tension == source->tension) { validate(true); error.clear(); return true; }
+		std::size_t count = 0;
+		if (updateGeometry)
+		{
+			for (auto it = source->points.cbegin(); it != source->points.cend(); ++it)
+			{
+				if (count++ % 256 == 0) { check(); }
+				if (options.removePoint && it.key() == *options.removePoint) { continue; }
+				if (it.key() < 0 || it.key() > MaxSongLength) { throw std::invalid_argument("Native curve source points exceed the supported tick range"); }
+			}
+		}
+		auto prepared = std::make_unique<AutomationClip>(nullptr); validate(false); prepared->setAutoResize(false);
+		prepared->m_timeMap = source->points; prepared->m_progressionType = progression; prepared->m_tension = tension;
+		count = 0;
+		for (auto it = prepared->m_timeMap.begin(); it != prepared->m_timeMap.end(); ++it)
+		{ if (count++ % 256 == 0) { check(); } it.value().setClip(prepared.get()); }
+		if (options.point)
+		{
+			const auto& point = *options.point; prepared->putValues(point.position, point.value, point.outValue, false, true);
+			if (point.locked || point.inTangent || point.outTangent)
+			{
+				const auto node = prepared->m_timeMap.value(point.position);
+				if (!prepared->setNodeTangents(point.position, point.inTangent.value_or(node.getInTangent()),
+					point.outTangent.value_or(node.getOutTangent()), point.locked.value_or(true)))
+				{ throw std::runtime_error("Native curve tangent preparation failed"); }
+			}
+		}
+		else if (options.removePoint) { prepared->removeNode(*options.removePoint); }
+		else if (options.clear) { prepared->clear(); }
+		count = 0;
+		for (auto it = prepared->m_timeMap.begin(); it != prepared->m_timeMap.end(); ++it)
+		{
+			if (count++ % 256 == 0) { check(); }
+			const auto& node = it.value();
+			if (updateGeometry && (!std::isfinite(node.getInValue()) || !std::isfinite(node.getOutValue())
+				|| !std::isfinite(node.getInTangent()) || !std::isfinite(node.getOutTangent())))
+			{ throw std::invalid_argument("Native curve preparation produced nonfinite node data"); }
+			it.value().setClip(receiver.data());
+		}
+		check();
+		auto expected = *source; expected.points = prepared->m_timeMap; expected.progression = progression; expected.tension = tension;
+		if (updateGeometry)
+		{
+			expected.bindings.erase(std::remove_if(expected.bindings.begin(), expected.bindings.end(), [](const auto& binding) { return !binding.model; }), expected.bindings.end());
+			if (source->automatic)
+			{
+				if (source->meter <= 0) { throw std::invalid_argument("Native automatic curve sizing requires a positive meter"); }
+				if (source->owner && source->owner->trackContainer() == Engine::patternStore())
+				{
+					const auto ticks = static_cast<qint64>(Engine::patternStore()->lengthOfPattern(source->owner->getClipNum(receiver.data()))) * source->meter;
+					if (ticks < 0 || ticks > MaxSongLength) { throw std::invalid_argument("Native pattern curve length exceeds the song range"); }
+					expected.size = static_cast<int>(ticks);
+				}
+				else { expected.size = std::max(source->meter, prepared->timeMapLength().getTicks()); expected.offset = 0; }
+			}
+		}
+		if (expected.position < 0 || expected.size < 0 || expected.position > MaxSongLength - expected.size
+			|| expected.offset < -MaxSongLength || expected.offset > MaxSongLength)
+		{ throw std::invalid_argument("Native curve geometry exceeds the song range"); }
+		{
+			QMutexLocker lock(&receiver->m_clipMutex); validate(true);
+			receiver->m_timeMap.swap(prepared->m_timeMap); receiver->m_progressionType = progression; receiver->m_tension = tension;
+			if (updateGeometry) { receiver->cleanObjects(); }
+		}
+		// Point writes/removals refresh native sizing; clear/settings retain it.
+		if (updateGeometry) { receiver->updateLength(); }
+		const auto result = [&] {
+			if (!receiver) { throw std::runtime_error("Native curve retired during edit notification"); }
+			QMutexLocker lock(&receiver->m_clipMutex);
+			if (!receiver->recordingSourceMatches(expected, true) || receiver->m_recordingTake || receiver->m_isRecording || receiver->m_dragging)
+			{ throw std::runtime_error("Native curve result changed during edit notification"); }
+		};
+		result(); emit receiver->dataChanged(); result(); changed = true; error.clear(); return true;
+	}
+	catch (const std::exception& exception) { error = QString::fromUtf8(exception.what()); }
+	catch (...) { error = "Native curve edit failed with a nonstandard exception"; }
+	return false;
+}
+
+bool AutomationClip::editBinding(AutomatableModel* object, bool connected, bool& changed, QString& error)
+{
+	changed = false;
+	try
+	{
+		if (!QCoreApplication::instance() || QThread::currentThread() != QCoreApplication::instance()->thread()
+			|| thread() != QThread::currentThread() || !Engine::audioEngine() || !Engine::getSong() || Engine::getSong()->isLoadingProject())
+		{ throw std::invalid_argument("Native binding editing requires a ready project on the model owner thread"); }
+		const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events;
+		const QPointer<AutomationClip> receiver(this); const QPointer<AutomatableModel> target(object);
+		if (!target || target->thread() != QThread::currentThread()) { throw std::invalid_argument("Native automation target must be live on the model owner thread"); }
+		const RecordingSource::Binding dimension{target, target.data(), target->minValue<float>(), target->maxValue<float>(),
+			target->step<float>(), target->scaleType(), target->supportsAutomation()};
+		if (!receiver || !target) { throw std::runtime_error("Native binding owner or target retired during admission"); }
+		if (!std::isfinite(dimension.minimum) || !std::isfinite(dimension.maximum) || !std::isfinite(dimension.step)
+			|| dimension.minimum > dimension.maximum || (connected && !dimension.supportsAutomation))
+		{ throw std::invalid_argument("Native parameter does not support this automation binding"); }
+		std::shared_ptr<RecordingSource> source;
+		{
+			QMutexLocker lock(&m_clipMutex);
+			if (m_isRecording || m_recordingTake || m_dragging) { throw std::invalid_argument("Complete native recording or curve dragging before editing its bindings"); }
+			if (TimePos::ticksPerBar() <= 0) { throw std::invalid_argument("Native binding editing requires a positive meter"); }
+			source = captureSource();
+		}
+		const auto validateTarget = [&] {
+			if (!target || target->thread() != QThread::currentThread() || target->minValue<float>() != dimension.minimum
+				|| target->maxValue<float>() != dimension.maximum || target->step<float>() != dimension.step
+				|| target->scaleType() != dimension.scale || target->supportsAutomation() != dimension.supportsAutomation)
+			{ throw std::runtime_error("Native automation target changed during binding editing"); }
+			if (!target) { throw std::runtime_error("Native automation target retired during binding validation"); }
+		};
+		const auto validate = [&](bool contents) {
+			if (!receiver) { throw std::runtime_error("Native curve retired during binding preparation"); }
+			QMutexLocker lock(&receiver->m_clipMutex);
+			if (receiver->m_isRecording || receiver->m_recordingTake || receiver->m_dragging || !receiver->recordingSourceMatches(*source, contents))
+			{ throw std::runtime_error("Native curve changed during binding preparation"); }
+		};
+		const auto check = [&] { QString failure; if (!FileResourceIO::check(failure)) { throw std::runtime_error(failure.toStdString()); } validateTarget(); validate(false); };
+		check();
+		const bool bound = std::any_of(source->bindings.begin(), source->bindings.end(), [&](const auto& binding) { return binding.model == target; });
+		if (connected && bound) { validate(true); error.clear(); return true; }
+		auto expected = *source;
+		if (connected) { expected.bindings.push_back(dimension); }
+		else
+		{
+			expected.bindings.erase(std::remove_if(expected.bindings.begin(), expected.bindings.end(), [&](const auto& binding) { return binding.model == target; }), expected.bindings.end());
+			const auto id = target->id();
+			expected.pendingIds.erase(std::remove_if(expected.pendingIds.begin(), expected.pendingIds.end(), [id](jo_id_t pending) {
+				return pending == id || ProjectJournal::idFromSave(pending) == id || ProjectJournal::idToSave(pending) == id;
+			}), expected.pendingIds.end());
+		}
+		const bool membershipChanged = connected || bound;
+		if (!membershipChanged && expected.pendingIds == source->pendingIds) { validate(true); error.clear(); return true; }
+		const bool seed = connected && source->bindings.empty() && source->points.isEmpty();
+		std::unique_ptr<AutomationClip> prepared;
+		if (seed)
+		{
+			// Reading a controller-backed value can call native code. Hold neither
+			// the receiver mutex nor a raw target across that call's return.
+			const float value = target->value<float>(); validateTarget(); validate(true);
+			const float initial = target->inverseScaledValue(value);
+			if (!std::isfinite(initial)) { throw std::invalid_argument("Native initial automation value is nonfinite"); }
+			prepared = std::make_unique<AutomationClip>(nullptr); check(); prepared->setAutoResize(false);
+			prepared->putValue(0, initial, false, true); check();
+			expected.points = prepared->m_timeMap;
+			for (auto it = expected.points.begin(); it != expected.points.end(); ++it) { it.value().setClip(receiver.data()); }
+			prepared->m_timeMap = expected.points;
+			if (source->automatic)
+			{
+				if (source->owner && source->owner->trackContainer() == Engine::patternStore())
+				{
+					const auto ticks = static_cast<qint64>(Engine::patternStore()->lengthOfPattern(source->owner->getClipNum(receiver.data()))) * source->meter;
+					if (ticks < 0 || ticks > MaxSongLength) { throw std::invalid_argument("Native pattern binding length exceeds the song range"); }
+					expected.size = static_cast<int>(ticks);
+				}
+				else { expected.size = source->meter; expected.offset = 0; }
+			}
+		}
+		if (expected.position < 0 || expected.size < 0 || expected.position > MaxSongLength - expected.size
+			|| expected.offset < -MaxSongLength || expected.offset > MaxSongLength)
+		{ throw std::invalid_argument("Native binding geometry exceeds the song range"); }
+		objectVector objects; objects.reserve(expected.bindings.size());
+		std::size_t count = 0;
+		for (const auto& binding : expected.bindings) { if (count++ % 256 == 0) { check(); } objects.push_back(binding.model); }
+		auto pending = expected.pendingIds;
+		auto published = expected; published.size = source->size; published.offset = source->offset;
+		check();
+		{
+			QMutexLocker lock(&receiver->m_clipMutex); validate(true);
+			if (seed) { receiver->m_timeMap.swap(prepared->m_timeMap); }
+			receiver->m_objects.swap(objects); receiver->m_idsToResolve.swap(pending);
+		}
+		// Native signal wiring and sizing can call out. Data is already complete,
+		// and no curve mutex is held while those callbacks or final observers run.
+		if (connected)
+		{
+			connect(target.data(), SIGNAL(destroyed(lmms::jo_id_t)), receiver.data(), SLOT(objectDestroyed(lmms::jo_id_t)),
+				static_cast<Qt::ConnectionType>(Qt::DirectConnection | Qt::UniqueConnection));
+		}
+		else if (bound) { disconnect(target.data(), SIGNAL(destroyed(lmms::jo_id_t)), receiver.data(), SLOT(objectDestroyed(lmms::jo_id_t))); }
+		const auto result = [&](const RecordingSource& state) {
+			validateTarget();
+			if (!receiver) { throw std::runtime_error("Native curve retired during binding notification"); }
+			QMutexLocker lock(&receiver->m_clipMutex);
+			if (receiver->m_isRecording || receiver->m_recordingTake || receiver->m_dragging || !receiver->recordingSourceMatches(state, true))
+			{ throw std::runtime_error("Native binding result changed during notification"); }
+		};
+		// Check returned signal wiring before calling another receiver method.
+		result(published);
+		if (seed) { receiver->updateLength(); }
+		result(expected); if (membershipChanged) { emit receiver->dataChanged(); result(expected); }
+		changed = membershipChanged; error.clear(); return true;
+	}
+	catch (const std::exception& exception) { error = QString::fromUtf8(exception.what()); }
+	catch (...) { error = "Native binding edit failed with a nonstandard exception"; }
+	return false;
+}
+
+void AutomationClip::reserveRecordingTake(std::size_t maximumPoints, int quantization)
+{
+	const QPointer<AutomationClip> receiver(this);
+	std::shared_ptr<RecordingSource> source;
+	{
+		QMutexLocker lock(&m_clipMutex);
+		if (m_recordingTake || m_recordingSource || m_isRecording) { throw std::runtime_error("Native automation already has a recorder"); }
+		if (!maximumPoints || static_cast<std::size_t>(m_timeMap.size()) > maximumPoints || quantization < 0)
+		{ throw std::invalid_argument("Automation recording point budget or quantization is invalid"); }
+		source = captureSource();
+	}
+	// Detached curve construction emits native length notifications. Do not hold
+	// the receiver mutex across them, or publish against a changed source.
+	auto take = std::make_unique<AutomationClip>(nullptr);
+	take->m_timeMap = source->points;
+	for (auto it = take->m_timeMap.begin(); it != take->m_timeMap.end(); ++it) { it.value().setClip(take.get()); }
+	take->m_progressionType = source->progression; take->m_tension = source->tension;
+	take->setAutoResize(false);
+	take->m_lastRecordedValue = std::numeric_limits<float>::quiet_NaN();
+	if (!receiver) { throw std::runtime_error("Native automation receiver retired during reservation"); }
+	QMutexLocker lock(&receiver->m_clipMutex);
+	if (receiver->m_recordingTake || receiver->m_recordingSource || receiver->m_isRecording || !receiver->recordingSourceMatches(*source, true))
+	{ throw std::runtime_error("Native automation source changed during reservation"); }
+	receiver->m_recordingMaximumPoints = maximumPoints; receiver->m_recordingQuantization = quantization;
+	receiver->m_recordingSamples = 0; receiver->m_recordingError.clear();
+	receiver->m_recordingSource = std::move(source); receiver->m_recordingTake = std::move(take);
+}
+
+void AutomationClip::commitRecordingTake(const std::function<void()>& checkpoint)
+{
+	const QPointer<AutomationClip> receiver(this);
+	QPointer<AutomationClip> take;
+	QPointer<Track> owner;
+	std::shared_ptr<const RecordingSource> source;
+	timeMap original, captured, prepared;
+	objectVector objects;
+	std::vector<AutomatableModel*> identities;
+	TimePos position, size, offset;
+	ProgressionType progression;
+	float tension, lastValue;
+	bool automatic;
+	std::uint64_t samples;
+	std::size_t maximumPoints;
+	int quantization, meter;
+	{
+		QMutexLocker lock(&m_clipMutex);
+		if (m_isRecording) { throw std::runtime_error("Disarm native automation before publishing its take"); }
+		if (!m_recordingTake || !m_recordingSamples || !m_recordingError.isEmpty())
+		{ throw std::runtime_error(m_recordingError.isEmpty() ? "No complete native automation take" : m_recordingError.toStdString()); }
+		if (!m_recordingSource || !recordingSourceMatches(*m_recordingSource, true))
+		{ throw std::runtime_error("Native automation source changed since reservation"); }
+		source = m_recordingSource;
+		take = m_recordingTake.get(); owner = getTrack(); original = m_timeMap; captured = take->m_timeMap; prepared = captured;
+		objects = m_objects; identities.reserve(objects.size()); for (const auto& model : objects) { identities.push_back(model.data()); }
+		position = startPosition(); size = length(); offset = startTimeOffset(); automatic = getAutoResize();
+		progression = m_progressionType; tension = m_tension; meter = TimePos::ticksPerBar();
+		lastValue = take->m_lastRecordedValue; samples = m_recordingSamples;
+		maximumPoints = m_recordingMaximumPoints; quantization = m_recordingQuantization;
+	}
+	const auto unchanged = [&](bool contents) {
+		if (!receiver || !take) { throw std::runtime_error("Native automation receiver or take retired before publication"); }
+		QMutexLocker lock(&receiver->m_clipMutex);
+		if (receiver->m_recordingTake.get() != take.data() || receiver->m_isRecording || !receiver->m_recordingError.isEmpty()
+			|| receiver->m_recordingSource != source || !receiver->recordingSourceMatches(*source, contents)
+			|| receiver->m_recordingSamples != samples || receiver->m_recordingMaximumPoints != maximumPoints
+			|| receiver->m_recordingQuantization != quantization || take->m_lastRecordedValue != lastValue
+			|| (contents && (receiver->m_timeMap != original || take->m_timeMap != captured))
+			|| receiver->m_objects != objects || receiver->m_progressionType != progression || receiver->m_tension != tension
+			|| receiver->startPosition() != position || receiver->length() != size || receiver->startTimeOffset() != offset
+			|| receiver->getAutoResize() != automatic || TimePos::ticksPerBar() != meter || receiver->getTrack() != owner.data())
+		{ throw std::runtime_error("Native automation state changed before take publication"); }
+		for (std::size_t index = 0; index < objects.size(); ++index)
+		{ if (objects[index].data() != identities[index]) { throw std::runtime_error("Native automation binding retired before take publication"); } }
+		if (owner && std::find(owner->getClips().begin(), owner->getClips().end(), receiver.data()) == owner->getClips().end())
+		{ throw std::runtime_error("Native automation clip detached before take publication"); }
+	};
+	// Cooperative checkpoints must not hold the receiver's mutex. Revalidate
+	// both maps and take lifetime afterward, before exposing any captured data.
+	std::size_t count = 0;
+	for (auto it = prepared.begin(); it != prepared.end(); ++it)
+	{
+		if (checkpoint && count++ % 256 == 0) { checkpoint(); unchanged(false); }
+		it.value().setClip(receiver.data());
+	}
+	if (checkpoint) { checkpoint(); }
+	unchanged(true);
+	{
+		QMutexLocker lock(&receiver->m_clipMutex); unchanged(true);
+		receiver->m_timeMap.swap(prepared); receiver->m_lastRecordedValue = lastValue;
+		receiver->m_recordingTake.reset();
+		receiver->m_recordingSource.reset();
+	}
+	// Keep native sizing and notifications, without retaining a mutex across
+	// their callbacks. These remain observable post-publication boundaries.
+	receiver->updateLength();
+	if (!receiver) { throw std::runtime_error("Native automation receiver retired during take sizing"); }
+	emit receiver->dataChanged();
+	if (!receiver) { throw std::runtime_error("Native automation receiver retired during take notification"); }
+}
+
+void AutomationClip::discardRecordingTake()
+{
+	QMutexLocker lock(&m_clipMutex); m_recordingTake.reset(); m_recordingSource.reset(); m_recordingError.clear(); m_recordingSamples = 0;
+}
+
 void AutomationClip::recordValue(TimePos time, float value)
 {
 	QMutexLocker m(&m_clipMutex);
+	if (m_recordingTake)
+	{
+		if (!m_recordingError.isEmpty()) { return; }
+		try
+		{
+			if (!m_recordingSource || !recordingSourceMatches(*m_recordingSource, false))
+			{ throw std::runtime_error("Native automation source changed during capture"); }
+			const auto source = qint64(time.getTicks()) - startTimeOffset().getTicks();
+			if (source < 0) { return; }
+			if (!std::isfinite(value) || source > MaxSongLength)
+			{
+				throw std::runtime_error("Recorded automation value or source position is invalid");
+			}
+			const TimePos position = m_recordingQuantization ? Note::quantized(static_cast<int>(source), m_recordingQuantization) : TimePos(static_cast<int>(source));
+			if (position > MaxSongLength) { throw std::runtime_error("Recorded automation exceeds the native song range"); }
+			auto& take = *m_recordingTake;
+			if (value != take.m_lastRecordedValue || take.m_timeMap.isEmpty())
+			{
+				if (!take.m_timeMap.contains(position.getTicks()) && static_cast<std::size_t>(take.m_timeMap.size()) >= m_recordingMaximumPoints)
+				{
+					throw std::runtime_error("Automation recording point limit reached");
+				}
+				// This take has its own grid. A GUI editor's static quantization
+				// must not remove neighboring source nodes during headless capture.
+				take.putValue(position, value, false, true); take.m_lastRecordedValue = value;
+			}
+			else if (take.valueAt(position) != value) { take.removeNode(position); }
+			++m_recordingSamples;
+		}
+		catch (const std::exception& error)
+		{
+			m_recordingError = QString::fromUtf8(error.what()).left(1024);
+			if (m_recordingError.isEmpty()) { m_recordingError = "Native automation capture failed"; }
+		}
+		catch (...) { m_recordingError = "Native automation capture failed"; }
+		return;
+	}
 
-	if( value != m_lastRecordedValue )
+	if( value != m_lastRecordedValue || m_timeMap.isEmpty() )
 	{
 		putValue(time - startTimeOffset(), value, true);
 		m_lastRecordedValue = value;
@@ -611,9 +1136,10 @@ float *AutomationClip::valuesAfter( const TimePos & _time ) const
 	QMutexLocker m(&m_clipMutex);
 
 	timeMap::const_iterator v = m_timeMap.lowerBound(_time);
+	if (v == m_timeMap.end()) { return nullptr; }
 	auto const nv = std::next(v);
 
-	if (v == m_timeMap.end() || nv == m_timeMap.end())
+	if (nv == m_timeMap.end())
 	{
 		return nullptr;
 	}
@@ -749,7 +1275,7 @@ void AutomationClip::saveSettings( QDomDocument & _doc, QDomElement & _this )
 	_this.setAttribute( "name", name() );
 	_this.setAttribute( "prog", QString::number( static_cast<int>(progressionType()) ) );
 	_this.setAttribute( "tens", QString::number( getTension() ) );
-	_this.setAttribute( "mute", QString::number( isMuted() ) );
+	saveControlSettings(_doc, _this, "mute");
 	_this.setAttribute("off", startTimeOffset());
 	_this.setAttribute("autoresize", QString::number(getAutoResize()));
 
@@ -795,13 +1321,17 @@ void AutomationClip::loadSettings( const QDomElement & _this )
 	bool shouldGenerateTangents = false;
 
 	clear();
+	// Arrangement restore replaces its targets. Legacy global and inline curves
+	// can already be bound to the model whose settings are being restored.
+	if (m_autoTrack && m_autoTrack->type() == Track::Type::Automation) { clearObjects(); }
+	else { m_idsToResolve.clear(); }
 
 	movePosition( _this.attribute( "pos" ).toInt() );
 	setName( _this.attribute( "name" ) );
 	setProgressionType( static_cast<ProgressionType>( _this.attribute(
 							"prog" ).toInt() ) );
 	setTension( _this.attribute( "tens" ) );
-	setMuted(_this.attribute( "mute", QString::number( false ) ).toInt() );
+	loadControlSettings(_this, "mute");
 	setAutoResize(_this.attribute("autoresize", "1").toInt());
 	setStartTimeOffset(_this.attribute("off").toInt());
 
@@ -842,7 +1372,7 @@ void AutomationClip::loadSettings( const QDomElement & _this )
 			m_idsToResolve.push_back(element.attribute("id").toInt());
 		}
 	}
-	
+
 	if (_this.hasAttribute("color"))
 	{
 		setColor(QColor{_this.attribute("color")});
@@ -893,6 +1423,20 @@ gui::ClipView * AutomationClip::createView( gui::TrackView * _tv )
 
 
 
+
+bool AutomationClip::isConnected(const AutomatableModel* model)
+{
+	for (const auto track : combineAllTracks())
+	{
+		if (track->type() != Track::Type::Automation && track->type() != Track::Type::HiddenAutomation) { continue; }
+		for (const auto clip : track->getClips())
+		{
+			const auto curve = dynamic_cast<const AutomationClip*>(clip);
+			if (curve && std::find(curve->m_objects.begin(), curve->m_objects.end(), model) != curve->m_objects.end()) { return true; }
+		}
+	}
+	return false;
+}
 
 bool AutomationClip::isAutomated( const AutomatableModel * _m )
 {
@@ -1003,7 +1547,7 @@ void AutomationClip::resolveAllIDs()
 						JournallingObject* o = Engine::projectJournal()->journallingObject(id);
 						if( o && dynamic_cast<AutomatableModel *>( o ) )
 						{
-							a->addObject( dynamic_cast<AutomatableModel *>( o ), false );
+							a->addObject(dynamic_cast<AutomatableModel*>(o));
 						}
 						else
 						{
@@ -1012,7 +1556,7 @@ void AutomationClip::resolveAllIDs()
 							o = Engine::projectJournal()->journallingObject(ProjectJournal::idFromSave(id));
 							if( o && dynamic_cast<AutomatableModel *>( o ) )
 							{
-								a->addObject( dynamic_cast<AutomatableModel *>( o ), false );
+								a->addObject(dynamic_cast<AutomatableModel*>(o));
 							}
 							else
 							{
@@ -1021,7 +1565,7 @@ void AutomationClip::resolveAllIDs()
 								o = Engine::projectJournal()->journallingObject(ProjectJournal::idToSave(id));
 								if( o && dynamic_cast<AutomatableModel *>( o ) )
 								{
-									a->addObject( dynamic_cast<AutomatableModel *>( o ), false );
+									a->addObject(dynamic_cast<AutomatableModel*>(o));
 								}
 							}
 						}
@@ -1057,18 +1601,14 @@ void AutomationClip::objectDestroyed( jo_id_t _id )
 	// when switching samplerate) and real deletions because in the latter
 	// case we had to remove ourselves if we're the global automation
 	// clip of the destroyed object
-	m_idsToResolve.push_back(_id);
-
-	for (auto objIt = m_objects.begin(); objIt != m_objects.end(); objIt++)
+	if (std::find(m_idsToResolve.begin(), m_idsToResolve.end(), _id) == m_idsToResolve.end())
 	{
-		Q_ASSERT( !(*objIt).isNull() );
-		if( (*objIt)->id() == _id )
-		{
-			//Assign to objIt so that this loop work even break; is removed.
-			objIt = m_objects.erase( objIt );
-			break;
-		}
+		m_idsToResolve.push_back(_id);
 	}
+	// Old projects and copied clips can contain duplicate or already-null targets.
+	m_objects.erase(std::remove_if(m_objects.begin(), m_objects.end(), [_id](const auto& object) {
+		return !object || object->id() == _id;
+	}), m_objects.end());
 
 	emit dataChanged();
 }

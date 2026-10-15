@@ -24,6 +24,8 @@
 #include "SystemSemaphore.h"
 
 #include <limits>  // IWYU pragma: keep
+#include <chrono>
+#include <thread>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -110,6 +112,23 @@ public:
 	}
 
 	auto release() noexcept -> bool { return sem_post(m_sem) == 0; }
+	auto tryAcquire() noexcept -> bool
+	{
+		return retryWhileInterrupted([&]() noexcept { return sem_trywait(m_sem); }) == 0;
+	}
+	auto acquireFor(unsigned int milliseconds) noexcept -> bool
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
+		do
+		{
+			if (sem_trywait(m_sem) == 0) { return true; }
+			if (errno != EAGAIN && errno != EINTR) { return false; }
+			if (std::chrono::steady_clock::now() >= deadline) { return false; }
+			// Keep this portable and monotonic; wall-clock changes must not
+			// extend host deadlines through a realtime timed-wait API.
+			std::this_thread::sleep_for(std::chrono::microseconds(100));
+		} while (true);
+	}
 
 private:
 	std::string m_key;
@@ -148,6 +167,11 @@ public:
 	}
 
 	auto acquire() noexcept -> bool { return WaitForSingleObject(m_sem.get(), INFINITE) == WAIT_OBJECT_0; }
+	auto tryAcquire() noexcept -> bool { return WaitForSingleObject(m_sem.get(), 0) == WAIT_OBJECT_0; }
+	auto acquireFor(unsigned int milliseconds) noexcept -> bool
+	{
+		return WaitForSingleObject(m_sem.get(), milliseconds == INFINITE ? INFINITE - 1 : milliseconds) == WAIT_OBJECT_0;
+	}
 	auto release() noexcept -> bool { return ReleaseSemaphore(m_sem.get(), 1, nullptr); }
 
 private:
@@ -176,6 +200,8 @@ SystemSemaphore::SystemSemaphore(SystemSemaphore&& other) noexcept = default;
 auto SystemSemaphore::operator=(SystemSemaphore&& other) noexcept -> SystemSemaphore& = default;
 
 auto SystemSemaphore::acquire() noexcept -> bool { return m_impl->acquire(); }
+auto SystemSemaphore::tryAcquire() noexcept -> bool { return m_impl->tryAcquire(); }
+auto SystemSemaphore::acquireFor(unsigned int milliseconds) noexcept -> bool { return m_impl->acquireFor(milliseconds); }
 auto SystemSemaphore::release() noexcept -> bool { return m_impl->release(); }
 
 } // namespace lmms

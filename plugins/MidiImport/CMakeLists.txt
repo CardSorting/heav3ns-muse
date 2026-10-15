@@ -7,7 +7,7 @@ ENDIF()
 
 # For now, portsmf files are included directly in the plugin.
 INCLUDE_DIRECTORIES("portsmf/include")
-BUILD_PLUGIN(midiimport MidiImport.cpp MidiImport.h
+BUILD_PLUGIN(midiimport MidiImport.cpp MidiImport.h MidiImportData.cpp MidiImportData.h
 	portsmf/include/allegro.h portsmf/src/allegro.cpp
 	portsmf/include/mfmidi.h portsmf/src/mfmidi.cpp
 	portsmf/include/strparse.h portsmf/src/strparse.cpp

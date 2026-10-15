@@ -26,7 +26,10 @@
 #include "SampleThumbnail.h"
 
 #include <QFileInfo>
+#include <QLineF>
 #include <QPainter>
+#include <cmath>
+#include <numeric>
 
 #include "Sample.h"
 
@@ -74,6 +77,7 @@ SampleThumbnail::Thumbnail SampleThumbnail::Thumbnail::zoomOut(float factor) con
 SampleThumbnail::SampleThumbnail(const Sample& sample)
 	: m_buffer(sample.buffer())
 {
+	if (!m_buffer || m_buffer->empty()) { return; }
 	auto entry = SampleThumbnailEntry{sample.sampleFile(), QFileInfo{sample.sampleFile()}.lastModified()};
 	if (!entry.filePath.isEmpty())
 	{
@@ -96,7 +100,7 @@ SampleThumbnail::SampleThumbnail(const Sample& sample)
 
 	const auto flatBuffer = m_buffer->data()->data();
 	const auto flatBufferSize = m_buffer->size() * DEFAULT_CHANNELS;
-	m_thumbnailCache->emplace_back(flatBuffer, flatBufferSize, flatBufferSize / AggregationPerZoomStep);
+	m_thumbnailCache->emplace_back(flatBuffer, flatBufferSize, std::max<std::size_t>(1, flatBufferSize / AggregationPerZoomStep));
 
 	while (m_thumbnailCache->back().width() >= AggregationPerZoomStep)
 	{
@@ -111,68 +115,43 @@ void SampleThumbnail::visualize(VisualizeParameters parameters, QPainter& painte
 	const auto& viewportRect = parameters.viewportRect.isNull() ? sampleRect : parameters.viewportRect;
 
 	const auto renderRect = sampleRect.intersected(viewportRect);
-	if (renderRect.isNull()) { return; }
+	if (renderRect.isEmpty() || !m_buffer || m_buffer->empty()) { return; }
 
 	const auto sampleRange = parameters.sampleEnd - parameters.sampleStart;
-	if (sampleRange <= 0.0f || sampleRange > 1.0f) { return; }
+	if (!std::isfinite(sampleRange) || sampleRange <= 0.0f || parameters.sampleStart < 0.0f
+		|| parameters.sampleEnd > 1.0f || !std::isfinite(parameters.amplification)) { return; }
 
-	const auto targetThumbnailWidth = static_cast<int>(sampleRect.width() / sampleRange);
+	const double targetThumbnailWidth = sampleRect.width() / static_cast<double>(sampleRange);
 	const auto finerThumbnail = std::find_if(m_thumbnailCache->rbegin(), m_thumbnailCache->rend(),
 		[&](const auto& thumbnail) { return thumbnail.width() >= targetThumbnailWidth; });
 
 	const auto useOriginalBuffer = finerThumbnail == m_thumbnailCache->rend();
-	const auto drawOriginalBuffer = static_cast<size_t>(targetThumbnailWidth) == m_buffer->size();
 
 	painter.save();
 	painter.setRenderHint(QPainter::Antialiasing, true);
 
-	const auto thumbnailBeginForward = std::max<int>(renderRect.x() - sampleRect.x(), parameters.sampleStart * targetThumbnailWidth);
-	const auto thumbnailEndForward = std::max<int>(renderRect.x() + renderRect.width() - sampleRect.x(), parameters.sampleEnd * targetThumbnailWidth);
-	const auto thumbnailBegin = parameters.reversed ? targetThumbnailWidth - thumbnailBeginForward - 1 : thumbnailBeginForward;
-	const auto thumbnailEnd = parameters.reversed ? targetThumbnailWidth - thumbnailEndForward : thumbnailEndForward;
-	const auto advanceThumbnailBy = parameters.reversed ? -1 : 1;
-
-	const auto finerThumbnailWidth = useOriginalBuffer ? m_buffer->size() : finerThumbnail->width();
-	const auto finerThumbnailScaleFactor = static_cast<double>(finerThumbnailWidth) / targetThumbnailWidth;
-	const auto yScale = renderRect.height() / 2 * parameters.amplification;
-
-	for (auto x = renderRect.x(), i = thumbnailBegin; x < renderRect.x() + renderRect.width() && i != thumbnailEnd;
-		++x, i += advanceThumbnailBy)
+	const auto width = useOriginalBuffer ? m_buffer->size() : static_cast<std::size_t>(finerThumbnail->width());
+	const auto yScale = sampleRect.height() / 2.0 * parameters.amplification;
+	for (auto x = renderRect.x(); x <= renderRect.right(); ++x)
 	{
-		if (useOriginalBuffer && drawOriginalBuffer)
+		double start = parameters.sampleStart + (x - sampleRect.x()) / targetThumbnailWidth;
+		double end = parameters.sampleStart + (x + 1.0 - sampleRect.x()) / targetThumbnailWidth;
+		if (parameters.reversed)
 		{
-			const auto value = m_buffer->data()->data()[i];
-			painter.drawPoint(x, renderRect.center().y() - value * yScale);
-			continue;
+			const auto previousStart = start; start = 1.0 - end; end = 1.0 - previousStart;
 		}
-		else
+		const auto beginIndex = static_cast<std::size_t>(std::clamp(std::floor(start * width), 0.0, static_cast<double>(width - 1)));
+		const auto endIndex = static_cast<std::size_t>(std::clamp(std::ceil(end * width),
+			static_cast<double>(beginIndex + 1), static_cast<double>(width)));
+		auto peak = Thumbnail::Peak{};
+		if (useOriginalBuffer)
 		{
-			const auto beginIndex = std::clamp<size_t>(std::floor(i * finerThumbnailScaleFactor), 0, finerThumbnail->width() - 1);
-			const auto endIndex = std::clamp<size_t>(std::ceil((i + 1) * finerThumbnailScaleFactor), 0, finerThumbnail->width() - 1);
-
-			auto minPeak = 0.f;
-			auto maxPeak = 0.f;
-
-			if (useOriginalBuffer)
-			{
-				const auto flatBuffer = m_buffer->data()->data();
-				const auto [min, max] = std::minmax_element(flatBuffer + beginIndex, flatBuffer + endIndex);
-				minPeak = *min;
-				maxPeak = *max;
-			}
-			else
-			{
-				const auto beginAggregationAt = finerThumbnail->data() + beginIndex;
-				const auto endAggregationAt = finerThumbnail->data() + endIndex;
-				const auto peak = std::accumulate(beginAggregationAt, endAggregationAt, Thumbnail::Peak{});
-				minPeak = peak.min;
-				maxPeak = peak.max;
-			}
-
-			const auto yMin = renderRect.center().y() - minPeak * yScale;
-			const auto yMax = renderRect.center().y() - maxPeak * yScale;
-			painter.drawLine(x, yMin, x, yMax);
+			peak = std::accumulate(m_buffer->begin() + beginIndex, m_buffer->begin() + endIndex, peak);
 		}
+		else { peak = std::accumulate(finerThumbnail->data() + beginIndex, finerThumbnail->data() + endIndex, peak); }
+		const auto yMin = sampleRect.center().y() - peak.min * yScale;
+		const auto yMax = sampleRect.center().y() - peak.max * yScale;
+		painter.drawLine(QLineF(x, yMin, x, yMax));
 	}
 
 	painter.restore();

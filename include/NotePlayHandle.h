@@ -151,6 +151,7 @@ public:
 	{
 		return m_frames;
 	}
+	TimePos recordedMidiLength(f_cnt_t releaseOffset = 0) const;
 
 	/*! Sets the total number of frames to play (including release frames) */
 	void setFrames( const f_cnt_t _frames );
@@ -246,7 +247,7 @@ public:
 	}
 
 	/*! Process note detuning automation */
-	void processTimePos(const TimePos& time, float pitchValue, bool isRecording);
+	void processTimePos(const TimePos& time);
 
 	/*! Updates total length (m_frames) depending on a new tempo */
 	void resize( const bpm_t newTempo );
@@ -298,6 +299,7 @@ private:
 	f_cnt_t m_totalFramesPlayed;			// total frame-counter - used for
 											// figuring out whether a whole note
 											// has been played
+	double m_recordedMidiTicks = 0;
 	f_cnt_t m_framesBeforeRelease;			// number of frames after which note
 											// is released
 	f_cnt_t m_releaseFramesToDo;			// total numbers of frames to be

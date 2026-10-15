@@ -38,6 +38,7 @@
 #include <cmath>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace lmms
 {
@@ -45,6 +46,7 @@ namespace lmms
 // forward-declarations
 class InstrumentTrack;
 class MidiEvent;
+class Note;
 class NotePlayHandle;
 class Track;
 class SampleFrame;
@@ -96,6 +98,37 @@ public:
 	{
 		return std::nullopt;
 	}
+	virtual bool supportsMidiOutput() const { return false; }
+
+	struct Program
+	{
+		int bank;
+		int program;
+		QString name;
+	};
+	//! Programs belonging to the current native bank; no editor is constructed.
+	virtual const std::vector<Program>& programs() const
+	{
+		static const std::vector<Program> empty;
+		return empty;
+	}
+	//! Checked selection preserves the existing program if the requested pair is absent.
+	virtual bool selectProgram(int bank, int program, QString& error);
+
+	struct SliceLayout
+	{
+		int sourceFrames;
+		int sampleRate;
+		int originalBpm;
+		bool tempoSync;
+		int baseKey;
+		std::vector<float> points;
+	};
+	//! Optional native slicing interface; implementations own analysis, playback and MIDI timing.
+	virtual std::optional<SliceLayout> sliceLayout() const { return std::nullopt; }
+	virtual bool analyzeSlices(bool estimateTempo, QString& error);
+	virtual bool setSlicePoints(const std::vector<float>& points, QString& error);
+	virtual bool sliceMidi(std::vector<Note>& notes, QString& error) const;
 
 	//! Called if external source needs to change something but we cannot
 	//! reference the class header. Should return nullptr if the model is not found.

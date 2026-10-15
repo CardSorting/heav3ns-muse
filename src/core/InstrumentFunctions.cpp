@@ -24,6 +24,7 @@
 
 
 #include "InstrumentFunctions.h"
+#include <QPointer>
 #include "AudioEngine.h"
 #include "embed.h"
 #include "Engine.h"
@@ -210,7 +211,7 @@ const InstrumentFunctionNoteStacking::Chord & InstrumentFunctionNoteStacking::Ch
 
 InstrumentFunctionNoteStacking::InstrumentFunctionNoteStacking( Model * _parent ) :
 	Model( _parent, tr( "Chords" ) ),
-	m_chordsEnabledModel( false, this ),
+	m_chordsEnabledModel(false, this, tr("Chord enabled")),
 	m_chordsModel( this, tr( "Chord type" ) ),
 	m_chordRangeModel( 1.0f, 1.0f, 9.0f, 1.0f, this, tr( "Chord range" ) )
 {
@@ -288,9 +289,13 @@ void InstrumentFunctionNoteStacking::saveSettings( QDomDocument & _doc, QDomElem
 
 void InstrumentFunctionNoteStacking::loadSettings( const QDomElement & _this )
 {
+	const QPointer<InstrumentFunctionNoteStacking> owner(this);
 	m_chordsEnabledModel.loadSettings( _this, "chord-enabled" );
+	if (!owner) { return; }
 	m_chordsModel.loadSettings( _this, "chord" );
+	if (!owner) { return; }
 	m_chordRangeModel.loadSettings( _this, "chordrange" );
+	if (!owner) { return; }
 }
 
 
@@ -301,7 +306,7 @@ void InstrumentFunctionNoteStacking::loadSettings( const QDomElement & _this )
 
 InstrumentFunctionArpeggio::InstrumentFunctionArpeggio( Model * _parent ) :
 	Model( _parent, tr( "Arpeggio" ) ),
-	m_arpEnabledModel( false ),
+	m_arpEnabledModel(false, this, tr("Arpeggio enabled")),
 	m_arpModel( this, tr( "Arpeggio type" ) ),
 	m_arpRangeModel( 1.0f, 1.0f, 9.0f, 1.0f, this, tr( "Arpeggio range" ) ),
 	m_arpRepeatsModel( 1.0f, 1.0f, 8.0f, 1.0f, this, tr( "Note repeats" ) ),
@@ -542,17 +547,29 @@ void InstrumentFunctionArpeggio::saveSettings( QDomDocument & _doc, QDomElement 
 
 void InstrumentFunctionArpeggio::loadSettings( const QDomElement & _this )
 {
+	const QPointer<InstrumentFunctionArpeggio> owner(this);
 	m_arpEnabledModel.loadSettings( _this, "arp-enabled" );
+	if (!owner) { return; }
 	m_arpModel.loadSettings( _this, "arp" );
+	if (!owner) { return; }
 	m_arpRangeModel.loadSettings( _this, "arprange" );
+	if (!owner) { return; }
 	m_arpRepeatsModel.loadSettings( _this, "arprepeats" );
+	if (!owner) { return; }
 	m_arpCycleModel.loadSettings( _this, "arpcycle" );
+	if (!owner) { return; }
 	m_arpSkipModel.loadSettings( _this, "arpskip" );
+	if (!owner) { return; }
 	m_arpMissModel.loadSettings( _this, "arpmiss" );
+	if (!owner) { return; }
 	m_arpTimeModel.loadSettings( _this, "arptime" );
+	if (!owner) { return; }
 	m_arpGateModel.loadSettings( _this, "arpgate" );
+	if (!owner) { return; }
 	m_arpDirectionModel.loadSettings( _this, "arpdir" );
+	if (!owner) { return; }
 	m_arpModeModel.loadSettings( _this, "arpmode" );
+	if (!owner) { return; }
 }
 
 

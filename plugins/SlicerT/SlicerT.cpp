@@ -25,9 +25,17 @@
 #include "SlicerT.h"
 
 #include <QDomElement>
+#include <QFileInfo>
+#include <QScopeGuard>
+#include <QSignalBlocker>
+#include <algorithm>
+#include <array>
+#include <limits>
 #include <cmath>
 #include <fftw3.h>
 
+#include "AudioEngine.h"
+#include "DataFile.h"
 #include "Engine.h"
 #include "InstrumentTrack.h"
 #include "PathUtil.h"
@@ -75,312 +83,330 @@ SlicerT::SlicerT(InstrumentTrack* instrumentTrack)
 	m_sliceSnap.setValue(0);
 }
 
+namespace {
+constexpr std::size_t MaxSlicePoints = 129;
+
+bool validSlicerBuffer(const std::shared_ptr<const SampleBuffer>& buffer)
+{
+	return buffer && buffer->size() > 1 && buffer->size() <= static_cast<std::size_t>(std::numeric_limits<int>::max())
+		&& buffer->sampleRate() > 0 && std::all_of(buffer->begin(), buffer->end(), [](const SampleFrame& frame) {
+			return !frame.containsNaN() && !frame.containsInf();
+		});
+}
+
+struct SlicePlayback
+{
+	Sample sample;
+	Sample::PlaybackState state;
+	float start;
+	float end;
+	int originalFrames;
+	double playedSourceFrames = 0;
+
+	SlicePlayback(const Sample& source, float from, float to)
+		: sample(source), state(AudioResampler::Mode::Linear, static_cast<int>(static_cast<double>(from) * source.sampleSize()))
+		, start(from), end(to), originalFrames(static_cast<int>(source.sampleSize()))
+	{
+		sample.setStartFrame(state.frameIndex());
+		sample.setEndFrame(static_cast<int>(static_cast<double>(to) * source.sampleSize()));
+	}
+};
+} // namespace
+
+double SlicerT::playbackRatio() const
+{
+	const double syncRatio = m_enableSync.value() ? static_cast<double>(m_originalBPM.value()) / Engine::getSong()->getTempo() : 1;
+	return syncRatio * std::exp2(-m_parentTrack->pitchModel()->value() / 1200.0);
+}
+
 void SlicerT::playNote(NotePlayHandle* handle, SampleFrame* workingBuffer)
 {
-	if (m_originalSample.sampleSize() <= 1) { return; }
-
-	int noteIndex = handle->key() - m_parentTrack->baseNote();
-	const f_cnt_t frames = handle->framesLeftForCurrentPeriod();
-	const f_cnt_t offset = handle->noteOffset();
-	const int bpm = Engine::getSong()->getTempo();
-	const float pitchRatio = 1 / std::exp2(m_parentTrack->pitchModel()->value() / 1200);
-
-	float speedRatio = static_cast<float>(m_originalBPM.value()) / bpm;
-	if (!m_enableSync.value()) { speedRatio = 1; }
-	speedRatio *= pitchRatio;
-
-	float sliceStart, sliceEnd;
-	if (noteIndex == 0) // full sample at base note
+	if (m_originalSample.sampleSize() <= 1 || !workingBuffer) { return; }
+	if (!handle->m_pluginData)
 	{
-		sliceStart = 0;
-		sliceEnd = 1;
-	}
-	else if (noteIndex > 0 && static_cast<std::size_t>(noteIndex) < m_slicePoints.size())
-	{
-		noteIndex -= 1;
-		sliceStart = m_slicePoints[noteIndex];
-		sliceEnd = m_slicePoints[noteIndex + 1];
-	}
-	else
-	{
-		emit isPlaying(-1, 0, 0);
-		return;
-	}
-
-	const auto startFrame = static_cast<int>(sliceStart * m_originalSample.sampleSize());
-	if (!handle->m_pluginData) { handle->m_pluginData = new Sample::PlaybackState(AudioResampler::Mode::Linear, startFrame); }
-
-	auto playbackState = static_cast<Sample::PlaybackState*>(handle->m_pluginData);
-	const auto endFrame = sliceEnd * m_originalSample.sampleSize();
-	const auto framesLeft = endFrame - playbackState->frameIndex();
-
-	if (framesLeft > 0
-		&& m_originalSample.play(workingBuffer + offset, playbackState, frames, Sample::Loop::Off, speedRatio))
-	{
-		// exponential fade out, applyRelease() not used since it extends the note length
-		int fadeOutFrames = m_fadeOutFrames.value() / 1000.0f * Engine::audioEngine()->outputSampleRate();
-		for (auto i = std::size_t{0}; i < frames; i++)
+		const int noteIndex = handle->key() - m_parentTrack->baseNote();
+		float from = 0, to = 1;
+		if (noteIndex != 0)
 		{
-			float fadeValue = static_cast<float>(framesLeft * speedRatio - static_cast<int>(i)) / fadeOutFrames;
-			fadeValue = std::clamp(fadeValue, 0.0f, 1.0f);
-			fadeValue = cosinusInterpolate(0, 1, fadeValue);
-
-			workingBuffer[i + offset][0] *= fadeValue;
-			workingBuffer[i + offset][1] *= fadeValue;
+			if (noteIndex < 1 || static_cast<std::size_t>(noteIndex) >= m_slicePoints.size()) { emit isPlaying(-1, 0, 0); return; }
+			from = m_slicePoints[noteIndex - 1]; to = m_slicePoints[noteIndex];
 		}
-
-		const auto currentNote = static_cast<float>(playbackState->frameIndex()) / m_originalSample.sampleSize();
-		emit isPlaying(currentNote, sliceStart, sliceEnd);
+		handle->m_pluginData = new SlicePlayback(m_originalSample, from, to);
+	}
+	const auto data = static_cast<SlicePlayback*>(handle->m_pluginData);
+	const auto frames = handle->framesLeftForCurrentPeriod(), offset = handle->noteOffset();
+	const double ratio = playbackRatio();
+	const double outputPerSourceFrame = static_cast<double>(Engine::audioEngine()->outputSampleRate()) / data->sample.sampleRate() * ratio;
+	if (!std::isfinite(outputPerSourceFrame) || outputPerSourceFrame <= 0) { return; }
+	const double remaining = (data->sample.endFrame() - data->sample.startFrame() - data->playedSourceFrames) * outputPerSourceFrame;
+	if (data->sample.play(workingBuffer + offset, &data->state, frames, Sample::Loop::Off, ratio))
+	{
+		const double fadeFrames = m_fadeOutFrames.value() / 1000.0 * Engine::audioEngine()->outputSampleRate();
+		for (f_cnt_t index = 0; index < frames; ++index)
+		{
+			const float gain = fadeFrames > 0 ? std::clamp((remaining - index) / fadeFrames, 0.0, 1.0) : (remaining > index ? 1 : 0);
+			workingBuffer[offset + index] *= cosinusInterpolate(0, 1, gain);
+		}
+		data->playedSourceFrames += frames / outputPerSourceFrame;
+		const float current = std::min<double>(data->end, data->start + data->playedSourceFrames / data->originalFrames);
+		emit isPlaying(current, data->start, data->end);
 	}
 	else { emit isPlaying(-1, 0, 0); }
 }
 
 void SlicerT::deleteNotePluginData(NotePlayHandle* handle)
 {
-	delete static_cast<Sample::PlaybackState*>(handle->m_pluginData);
+	delete static_cast<SlicePlayback*>(handle->m_pluginData);
 	emit isPlaying(-1, 0, 0);
 }
 
-// uses the spectral flux to determine the change in magnitude
-// resources:
-// http://www.iro.umontreal.ca/~pift6080/H09/documents/papers/bello_onset_tutorial.pdf
-void SlicerT::findSlices()
+bool SlicerT::validateSlicePoints(const Sample& sample, const std::vector<float>& points, QString& error) const
 {
-	if (m_originalSample.sampleSize() <= 1) { return; }
-	m_slicePoints = {};
-
-	const int windowSize = 512;
-	const float minBeatLength = 0.05f; // in seconds, ~ 1/4 length at 220 bpm
-
-	int sampleRate = m_originalSample.sampleRate();
-	int minDist = sampleRate * minBeatLength;
-
-	float maxMag = -1;
-	std::vector<float> singleChannel(m_originalSample.sampleSize(), 0);
-	for (auto i = std::size_t{0}; i < m_originalSample.sampleSize(); i++)
+	if (sample.sampleSize() <= 1) { error = tr("Load a native sample before editing slices"); return false; }
+	if (points.size() < 2 || points.size() > MaxSlicePoints || points.front() != 0 || points.back() != 1)
 	{
-		singleChannel[i] = (m_originalSample.data()[i][0] + m_originalSample.data()[i][1]) / 2;
-		maxMag = std::max(maxMag, singleChannel[i]);
+		error = tr("Slice points must include endpoints 0 and 1 and contain 2 through 129 values"); return false;
 	}
-
-	// normalize and find 0 crossings
-	std::vector<int> zeroCrossings;
-	float lastValue = 1;
-	for (auto i = std::size_t{0}; i < singleChannel.size(); i++)
+	int previousFrame = -1;
+	float previous = -1;
+	for (const float point : points)
 	{
-		singleChannel[i] /= maxMag;
-		if ((lastValue >= 0) != (singleChannel[i] >= 0))
+		if (!std::isfinite(point) || point < 0 || point > 1 || point <= previous)
 		{
-			zeroCrossings.push_back(i);
-			lastValue = singleChannel[i];
+			error = tr("Slice points must be finite and strictly increasing within 0 through 1"); return false;
 		}
+		const int frame = static_cast<int>(static_cast<double>(point) * sample.sampleSize());
+		if (frame <= previousFrame) { error = tr("Each native slice must contain at least one source frame"); return false; }
+		previous = point; previousFrame = frame;
 	}
-
-	std::vector<float> prevMags(windowSize / 2, 0);
-	std::vector<float> fftIn(windowSize, 0);
-	std::array<fftwf_complex, windowSize> fftOut;
-
-	fftwf_plan fftPlan = fftwf_plan_dft_r2c_1d(windowSize, fftIn.data(), fftOut.data(), FFTW_MEASURE);
-
-	int lastPoint = -minDist - 1; // to always store 0 first
-	float spectralFlux = 0;
-	float prevFlux = 1E-10f; // small value, no divison by zero
-
-	for (int i = 0; i < static_cast<int>(singleChannel.size()) - windowSize; i += windowSize)
-	{
-		// fft
-		std::copy_n(singleChannel.data() + i, windowSize, fftIn.data());
-		fftwf_execute(fftPlan);
-
-		// calculate spectral flux in regard to last window
-		for (int j = 0; j < windowSize / 2; j++) // only use niquistic frequencies
-		{
-			float real = fftOut[j][0];
-			float imag = fftOut[j][1];
-			float magnitude = std::sqrt(real * real + imag * imag);
-
-			// using L2-norm (euclidean distance)
-			float diff = std::abs(magnitude - prevMags[j]);
-			spectralFlux += diff;
-
-			prevMags[j] = magnitude;
-		}
-
-		if (spectralFlux / prevFlux > 1.0f + m_noteThreshold.value() && i - lastPoint > minDist)
-		{
-			m_slicePoints.push_back(i);
-			lastPoint = i;
-			if (m_slicePoints.size() > 128) { break; } // no more keys on the keyboard
-		}
-
-		prevFlux = spectralFlux;
-		spectralFlux = 1E-10f; // again for no divison by zero
-	}
-
-	m_slicePoints.push_back(m_originalSample.sampleSize());
-
-	for (float& sliceValue : m_slicePoints)
-	{
-		auto closestZeroCrossing = std::lower_bound(zeroCrossings.begin(), zeroCrossings.end(), sliceValue);
-		if (closestZeroCrossing == zeroCrossings.end()) { continue; }
-		if (std::abs(sliceValue - *closestZeroCrossing) < windowSize) { sliceValue = *closestZeroCrossing; }
-	}
-
-	float beatsPerMin = m_originalBPM.value() / 60.0f;
-	float samplesPerBeat = m_originalSample.sampleRate() / beatsPerMin * 4.0f;
-	int noteSnap = m_sliceSnap.value();
-	int sliceLock = samplesPerBeat / std::exp2(noteSnap + 1);
-	if (noteSnap == 0) { sliceLock = 1; }
-	for (float& sliceValue : m_slicePoints)
-	{
-		sliceValue += sliceLock / 2.f;
-		sliceValue -= static_cast<int>(sliceValue) % sliceLock;
-	}
-
-	m_slicePoints.erase(std::unique(m_slicePoints.begin(), m_slicePoints.end()), m_slicePoints.end());
-
-	for (float& sliceIndex : m_slicePoints)
-	{
-		sliceIndex /= m_originalSample.sampleSize();
-	}
-
-	m_slicePoints[0] = 0;
-	m_slicePoints[m_slicePoints.size() - 1] = 1;
-
-	emit dataChanged();
+	error.clear(); return true;
 }
 
-// find the bpm of the sample by assuming its in 4/4 time signature ,
-// and lies in the 100 - 200 bpm range
+int SlicerT::estimateBpm(const Sample& sample)
+{
+	double bpm = 240.0 * sample.sampleRate() / sample.sampleSize();
+	while (bpm < 100) { bpm *= 2; }
+	while (bpm > 200) { bpm /= 2; }
+	return static_cast<int>(std::round(bpm));
+}
+
+bool SlicerT::computeSlices(const Sample& sample, int originalBpm, std::vector<float>& points, QString& error) const
+{
+	if (!validSlicerBuffer(sample.buffer())) { error = tr("Slicer sample must contain finite audio within native frame bounds"); return false; }
+	// Existing native spectral-flux detection; plans and working storage are now bounded and owned.
+	// Exclude native audio processing while analyzing. This is not a process-wide FFTW planner lock.
+	auto engineGuard = Engine::audioEngine()->requestChangesGuard();
+	constexpr int windowSize = 512;
+	const int total = static_cast<int>(sample.sampleSize());
+	const int minDistance = std::max(1, static_cast<int>(sample.sampleRate() * 0.05));
+	const auto mono = [&sample](int frame) { return sample.data()[frame].left() / 2 + sample.data()[frame].right() / 2; };
+	float maximum = 0;
+	for (int frame = 0; frame < total; ++frame) { maximum = std::max(maximum, std::abs(mono(frame))); }
+	std::vector<int> detected{0};
+	if (maximum > 0 && total >= windowSize)
+	{
+		std::array<float, windowSize> input{};
+		std::array<fftwf_complex, windowSize / 2 + 1> output{};
+		std::array<float, windowSize / 2> previousMagnitudes{};
+		const auto plan = fftwf_plan_dft_r2c_1d(windowSize, input.data(), output.data(), FFTW_ESTIMATE);
+		if (!plan) { error = tr("Could not create the native slicing FFT plan"); return false; }
+		auto cleanup = qScopeGuard([plan] { fftwf_destroy_plan(plan); });
+		float previousFlux = 1e-10f;
+		int last = 0;
+		for (int position = 0; position <= total - windowSize; position += windowSize)
+		{
+			for (int index = 0; index < windowSize; ++index) { input[index] = mono(position + index) / maximum; }
+			fftwf_execute(plan);
+			float flux = 1e-10f;
+			for (int bin = 0; bin < windowSize / 2; ++bin)
+			{
+				const float magnitude = std::hypot(output[bin][0], output[bin][1]);
+				flux += std::abs(magnitude - previousMagnitudes[bin]); previousMagnitudes[bin] = magnitude;
+			}
+			if (flux / previousFlux > 1 + m_noteThreshold.value() && position - last > minDistance)
+			{
+				detected.push_back(position); last = position;
+				if (detected.size() >= MaxSlicePoints - 1) { break; }
+			}
+			previousFlux = flux;
+		}
+	}
+	const double samplesPerBar = sample.sampleRate() * 240.0 / originalBpm;
+	const int snap = m_sliceSnap.value() == 0 ? 1 : static_cast<int>(std::clamp(samplesPerBar / std::exp2(m_sliceSnap.value() + 1),
+		1.0, static_cast<double>(std::numeric_limits<int>::max())));
+	std::vector<float> candidate{0};
+	for (std::size_t index = 1; index < detected.size(); ++index)
+	{
+		int frame = detected[index];
+		// The original detector snaps forward to a nearby zero crossing.
+		for (int crossing = frame; crossing < std::min(total, frame + windowSize); ++crossing)
+		{
+			if (crossing > 0 && ((mono(crossing - 1) >= 0) != (mono(crossing) >= 0))) { frame = crossing; break; }
+		}
+		const double snapped = std::floor((static_cast<double>(frame) + snap / 2.0) / snap) * snap;
+		if (snapped > 0 && snapped < total) { candidate.push_back(static_cast<float>(snapped / total)); }
+	}
+	candidate.push_back(1);
+	std::sort(candidate.begin(), candidate.end());
+	candidate.erase(std::unique(candidate.begin(), candidate.end()), candidate.end());
+	if (!validateSlicePoints(sample, candidate, error)) { return false; }
+	points.swap(candidate); error.clear(); return true;
+}
+
+std::optional<Instrument::SliceLayout> SlicerT::sliceLayout() const
+{
+	return SliceLayout{static_cast<int>(m_originalSample.sampleSize()), m_originalSample.sampleRate(),
+		m_originalBPM.value(), m_enableSync.value(), m_parentTrack->baseNote(), m_slicePoints};
+}
+
+bool SlicerT::setSlicePoints(const std::vector<float>& points, QString& error)
+{
+	if (!validateSlicePoints(m_originalSample, points, error)) { return false; }
+	auto candidate = points;
+	{ auto guard = Engine::audioEngine()->requestChangesGuard(); m_slicePoints.swap(candidate); }
+	emit dataChanged(); error.clear(); return true;
+}
+
+bool SlicerT::analyzeSlices(bool estimateTempo, QString& error)
+{
+	if (!validSlicerBuffer(m_originalSample.buffer())) { error = tr("Load a native sample before analyzing slices"); return false; }
+	const int bpm = estimateTempo ? estimateBpm(m_originalSample) : m_originalBPM.value();
+	std::vector<float> points;
+	if (!computeSlices(m_originalSample, bpm, points, error)) { return false; }
+	{
+		auto guard = Engine::audioEngine()->requestChangesGuard(); QSignalBlocker blocked(&m_originalBPM);
+		m_slicePoints.swap(points); m_originalBPM.setValue(bpm);
+	}
+	if (estimateTempo) { emit m_originalBPM.dataChanged(); }
+	emit dataChanged(); error.clear(); return true;
+}
+
+void SlicerT::findSlices() { QString error; if (!analyzeSlices(false, error)) { collectErrorForUI(error); } }
 void SlicerT::findBPM()
 {
-	if (m_originalSample.sampleSize() <= 1) { return; }
+	if (m_originalSample.sampleSize() > 1) { m_originalBPM.setValue(estimateBpm(m_originalSample)); }
+}
 
-	float sampleRate = m_originalSample.sampleRate();
-	float totalFrames = m_originalSample.sampleSize();
-	float sampleLength = totalFrames / sampleRate;
-
-	float bpmEstimate = 240.0f / sampleLength;
-
-	while (bpmEstimate < 100)
+bool SlicerT::sliceMidi(std::vector<Note>& notes, QString& error) const
+{
+	if (!validateSlicePoints(m_originalSample, m_slicePoints, error)) { return false; }
+	const auto count = m_slicePoints.size() - 1;
+	const int base = m_parentTrack->baseNote();
+	if (base + 1 < 0 || count > static_cast<std::size_t>(std::max(0, NumKeys - base - 1)))
 	{
-		bpmEstimate *= 2;
+		error = tr("Slice MIDI exceeds the native keyboard; adjust the base note/master pitch or reduce slices"); return false;
 	}
-
-	while (bpmEstimate > 200)
+	const double ticksPerSecond = Engine::audioEngine()->outputSampleRate() / Engine::framesPerTick();
+	const double ticks = static_cast<double>(m_originalSample.sampleSize()) / m_originalSample.sampleRate() * playbackRatio() * ticksPerSecond;
+	if (!std::isfinite(ticks) || ticks <= 0 || ticks > MaxSongLength) { error = tr("Slice MIDI duration exceeds native timeline bounds"); return false; }
+	std::vector<Note> candidate;
+	candidate.reserve(count);
+	for (std::size_t index = 0; index < count; ++index)
 	{
-		bpmEstimate /= 2;
+		const int start = static_cast<int>(std::round(ticks * m_slicePoints[index]));
+		const int end = static_cast<int>(std::round(ticks * m_slicePoints[index + 1]));
+		if (end <= start) { error = tr("A slice is shorter than native MIDI tick resolution"); return false; }
+		candidate.emplace_back(TimePos(end - start), TimePos(start), base + static_cast<int>(index) + 1);
 	}
-
-	m_originalBPM.setValue(bpmEstimate);
-	m_originalBPM.setInitValue(bpmEstimate);
+	notes.swap(candidate); error.clear(); return true;
 }
 
 std::vector<Note> SlicerT::getMidi()
 {
-	std::vector<Note> outputNotes;
+	std::vector<Note> result; QString error;
+	if (!sliceMidi(result, error)) { collectErrorForUI(error); }
+	return result;
+}
 
-	float speedRatio = static_cast<float>(m_originalBPM.value()) / Engine::getSong()->getTempo();
-	float outFrames = m_originalSample.sampleSize() * speedRatio;
+std::vector<Plugin::FileResource> SlicerT::fileResources() const
+{
+	return {{"sample", tr("Slicer sample"), m_originalSample.sampleFile(), {"wav", "ogg", "flac", "aif", "aiff", "au", "voc", "spx", "ds", "raw"}}};
+}
 
-	float framesPerTick = Engine::framesPerTick();
-	float totalTicks = outFrames / framesPerTick;
-	float lastEnd = 0;
-
-	for (auto i = std::size_t{0}; i < m_slicePoints.size() - 1; i++)
+bool SlicerT::setFileResource(const QString& key, const QString& path, QString& error)
+{
+	if (key != "sample") { error = tr("Unknown SlicerT resource"); return false; }
+	Sample candidate;
+	std::vector<float> points;
+	int bpm = m_originalBPM.value();
+	if (!path.isEmpty())
 	{
-		float sliceStart = lastEnd;
-		float sliceEnd = totalTicks * m_slicePoints[i + 1];
-
-		Note sliceNote = Note();
-		sliceNote.setKey(i + m_parentTrack->baseNote() + 1);
-		sliceNote.setPos(sliceStart);
-		sliceNote.setLength(sliceEnd - sliceStart + 1); // + 1 so that the notes allign
-		outputNotes.push_back(sliceNote);
-
-		lastEnd = sliceEnd;
+		bool invalid = false; const auto absolute = PathUtil::toAbsolute(path, &invalid);
+		const QFileInfo file(absolute);
+		if (invalid || !file.isFile() || !file.isReadable()) { error = tr("Slicer sample path is not a readable file"); return false; }
+		auto buffer = SampleBuffer::fromFile(path);
+		if (!validSlicerBuffer(buffer)) { error = tr("Slicer sample could not be decoded into finite native audio"); return false; }
+		candidate = Sample(std::move(buffer)); bpm = estimateBpm(candidate);
+		if (!computeSlices(candidate, bpm, points, error)) { return false; }
 	}
-
-	return outputNotes;
+	{
+		auto guard = Engine::audioEngine()->requestChangesGuard(); QSignalBlocker blocked(&m_originalBPM);
+		m_originalSample = std::move(candidate); m_slicePoints.swap(points); m_originalBPM.setValue(bpm);
+	}
+	emit m_originalBPM.dataChanged(); emit dataChanged(); error.clear(); return true;
 }
 
-void SlicerT::updateFile(QString file)
-{
-	if (auto buffer = SampleBuffer::fromFile(file)) { m_originalSample = Sample(std::move(buffer)); }
-
-	findBPM();
-	findSlices();
-
-	emit dataChanged();
-}
-
-void SlicerT::loadFile(const QString& file)
-{
-	updateFile(file);
-}
-
-void SlicerT::updateSlices()
-{
-	findSlices();
-}
+void SlicerT::updateFile(QString file) { QString error; if (!setFileResource("sample", file, error)) { collectErrorForUI(error); } }
+void SlicerT::loadFile(const QString& file) { updateFile(file); }
+void SlicerT::updateSlices() { findSlices(); }
 
 void SlicerT::saveSettings(QDomDocument& document, QDomElement& element)
 {
 	element.setAttribute("version", "1");
 	element.setAttribute("src", m_originalSample.sampleFile());
-	if (m_originalSample.sampleFile().isEmpty())
-	{
-		element.setAttribute("sampledata", m_originalSample.toBase64());
-	}
-
+	m_originalSample.buffer()->registerResourceSource(document, element, "src", m_originalSample.buffer());
+	element.setAttribute("sampleRate", m_originalSample.sampleRate());
+	if (m_originalSample.sampleFile().isEmpty()) { m_originalSample.buffer()->saveEmbeddedData(document, element, "sampledata"); }
 	element.setAttribute("totalSlices", static_cast<int>(m_slicePoints.size()));
-	for (auto i = std::size_t{0}; i < m_slicePoints.size(); i++)
+	for (std::size_t index = 0; index < m_slicePoints.size(); ++index)
 	{
-		element.setAttribute(QString("slice_%1").arg(i), m_slicePoints[i]);
+		element.setAttribute(QString("slice_%1").arg(index), QString::number(m_slicePoints[index], 'g', std::numeric_limits<float>::max_digits10));
 	}
-
 	m_fadeOutFrames.saveSettings(document, element, "fadeOut");
 	m_noteThreshold.saveSettings(document, element, "threshold");
 	m_originalBPM.saveSettings(document, element, "origBPM");
 	m_enableSync.saveSettings(document, element, "syncEnable");
+	m_sliceSnap.saveSettings(document, element, "snap");
 }
 
 void SlicerT::loadSettings(const QDomElement& element)
 {
-	if (auto srcFile = element.attribute("src"); !srcFile.isEmpty())
+	DataFile::ResourceReferenceScope resource(element, "src");
+	m_fadeOutFrames.loadSettings(element, "fadeOut"); m_noteThreshold.loadSettings(element, "threshold");
+	m_originalBPM.loadSettings(element, "origBPM"); m_enableSync.loadSettings(element, "syncEnable"); m_sliceSnap.loadSettings(element, "snap");
+	Sample candidate;
+	const auto path = element.attribute("src"), embedded = element.attribute("sampledata");
+	if (!path.isEmpty() || !embedded.isEmpty())
 	{
-		if (QFileInfo(PathUtil::toAbsolute(srcFile)).exists())
+		bool rateOk = true;
+		const int rate = element.hasAttribute("sampleRate") ? element.attribute("sampleRate").toInt(&rateOk) : Engine::audioEngine()->outputSampleRate();
+		if (!rateOk || rate <= 0) { collectErrorForUI(tr("Invalid embedded slicer sample rate")); return; }
+		QString sampleError;
+		auto buffer = path.isEmpty() ? SampleBuffer::fromBase64(embedded, rate, sampleError) : SampleBuffer::fromFile(path);
+		if (!buffer) { collectErrorForUI(tr("Invalid embedded slicer sample: %1").arg(sampleError)); return; }
+		if (!validSlicerBuffer(buffer)) { collectErrorForUI(tr("Invalid or unavailable native slicer sample")); return; }
+		candidate = Sample(std::move(buffer));
+	}
+	std::vector<float> points;
+	QString error;
+	if (candidate.sampleSize() > 1)
+	{
+		bool countOk = false; const int count = element.attribute("totalSlices").toInt(&countOk);
+		if (countOk && count >= 2 && count <= static_cast<int>(MaxSlicePoints))
 		{
-			auto buffer = SampleBuffer::fromFile(srcFile);
-			m_originalSample = Sample(std::move(buffer));
+			for (int index = 0; index < count; ++index)
+			{
+				bool ok = false; const auto value = element.attribute(QString("slice_%1").arg(index)).toFloat(&ok);
+				if (!ok) { points.clear(); break; } points.push_back(value);
+			}
 		}
-		else
+		if (!validateSlicePoints(candidate, points, error))
 		{
-			QString message = tr("Sample not found: %1").arg(srcFile);
-			Engine::getSong()->collectError(message);
+			if (element.hasAttribute("totalSlices")) { collectErrorForUI(tr("Invalid native slicer points; restoring the complete sample")); }
+			points = {0, 1};
 		}
 	}
-	else if (auto sampleData = element.attribute("sampledata"); !sampleData.isEmpty())
-	{
-		auto buffer = SampleBuffer::fromBase64(sampleData);
-		m_originalSample = Sample(std::move(buffer));
-	}
-
-	if (!element.attribute("totalSlices").isEmpty())
-	{
-		int totalSlices = element.attribute("totalSlices").toInt();
-		m_slicePoints = {};
-		for (int i = 0; i < totalSlices; i++)
-		{
-			m_slicePoints.push_back(element.attribute(QString("slice_%1").arg(i)).toFloat());
-		}
-	}
-
-	m_fadeOutFrames.loadSettings(element, "fadeOut");
-	m_noteThreshold.loadSettings(element, "threshold");
-	m_originalBPM.loadSettings(element, "origBPM");
-	m_enableSync.loadSettings(element, "syncEnable");
-
+	{ auto guard = Engine::audioEngine()->requestChangesGuard(); m_originalSample = std::move(candidate); m_slicePoints.swap(points); }
 	emit dataChanged();
 }
 

@@ -22,12 +22,20 @@
  *
  */
 #include "InstrumentTrack.h"
+#include "NativeLinkedControls.h"
+#include <cmath>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <QPointer>
+#include <QScopeGuard>
 
 #include "AudioEngine.h"
 #include "AutomationClip.h"
 #include "ConfigManager.h"
 #include "ControllerConnection.h"
 #include "DataFile.h"
+#include "FileResourceIO.h"
 #include "GuiApplication.h"
 #include "Mixer.h"
 #include "InstrumentTrackView.h"
@@ -45,6 +53,28 @@
 namespace lmms
 {
 
+namespace
+{
+bool validTrackMidiEvent(const MidiEvent& event, bool input)
+{
+	const bool channel = event.channel() >= 0 && event.channel() < MidiChannelCount;
+	const bool noteChannel = channel || (input && event.channel() == -1); // Native piano preview sentinel.
+	switch (event.type())
+	{
+	case MidiNoteOn: case MidiNoteOff: case MidiKeyPressure:
+		return noteChannel && event.param(0) >= 0 && event.param(0) < NumKeys
+			&& event.param(1) >= 0 && event.param(1) <= MidiMaxVelocity;
+	case MidiControlChange: return event.isValidControlChange();
+	case MidiProgramChange: case MidiChannelPressure:
+		return channel && event.param(0) >= 0 && event.param(0) <= 127;
+	case MidiPitchBend: return channel && event.param(0) >= 0 && event.param(0) <= MidiMaxPitchBend;
+	case MidiMetaEvent:
+		return event.metaEvent() != MidiNotePanning || (noteChannel && event.param(0) >= 0 && event.param(0) < NumKeys
+			&& event.param(1) >= MidiMinPanning && event.param(1) <= MidiMaxPanning);
+	default: return true; // Preserve existing system/plugin-specific dispatch.
+	}
+}
+}
 
 InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	Track(Track::Type::Instrument, tc),
@@ -60,7 +90,7 @@ InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	m_hasAutoMidiDev(false),
 	m_volumeModel(DefaultVolume, MinVolume, MaxVolume, 0.1f, this, tr("Volume")),
 	m_panningModel(DefaultPanning, PanningLeft, PanningRight, 0.1f, this, tr("Panning")),
-	m_audioBusHandle(tr("unnamed_track"), true, &m_volumeModel, &m_panningModel, &m_mutedModel),
+	m_audioBusHandle(tr("unnamed_track"), true, &m_volumeModel, &m_panningModel, &m_mutedModel, this),
 	m_pitchModel(0, MinPitchDefault, MaxPitchDefault, 1, this, tr("Pitch")),
 	m_pitchRangeModel(1, 1, 60, this, tr("Pitch range")),
 	m_mixerChannelModel(0, 0, 0, this, tr("Mixer channel")),
@@ -70,7 +100,7 @@ InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	m_arpeggio(this),
 	m_noteStacking(this),
 	m_piano(this),
-	m_microtuner()
+	m_microtuner(this)
 {
 	m_pitchModel.setCenterValue( 0 );
 	m_pitchModel.setStrictStepSize(true);
@@ -90,14 +120,20 @@ InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 
 	// Initialize the m_midiCCEnabled variable, but it's actually going to be connected
 	// to a LedButton
-	m_midiCCEnable = std::make_unique<BoolModel>(false, nullptr, tr("Enable/Disable MIDI CC"));
+	m_midiCCEnable = std::make_unique<BoolModel>(false, this, tr("Enable/Disable MIDI CC"));
+	connect(m_midiCCEnable.get(), &BoolModel::dataChanged, this, [this]
+	{
+		const auto guard = Engine::audioEngine()->requestChangesGuard();
+		invalidateMidiCC();
+		if (!m_loadingMidiCC && m_midiCCEnable->value() && !Engine::getSong()->isPlaying()) { refreshMidiCC(); }
+	}, Qt::DirectConnection);
 
 	// Initialize the MIDI CC controller models and connect them to the method that processes
 	// the midi cc events
 	for (int i = 0; i < MidiControllerCount; ++i)
 	{
 		m_midiCCModel[i] = std::make_unique<FloatModel>(0.0f, 0.0f, 127.0f, 1.0f,
-			nullptr, tr("CC Controller %1").arg(i));
+			this, tr("CC Controller %1").arg(i));
 
 		connect(m_midiCCModel[i].get(), &FloatModel::dataChanged,
 			this, [this, i]{ processCCEvent(i); }, Qt::DirectConnection);
@@ -109,6 +145,8 @@ InstrumentTrack::InstrumentTrack(TrackContainer* tc) :
 	connect(&m_pitchModel, SIGNAL(dataChanged()), this, SLOT(updatePitch()), Qt::DirectConnection);
 	connect(&m_pitchRangeModel, SIGNAL(dataChanged()), this, SLOT(updatePitchRange()), Qt::DirectConnection);
 	connect(&m_mixerChannelModel, SIGNAL(dataChanged()), this, SLOT(updateMixerChannel()), Qt::DirectConnection);
+	connect(&m_mixerChannelModel, SIGNAL(propertiesChanged()), this, SLOT(updateMixerChannel()), Qt::DirectConnection);
+	connect(&m_microtuner, &Microtuner::tuningChanged, this, &InstrumentTrack::updateBaseNote, Qt::DirectConnection);
 
 	autoAssignMidiDevice(true);
 }
@@ -129,7 +167,7 @@ bool InstrumentTrack::isKeyMapped(int key) const
 	Song *song = Engine::getSong();
 	if (!song) {return false;}
 
-	return song->getKeymap(m_microtuner.currentKeymap())->getDegree(key) != -1;
+	return song->getKeymap(m_microtuner.currentKeymap())->isMapped(key);
 }
 
 
@@ -188,8 +226,17 @@ float InstrumentTrack::baseFreq() const
 
 
 
+float InstrumentTrack::nominalFrequency(int key) const
+{
+	if (m_microtuner.enabled()) { return m_microtuner.keyToFreq(key, m_baseNoteModel.value()); }
+	return DefaultBaseFreq * std::exp2((key - m_baseNoteModel.value()) / 12.0f);
+}
+
 InstrumentTrack::~InstrumentTrack()
 {
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	m_retiring = true; m_replacingInstrument = true;
+	m_midiPort.detachInputProcessor();
 	// De-assign midi device
 	if (s_autoAssignedTrack == this)
 	{
@@ -204,8 +251,11 @@ InstrumentTrack::~InstrumentTrack()
 	silenceAllNotes( true );
 
 	// now we're save deleting the instrument
-	if( m_instrument ) delete m_instrument;
+	const auto previous = m_instrument; m_instrument = nullptr; delete previous.data();
 }
+
+Instrument* InstrumentTrack::instrument() { return m_instrument.data(); }
+const Instrument* InstrumentTrack::instrument() const { return m_instrument.data(); }
 
 
 
@@ -289,25 +339,128 @@ MidiEvent InstrumentTrack::applyMasterKey( const MidiEvent& event )
 
 void InstrumentTrack::processCCEvent(int controller)
 {
-	// Does nothing if the LED is disabled
-	if (!m_midiCCEnable->value()) { return; }
-
-	auto channel = static_cast<uint8_t>(midiPort()->realOutputChannel());
-	auto cc = static_cast<uint16_t>(controller);
-	auto value = static_cast<uint16_t>(m_midiCCModel[controller]->value());
-
-	// Process the MIDI CC event as an input event but with source set to Internal
-	// so we can know LMMS generated the event, not a controller, and can process it during
-	// the project export
-	processInEvent(MidiEvent(MidiControlChange, channel, cc, value, nullptr, MidiEvent::Source::Internal));
+	if (m_loadingMidiCC || !activateMidiCC(controller)) { return; }
+	// Playback applies rack values once per native tick with its sample offset.
+	if (!Engine::getSong()->isPlaying()) { refreshMidiCC(); }
 }
 
+bool InstrumentTrack::activateMidiCC(int controller)
+{
+	if (controller < 0 || controller >= MidiControllerCount) { return false; }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	m_activeMidiCC.set(controller);
+	return true;
+}
+
+bool InstrumentTrack::initializeMidiCC(int controller, float value)
+{
+	if (controller < 0 || controller >= MidiControllerCount || !std::isfinite(value)
+		|| value < 0 || value > MidiMaxControllerValue) { return false; }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	const QPointer<InstrumentTrack> receiver(this);
+	const bool previous = m_loadingMidiCC; m_loadingMidiCC = true;
+	const auto restore = qScopeGuard([receiver, previous] { if (receiver) { receiver->m_loadingMidiCC = previous; } });
+	m_midiCCModel[controller]->setInitValue(value); if (!receiver) { return false; } invalidateMidiCC(controller);
+	return true;
+}
+
+void InstrumentTrack::refreshMidiCC(const TimePos& time, f_cnt_t offset)
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (m_loadingMidiCC || m_refreshingMidiCC || !m_midiCCEnable->value() || !m_instrument) { return; }
+	const QPointer<Instrument> receiver(m_instrument);
+	const int channel = midiPort()->realOutputChannel();
+	if (channel != m_lastMidiCCChannel) { invalidateMidiCC(); m_lastMidiCCChannel = channel; }
+	m_refreshingMidiCC = true;
+	const auto restore = qScopeGuard([this] { m_refreshingMidiCC = false; });
+	// Never send the unused rack's zeroes: channel-mode controllers are commands,
+	// even with a zero value. Preserve explicitly used zero-valued controllers.
+	const auto active = m_activeMidiCC;
+	for (int controller = 0; controller < MidiControllerCount; ++controller)
+	{
+		if (!m_midiCCEnable->value()) { break; }
+		if (!active.test(controller)) { continue; }
+		const auto current = m_midiCCModel[controller]->value();
+		if (!std::isfinite(current)) { invalidateMidiCC(controller); continue; }
+		const auto value = static_cast<int>(std::lround(std::clamp(current, 0.f, float(MidiMaxControllerValue))));
+		if (m_sentMidiCC.test(controller) && m_lastMidiCC[controller] == value) { continue; }
+		const MidiEvent event(MidiControlChange, channel, controller, value, nullptr, MidiEvent::Source::Internal);
+		const auto previous = m_midiCCRackEvent; m_midiCCRackEvent = &event;
+		const auto restoreEvent = qScopeGuard([this, previous] { m_midiCCRackEvent = previous; });
+		processInEvent(event, time, offset);
+		if (!receiver || receiver.data() != m_instrument) { invalidateMidiCC(); return; }
+	}
+}
+
+void InstrumentTrack::invalidateMidiCC(int controller)
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	++m_midiCCDeliveryGeneration;
+	if (controller < 0) { m_sentMidiCC.reset(); }
+	else { m_sentMidiCC.reset(controller); }
+}
+
+bool InstrumentTrack::sendMidiEventToInstrument(const MidiEvent& event, const TimePos& time, f_cnt_t offset)
+{
+	const QPointer<InstrumentTrack> owner(this);
+	if (event.type() != MidiControlChange) { return instrument() && instrument()->handleMidiEvent(event, time, offset); }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	const int controller = event.controllerNumber(), value = event.controllerValue(), channel = event.channel();
+	if (!event.isValidControlChange()) { return false; }
+	// Input and native output can change the instrument behind an unchanged rack
+	// model. Retain the last completed attempt, never an assumed plugin state.
+	invalidateMidiCC(controller == MidiControllerResetAllControllers ? -1 : controller);
+	if (controller == MidiControllerSustain)
+	{
+		if (value > MidiMaxControllerValue / 2) { m_sustainPedalPressed = true; }
+		else { releaseMidiSustain(offset); }
+		if (!owner) { return false; }
+	}
+	else if (controller == MidiControllerResetAllControllers)
+	{
+		releaseMidiSustain(offset);
+		if (!owner) { return false; }
+		// Native note-off callbacks may have sent a CC before this reset reaches
+		// the instrument. None of those attempts survive the later reset.
+		invalidateMidiCC();
+	}
+	const auto generation = m_midiCCDeliveryGeneration;
+	const QPointer<Instrument> receiver(m_instrument);
+	const bool handled = receiver && receiver->handleMidiEvent(event, time, offset);
+	if (!owner) { return handled; }
+	if (generation != m_midiCCDeliveryGeneration || !receiver || receiver.data() != m_instrument)
+	{
+		// A callback may deliver another CC or invalidate native state while this
+		// attempt is in flight. Its completion must not conceal that change.
+		invalidateMidiCC(controller); return handled;
+	}
+	if (channel == m_lastMidiCCChannel)
+	{
+		m_lastMidiCC[controller] = value; m_sentMidiCC.set(controller);
+	}
+	return handled;
+}
+
+void InstrumentTrack::releaseMidiSustain(f_cnt_t offset)
+{
+	if (!isSustainPedalPressed()) { return; }
+	for (NotePlayHandle* nph : m_sustainedNotes)
+	{
+		if (nph && nph->isReleased() && nph->origin() == NotePlayHandle::Origin::MidiInput)
+		{
+			nph->setLength(nph->recordedMidiLength(offset)); midiNoteOff(*nph);
+		}
+	}
+	m_sustainedNotes.clear(); m_sustainPedalPressed = false;
+}
 
 
 
 void InstrumentTrack::processInEvent( const MidiEvent& event, const TimePos& time, f_cnt_t offset )
 {
-	if (Engine::getSong()->isExporting() && event.source() == MidiEvent::Source::External)
+	if (!validTrackMidiEvent(event, true)) { return; }
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	if (event.source() == MidiEvent::Source::External && (Engine::getSong()->isExporting() || Engine::getSong()->hasPendingExportCleanup() || Engine::audioEngine()->hasStoredAudioDevice()))
 	{
 		return;
 	}
@@ -323,7 +476,7 @@ void InstrumentTrack::processInEvent( const MidiEvent& event, const TimePos& tim
 			if( event.velocity() > 0 )
 			{
 				// play a note only if it is not already playing and if it is within configured bounds
-				if (m_notes[event.key()] == nullptr && event.key() >= firstKey() && event.key() <= lastKey())
+				if (event.key() >= firstKey() && event.key() <= lastKey() && m_notes[event.key()] == nullptr)
 				{
 					NotePlayHandle* nph =
 						NotePlayHandleManager::acquire(
@@ -348,7 +501,6 @@ void InstrumentTrack::processInEvent( const MidiEvent& event, const TimePos& tim
 			{
 				// do actual note off and remove internal reference to NotePlayHandle (which itself will
 				// be deleted later automatically)
-				Engine::audioEngine()->requestChangeInModel();
 				m_notes[event.key()]->noteOff( offset );
 				if (isSustainPedalPressed() &&
 					m_notes[event.key()]->origin() ==
@@ -357,7 +509,6 @@ void InstrumentTrack::processInEvent( const MidiEvent& event, const TimePos& tim
 					m_sustainedNotes << m_notes[event.key()];
 				}
 				m_notes[event.key()] = nullptr;
-				Engine::audioEngine()->doneChangeInModel();
 			}
 			eventHandled = true;
 			break;
@@ -376,36 +527,10 @@ void InstrumentTrack::processInEvent( const MidiEvent& event, const TimePos& tim
 			// updatePitch() is connected to m_pitchModel::dataChanged() which will send out
 			// MidiPitchBend events
 			m_pitchModel.setValue( m_pitchModel.minValue() + event.pitchBend() * m_pitchModel.range() / MidiMaxPitchBend );
+			recordMidiInputPitch(offset);
 			break;
 
 		case MidiControlChange:
-			if( event.controllerNumber() == MidiControllerSustain )
-			{
-				if( event.controllerValue() > MidiMaxControllerValue/2 )
-				{
-					m_sustainPedalPressed = true;
-				}
-				else if (isSustainPedalPressed())
-				{
-					for (NotePlayHandle* nph : m_sustainedNotes)
-					{
-						if (nph && nph->isReleased())
-						{
-							if( nph->origin() ==
-								NotePlayHandle::Origin::MidiInput)
-							{
-								nph->setLength(
-									TimePos( static_cast<f_cnt_t>(
-									nph->totalFramesPlayed() /
-									Engine::framesPerTick() ) ) );
-								midiNoteOff( *nph );
-							}
-						}
-					}
-					m_sustainedNotes.clear();
-					m_sustainPedalPressed = false;
-				}
-			}
 			if( event.controllerNumber() == MidiControllerAllSoundOff ||
 				event.controllerNumber() == MidiControllerAllNotesOff ||
 				event.controllerNumber() == MidiControllerOmniOn ||
@@ -413,7 +538,9 @@ void InstrumentTrack::processInEvent( const MidiEvent& event, const TimePos& tim
 				event.controllerNumber() == MidiControllerMonoOn ||
 				event.controllerNumber() == MidiControllerPolyOn )
 			{
-				silenceAllNotes();
+				// Preserve prior rack attempts only for this exact rack command.
+				// Nested input and explicit native silence must invalidate them.
+				silenceAllNotesImpl(false, &event == m_midiCCRackEvent);
 			}
 			break;
 
@@ -440,7 +567,7 @@ void InstrumentTrack::processInEvent( const MidiEvent& event, const TimePos& tim
 
 	// If the event wasn't handled, check if there's a loaded instrument and if so send the
 	// event to it. If it returns false means the instrument didn't handle the event, so we trigger a warning.
-	if (eventHandled == false && !(instrument() && instrument()->handleMidiEvent(event, time, offset)))
+	if (eventHandled == false && !sendMidiEventToInstrument(event, time, offset))
 	{
 		qWarning("InstrumentTrack: unhandled MIDI event %d", event.type());
 	}
@@ -452,6 +579,9 @@ void InstrumentTrack::processInEvent( const MidiEvent& event, const TimePos& tim
 
 void InstrumentTrack::processOutEvent( const MidiEvent& event, const TimePos& time, f_cnt_t offset )
 {
+	const QPointer<InstrumentTrack> owner(this);
+	if (!validTrackMidiEvent(event, false)) { return; }
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
 	// do nothing if we do not have an instrument instance (e.g. when loading settings)
 	if( m_instrument == nullptr )
 	{
@@ -467,10 +597,12 @@ void InstrumentTrack::processOutEvent( const MidiEvent& event, const TimePos& ti
 		? event.channel()
 		: midiPort()->realOutputChannel();
 
-	switch( event.type() )
+	const auto type = event.type() == MidiNoteOn && event.param(1) == 0 ? MidiNoteOff : event.type();
+	switch( type )
 	{
 		case MidiNoteOn:
-			m_midiNotesMutex.lock();
+		{
+			const auto notes = std::lock_guard{m_midiNotesMutex};
 			m_piano.setKeyState( event.key(), true );	// event.key() = original key
 
 			if( key >= 0 && key < NumKeys )
@@ -479,40 +611,85 @@ void InstrumentTrack::processOutEvent( const MidiEvent& event, const TimePos& ti
 				{
 					m_instrument->handleMidiEvent( MidiEvent( MidiNoteOff, handleEventOutputChannel, key, 0 ), time, offset );
 				}
-				++m_runningMidiNotes[key];
+				if (m_runningMidiNotes[key] < std::numeric_limits<int>::max()) { ++m_runningMidiNotes[key]; }
 				m_instrument->handleMidiEvent( MidiEvent( MidiNoteOn, handleEventOutputChannel, key, event.velocity() ), time, offset );
 
 			}
-			m_midiNotesMutex.unlock();
+		}
 			emit newNote();
 			break;
 
 		case MidiNoteOff:
-			m_midiNotesMutex.lock();
+		{
+			const auto notes = std::lock_guard{m_midiNotesMutex};
 			m_piano.setKeyState( event.key(), false );	// event.key() = original key
 
-			if( key >= 0 && key < NumKeys && --m_runningMidiNotes[key] <= 0 )
+			if (key >= 0 && key < NumKeys)
 			{
-				m_instrument->handleMidiEvent( MidiEvent( MidiNoteOff, handleEventOutputChannel, key, 0 ), time, offset );
+				if (m_runningMidiNotes[key] > 0) { --m_runningMidiNotes[key]; }
+				if (m_runningMidiNotes[key] == 0)
+				{ m_instrument->handleMidiEvent(MidiEvent(MidiNoteOff, handleEventOutputChannel, key, 0), time, offset); }
 			}
-			m_midiNotesMutex.unlock();
+		}
 			emit endNote();
 			break;
 
 		default:
-			m_instrument->handleMidiEvent( transposedEvent, time, offset );
+			sendMidiEventToInstrument(transposedEvent, time, offset);
 			break;
 	}
 
 	// if appropriate, midi-port does further routing
-	m_midiPort.processOutEvent( event, time );
+	if (owner) { owner->m_midiPort.processOutEvent(event, time); }
 }
 
 
 
 
+void InstrumentTrack::recordMidiInputPitch(f_cnt_t offset)
+{
+	if (!isNoteRecording()) { return; }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	for (const auto handle : m_processHandles)
+	{
+		if (handle->origin() != NotePlayHandle::Origin::MidiInput
+			|| (handle->isReleased() && !isSustainPedalPressed())) { continue; }
+		Note snapshot(*handle); snapshot.setLength(handle->recordedMidiLength(offset));
+		emit midiNotePitch(snapshot, m_pitchModel.value());
+	}
+}
+
+void InstrumentTrack::finishMidiInputRecording()
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	for (const auto handle : m_processHandles)
+	{
+		if (handle->origin() != NotePlayHandle::Origin::MidiInput
+			|| (handle->isReleased() && !isSustainPedalPressed())) { continue; }
+		Note completed(*handle); completed.setLength(handle->recordedMidiLength());
+		emit midiNoteOff(completed);
+	}
+}
+
 void InstrumentTrack::silenceAllNotes( bool removeIPH )
 {
+	silenceAllNotesImpl(removeIPH, false);
+}
+
+void InstrumentTrack::silenceAllNotesImpl(bool removeIPH, bool preserveMidiCC)
+{
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	const QPointer<InstrumentTrack> receiver(this);
+	// Native playback cleanup invalidates state, but a rack-generated channel-
+	// mode command must not cause every earlier controller to resend each tick.
+	if (!preserveMidiCC) { invalidateMidiCC(); }
+	else
+	{
+		// Silence clears native pedal state. Reassert value controllers once,
+		// retaining channel-mode attempts so unchanged commands do not loop.
+		++m_midiCCDeliveryGeneration;
+		for (int controller = 0; controller < MidiControllerAllSoundOff; ++controller) { m_sentMidiCC.reset(controller); }
+	}
 	m_midiNotesMutex.lock();
 	for( int i = 0; i < NumKeys; ++i )
 	{
@@ -521,7 +698,8 @@ void InstrumentTrack::silenceAllNotes( bool removeIPH )
 	}
 	m_midiNotesMutex.unlock();
 
-	Engine::audioEngine()->requestChangeInModel();
+	m_sustainedNotes.clear();
+	m_sustainPedalPressed = false;
 	// invalidate all NotePlayHandles and PresetPreviewHandles linked to this track
 	m_processHandles.clear();
 
@@ -531,7 +709,7 @@ void InstrumentTrack::silenceAllNotes( bool removeIPH )
 		flags |= PlayHandle::Type::InstrumentPlayHandle;
 	}
 	Engine::audioEngine()->removePlayHandlesOfTypes( this, flags );
-	Engine::audioEngine()->doneChangeInModel();
+	if (receiver) { receiver->m_midiPort.releaseOutput(); }
 }
 
 
@@ -608,9 +786,11 @@ void InstrumentTrack::deleteNotePluginData( NotePlayHandle* n )
 
 void InstrumentTrack::setName(const QString& new_name)
 {
+	const QPointer<InstrumentTrack> owner(this);
 	Track::setName(new_name);
-	m_midiPort.setName(name());
-	m_audioBusHandle.setName(name());
+	if (!owner) { return; } const QString actual = owner->name();
+	owner->m_midiPort.setName(actual);
+	if (owner) { owner->m_audioBusHandle.setName(actual); }
 }
 
 
@@ -633,9 +813,9 @@ void InstrumentTrack::updateBaseNote()
 
 void InstrumentTrack::updatePitch()
 {
+	const QPointer<InstrumentTrack> owner(this);
 	updateBaseNote();
-
-	processOutEvent( MidiEvent( MidiPitchBend, midiPort()->realOutputChannel(), midiPitch() ) );
+	if (owner) { owner->processOutEvent(MidiEvent(MidiPitchBend, owner->midiPort()->realOutputChannel(), owner->midiPitch())); }
 }
 
 
@@ -643,13 +823,17 @@ void InstrumentTrack::updatePitch()
 
 void InstrumentTrack::updatePitchRange()
 {
+	const QPointer<InstrumentTrack> owner(this);
 	const int r = m_pitchRangeModel.value();
 	m_pitchModel.setRange( MinPitchDefault * r, MaxPitchDefault * r );
+	if (!owner) { return; }
 
 	processOutEvent( MidiEvent( MidiControlChange, midiPort()->realOutputChannel(),
 								MidiControllerRegisteredParameterNumberLSB, MidiPitchBendSensitivityRPN & 0x7F ) );
+	if (!owner) { return; }
 	processOutEvent( MidiEvent( MidiControlChange, midiPort()->realOutputChannel(),
 								MidiControllerRegisteredParameterNumberMSB, ( MidiPitchBendSensitivityRPN >> 8 ) & 0x7F ) );
+	if (!owner) { return; }
 	processOutEvent( MidiEvent( MidiControlChange, midiPort()->realOutputChannel(), MidiControllerDataEntry, midiPitchRange() ) );
 }
 
@@ -676,8 +860,11 @@ int InstrumentTrack::masterKey( int _midi_key ) const
 
 void InstrumentTrack::removeMidiPortNode( DataFile & _dataFile )
 {
-	QDomNodeList n = _dataFile.elementsByTagName( "midiport" );
-	n.item( 0 ).parentNode().removeChild( n.item( 0 ) );
+	// Preserve the destination track's port, without deleting an embedded
+	// connection-owned MIDI controller's independently serialized port.
+	auto instrument = _dataFile.content().firstChildElement("instrumenttrack");
+	auto port = instrument.firstChildElement("midiport");
+	if (!port.isNull()) { instrument.removeChild(port); }
 }
 
 
@@ -686,10 +873,13 @@ void InstrumentTrack::removeMidiPortNode( DataFile & _dataFile )
 bool InstrumentTrack::play( const TimePos & _start, const f_cnt_t _frames,
 							const f_cnt_t _offset, int _clip_num )
 {
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
 	if( ! m_instrument || ! tryLock() )
 	{
 		return false;
 	}
+	const auto unlockTrack = qScopeGuard([this] { unlock(); });
+	refreshMidiCC(_start, _offset);
 	const float frames_per_tick = Engine::framesPerTick();
 
 	clipVector clips;
@@ -712,13 +902,11 @@ bool InstrumentTrack::play( const TimePos & _start, const f_cnt_t _frames,
 	// Handle automation: detuning
 	for (const auto& processHandle : m_processHandles)
 	{
-		processHandle->processTimePos(
-			_start, m_pitchModel.value(), gui::getGUI() && gui::getGUI()->pianoRoll()->isRecording());
+		processHandle->processTimePos(_start);
 	}
 
 	if ( clips.size() == 0 )
 	{
-		unlock();
 		return false;
 	}
 
@@ -790,7 +978,6 @@ bool InstrumentTrack::play( const TimePos & _start, const f_cnt_t _frames,
 			++nit;
 		}
 	}
-	unlock();
 	return played_a_note;
 }
 
@@ -817,25 +1004,53 @@ gui::TrackView* InstrumentTrack::createView( gui::TrackContainerView* tcv )
 
 void InstrumentTrack::saveTrackSpecificSettings(QDomDocument& doc, QDomElement& thisElement, bool presetMode)
 {
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events;
+	if (!canSaveTrackState()) { throw std::logic_error("Native instrument serialization cannot reenter an active transition"); }
+	const QPointer<InstrumentTrack> owner(this); const QPointer<Song> song(Engine::getSong()); const QPointer<Instrument> native(m_instrument);
+	Instrument* const selected = native.data(); const auto active = m_activeMidiCC; m_savingInstrumentSettings = true;
+	const auto finish = qScopeGuard([&] { if (owner) { owner->m_savingInstrumentSettings = false; } });
+	const auto ready = [&] {
+		if (!owner || owner->m_retiring || !song || Engine::getSong() != song.data() || native.data() != selected || owner->m_instrument.data() != selected || owner->m_activeMidiCC != active)
+		{ throw std::runtime_error("Native instrument serialization source retired or changed"); }
+	};
+	const auto check = [&] { ready(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready(); };
+	check();
+
 	m_volumeModel.saveSettings( doc, thisElement, "vol" );
+	check();
 	m_panningModel.saveSettings( doc, thisElement, "pan" );
+	check();
 	m_pitchModel.saveSettings( doc, thisElement, "pitch" );
+	check();
 	m_pitchRangeModel.saveSettings( doc, thisElement, "pitchrange" );
+	check();
 
 	m_mixerChannelModel.saveSettings( doc, thisElement, "mixch" );
+	check();
 	m_baseNoteModel.saveSettings( doc, thisElement, "basenote" );
+	check();
 	m_firstKeyModel.saveSettings(doc, thisElement, "firstkey");
+	check();
 	m_lastKeyModel.saveSettings(doc, thisElement, "lastkey");
+	check();
 	m_useMasterPitchModel.saveSettings( doc, thisElement, "usemasterpitch");
+	check();
 	m_microtuner.saveSettings(doc, thisElement);
+	check();
 
 	// Save MIDI CC stuff
 	m_midiCCEnable->saveSettings(doc, thisElement, "enablecc");
+	check();
+	QStringList activeCC;
+	for (int i = 0; i < MidiControllerCount; ++i)
+	{ if (m_activeMidiCC.test(i)) { activeCC.append(QString::number(i)); } }
+	thisElement.setAttribute("activecc", activeCC.join(','));
 	QDomElement midiCC = doc.createElement("midicontrollers");
 	thisElement.appendChild(midiCC);
 	for (int i = 0; i < MidiControllerCount; ++i)
 	{
 		m_midiCCModel[i]->saveSettings(doc, midiCC, "cc" + QString::number(i));
+		check();
 	}
 
 	if( m_instrument != nullptr )
@@ -843,152 +1058,131 @@ void InstrumentTrack::saveTrackSpecificSettings(QDomDocument& doc, QDomElement& 
 		QDomElement i = doc.createElement( "instrument" );
 		i.setAttribute( "name", m_instrument->descriptor()->name );
 		QDomElement ins = m_instrument->saveState( doc, i );
-		if(m_instrument->key().isValid()) {
-			ins.appendChild( m_instrument->key().saveXML( doc ) );
+		check();
+		if(native->key().isValid()) {
+			ins.appendChild(native->key().saveXML(doc));
 		}
 		thisElement.appendChild( i );
 	}
 	m_soundShaping.saveState( doc, thisElement );
+	check();
 	m_noteStacking.saveState( doc, thisElement );
+	check();
 	m_arpeggio.saveState( doc, thisElement );
+	check();
 
-	// Save the midi port info if we are not in song saving mode, e.g. in
-	// track cloning mode or if we are in song saving mode and the user
-	// has chosen not to discard the MIDI connections.
-	if (!Engine::getSong()->isSavingProject() ||
-	    !Engine::getSong()->getSaveOptions().discardMIDIConnections.value())
+	// Presets omit the top-level MIDI port, so they must not temporarily
+	// unsubscribe the live automatic input merely to serialize other settings.
+	if (!presetMode && !song->shouldDiscardMidiConnections())
 	{
-		// Don't save auto assigned midi device connection
-		bool hasAuto = m_hasAutoMidiDev;
-		autoAssignMidiDevice(false);
-
-		// Only save the MIDI port information if we are not saving a preset.
-		if (!presetMode)
-		{
-			m_midiPort.saveState(doc, thisElement);
-		}
-
-		autoAssignMidiDevice(hasAuto);
+		const bool hasAuto = m_hasAutoMidiDev; bool pending = true;
+		const auto restore = [&] { if (owner && pending) { pending = false; owner->autoAssignMidiDevice(hasAuto); } };
+		const auto cleanup = qScopeGuard([&] { try { restore(); } catch (...) { if (song) { song->collectError("Native automatic MIDI assignment could not be restored after serialization"); } } });
+		autoAssignMidiDevice(false); check();
+		m_midiPort.saveState(doc, thisElement); check();
+		restore(); check();
 	}
 
 	m_audioBusHandle.effects()->saveState(doc, thisElement);
+	check();
 }
 
 
 
 
-void InstrumentTrack::loadTrackSpecificSettings( const QDomElement & thisElement )
+
+void InstrumentTrack::loadTrackSpecificSettings(const QDomElement& thisElement)
 {
-	// don't delete instrument in preview mode if it's the same
-	// we can't do this for other situations due to some issues with linked models
-	bool reuseInstrument = m_previewMode && m_instrument && m_instrument->nodeName() == getSavedInstrumentName(thisElement);
-	// remove the InstrumentPlayHandle if and only if we need to delete the instrument
-	silenceAllNotes(!reuseInstrument);
-
-	lock();
-
-	m_volumeModel.loadSettings( thisElement, "vol" );
-	m_panningModel.loadSettings( thisElement, "pan" );
-	m_pitchRangeModel.loadSettings( thisElement, "pitchrange" );
-	m_pitchModel.loadSettings( thisElement, "pitch" );
-	m_mixerChannelModel.setRange( 0, Engine::mixer()->numChannels()-1 );
-	if ( !m_previewMode )
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events;
+	if (m_retiring || m_replacingInstrument || m_loadingMidiCC || m_savingInstrumentSettings || isSavingTrackState()
+		|| (isLoadingTrackState() && !isDispatchingTrackSpecificState())
+		|| (m_replacingPreset && (!m_permitPresetTrackLoad || !isDispatchingTrackSpecificState())))
+	{ throw std::logic_error("Native instrument settings cannot load during instrument replacement or retirement"); }
+	const QPointer<InstrumentTrack> owner(this); InstrumentTrack* const identity = this;
+	const QPointer<Song> song(Engine::getSong()); const QPointer<TrackContainer> tracks(trackContainer());
+	const auto engine = Engine::audioEngine(); QPointer<Instrument> expected(m_instrument); Instrument* expectedIdentity = expected.data();
+	m_loadingMidiCC = true;
+	const auto restoreMidiCC = qScopeGuard([owner] { if (owner && !owner->m_retiring) { owner->m_loadingMidiCC = false; owner->invalidateMidiCC(); } });
+	const auto ready = [&] {
+		if (!owner || owner->m_retiring || !song || Engine::getSong() != song.data() || Engine::audioEngine() != engine
+			|| !tracks || owner->trackContainer() != tracks.data() || !owner->m_loadingMidiCC
+			|| expected.data() != expectedIdentity || owner->m_instrument.data() != expectedIdentity)
+		{ throw std::runtime_error("Native instrument settings owner or selected plugin changed"); }
+	};
+	const auto check = [&] { ready(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready(); };
+	const auto load = [&](auto& model, const char* name) { model.loadSettings(thisElement, name); check(); };
+	check(); m_activeMidiCC.reset();
+	// Preview reuse remains native; ordinary preset/project restores still
+	// retire the old plugin before constructing its replacement.
+	const bool reuseInstrument = m_previewMode && expected && expected->nodeName() == getSavedInstrumentName(thisElement); ready();
+	silenceAllNotes(!reuseInstrument); check();
+	// The audio model guard excludes processing. No track mutex is held across
+	// model, resource, plugin or observer callbacks.
+	load(m_volumeModel, "vol"); load(m_panningModel, "pan"); load(m_pitchRangeModel, "pitchrange"); load(m_pitchModel, "pitch");
+	m_mixerChannelModel.setRange(0, Engine::mixer()->numChannels() - 1); check();
+	if (!m_previewMode) { load(m_mixerChannelModel, "mixch"); }
+	load(m_baseNoteModel, "basenote"); load(m_firstKeyModel, "firstkey"); load(m_lastKeyModel, "lastkey"); load(m_useMasterPitchModel, "usemasterpitch");
+	m_microtuner.loadSettings(thisElement); check();
+	if (!m_audioBusHandle.effects()->clear()) { throw std::runtime_error("Native preset effect chain is already changing"); } check();
+	m_midiCCEnable->setValue(false); check();
+	const auto install = [&](const QString& name, const Plugin::Descriptor::SubPluginFeatures::Key* key, bool legacy, const QDomElement& state) {
+		const auto previous = owner->m_instrument; owner->m_instrument = nullptr; expected = nullptr; expectedIdentity = nullptr;
+		delete previous.data(); check();
+		const QPointer<Instrument> native(owner->createInstrument(name, key, legacy));
+		const auto cleanup = qScopeGuard([owner, native, identity] {
+			if (native && native->isFromTrack(identity) && (!owner || owner->m_instrument != native)) { delete native.data(); }
+		});
+		check();
+		if (!native || !native->isFromTrack(identity)) { throw std::runtime_error("Native preset instrument initialization or ownership failed"); }
+		owner->m_instrument = native; expected = native; expectedIdentity = native.data();
+		const bool restore = !legacy || native->nodeName() == state.nodeName(); ready();
+		if (restore) { native->restoreState(state); check(); }
+		emit owner->instrumentChanged(); check();
+	};
+	for (auto node = thisElement.firstChild(); !node.isNull(); node = node.nextSibling())
 	{
-		m_mixerChannelModel.loadSettings( thisElement, "mixch" );
-	}
-	m_baseNoteModel.loadSettings( thisElement, "basenote" );
-	m_firstKeyModel.loadSettings(thisElement, "firstkey");
-	m_lastKeyModel.loadSettings(thisElement, "lastkey");
-	m_useMasterPitchModel.loadSettings( thisElement, "usemasterpitch");
-	m_microtuner.loadSettings(thisElement);
-
-	// clear effect-chain just in case we load an old preset without FX-data
-	m_audioBusHandle.effects()->clear();
-
-	// We set MIDI CC enable to false so the knobs don't trigger MIDI CC events while
-	// they are being loaded. After all knobs are loaded we load the right value of m_midiCCEnable.
-	m_midiCCEnable->setValue(false);
-
-	QDomNode node = thisElement.firstChild();
-	while( !node.isNull() )
-	{
-		if( node.isElement() )
+		check(); if (!node.isElement()) { continue; }
+		if (m_soundShaping.nodeName() == node.nodeName()) { m_soundShaping.restoreState(node.toElement()); check(); }
+		else if (m_noteStacking.nodeName() == node.nodeName()) { m_noteStacking.restoreState(node.toElement()); check(); }
+		else if (m_arpeggio.nodeName() == node.nodeName()) { m_arpeggio.restoreState(node.toElement()); check(); }
+		else if (m_midiPort.nodeName() == node.nodeName()) { m_midiPort.restoreState(node.toElement()); check(); }
+		else if (m_audioBusHandle.effects()->nodeName() == node.nodeName()) { m_audioBusHandle.effects()->restoreState(node.toElement()); check(); }
+		else if (node.nodeName() == "instrument")
 		{
-			if( m_soundShaping.nodeName() == node.nodeName() )
+			using PluginKey = Plugin::Descriptor::SubPluginFeatures::Key; PluginKey key(node.toElement().elementsByTagName("key").item(0).toElement());
+			if (reuseInstrument) { expected->restoreState(node.firstChildElement()); check(); }
+			else { install(node.toElement().attribute("name"), &key, false, node.firstChildElement()); }
+		}
+		else if (node.nodeName() == "midicontrollers")
+		{
+			for (int i = 0; i < MidiControllerCount; ++i) { m_midiCCModel[i]->loadSettings(node.toElement(), "cc" + QString::number(i)); check(); }
+		}
+		else if (AutomationClip::classNodeName() != node.nodeName() && ControllerConnection::classNodeName() != node.nodeName() && !node.toElement().hasAttribute("id"))
+		{ install(node.nodeName(), nullptr, true, node.toElement()); }
+	}
+	m_midiCCEnable->loadSettings(thisElement, "enablecc"); check();
+	if (thisElement.hasAttribute("activecc"))
+	{
+		const auto text = thisElement.attribute("activecc"); bool valid = text.size() <= MidiControllerCount * 4;
+		if (valid && !text.isEmpty())
+		{
+			for (const auto& item : text.split(','))
 			{
-				m_soundShaping.restoreState( node.toElement() );
-			}
-			else if( m_noteStacking.nodeName() == node.nodeName() )
-			{
-				m_noteStacking.restoreState( node.toElement() );
-			}
-			else if( m_arpeggio.nodeName() == node.nodeName() )
-			{
-				m_arpeggio.restoreState( node.toElement() );
-			}
-			else if( m_midiPort.nodeName() == node.nodeName() )
-			{
-				m_midiPort.restoreState( node.toElement() );
-			}
-			else if (m_audioBusHandle.effects()->nodeName() == node.nodeName())
-			{
-				m_audioBusHandle.effects()->restoreState(node.toElement());
-			}
-			else if(node.nodeName() == "instrument")
-			{
-				using PluginKey = Plugin::Descriptor::SubPluginFeatures::Key;
-				PluginKey key(node.toElement().elementsByTagName("key").item(0).toElement());
-
-				if (reuseInstrument)
-				{
-					m_instrument->restoreState(node.firstChildElement());
-				}
-				else
-				{
-					delete m_instrument;
-					m_instrument = nullptr;
-					m_instrument = Instrument::instantiate(
-						node.toElement().attribute("name"), this, &key);
-					m_instrument->restoreState(node.firstChildElement());
-					emit instrumentChanged();
-				}
-			}
-			else if (node.nodeName() == "midicontrollers")
-			{
-				for (int i = 0; i < MidiControllerCount; ++i)
-				{
-					m_midiCCModel[i]->loadSettings(node.toElement(), "cc" + QString::number(i));
-				}
-			}
-			// compat code - if node-name doesn't match any known
-			// one, we assume that it is an instrument-plugin
-			// which we'll try to load
-			else if(AutomationClip::classNodeName() != node.nodeName() &&
-					ControllerConnection::classNodeName() != node.nodeName() &&
-					!node.toElement().hasAttribute( "id" ))
-			{
-				delete m_instrument;
-				m_instrument = nullptr;
-				m_instrument = Instrument::instantiate(
-					node.nodeName(), this, nullptr, true);
-				if (m_instrument->nodeName() == node.nodeName())
-				{
-					m_instrument->restoreState(node.toElement());
-				}
-				emit instrumentChanged();
+				bool converted = false; const int controller = item.toInt(&converted);
+				if (!converted || controller < 0 || controller >= MidiControllerCount) { valid = false; break; }
+				m_activeMidiCC.set(controller);
 			}
 		}
-		node = node.nextSibling();
+		if (!valid) { m_activeMidiCC.reset(); m_midiCCEnable->setValue(false); check(); song->collectError(tr("Invalid active MIDI CC controllers in instrument track")); }
 	}
-
-	// Load the right value of m_midiCCEnable
-	m_midiCCEnable->loadSettings(thisElement, "enablecc");
-
-	updatePitchRange();
-	unlock();
+	else
+	{
+		const auto controllers = thisElement.firstChildElement("midicontrollers");
+		for (int i = 0; i < MidiControllerCount; ++i)
+		{ if (m_midiCCModel[i]->value() != 0 || !controllers.firstChildElement("cc" + QString::number(i)).isNull()) { m_activeMidiCC.set(i); } }
+	}
+	updatePitchRange(); check();
 }
-
-
 
 
 void InstrumentTrack::setPreviewMode( const bool value )
@@ -1001,27 +1195,39 @@ void InstrumentTrack::setPreviewMode( const bool value )
 
 void InstrumentTrack::replaceInstrument(DataFile dataFile)
 {
-	// loadSettings clears the mixer channel, so we save it here and set it back later
-	int mixerChannel = mixerChannelModel()->value();
-
-	InstrumentTrack::removeMidiPortNode(dataFile);
-	
-	//Replacing an instrument shouldn't change the solo/mute state.
-	bool oldMute = isMuted();
-	bool oldSolo = isSolo();
-	bool oldMutedBeforeSolo = isMutedBeforeSolo();
-
-	loadPreset(dataFile.content().toElement());
-	
-	setMuted(oldMute);
-	setSolo(oldSolo);
-	setMutedBeforeSolo(oldMutedBeforeSolo);
-	
-	m_mixerChannelModel.setValue(mixerChannel);
-	Engine::getSong()->setModified();
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events;
+	if (m_retiring || isReplacingInstrument()) { throw std::logic_error("Native preset replacement cannot overlap instrument replacement or retirement"); }
+	const QPointer<InstrumentTrack> owner(this); const QPointer<Song> song(Engine::getSong()); const QPointer<TrackContainer> tracks(trackContainer());
+	m_replacingPreset = true;
+	const auto finish = qScopeGuard([owner] { if (owner && !owner->m_retiring) { owner->m_replacingPreset = false; owner->m_permitPresetTrackLoad = false; } });
+	std::vector<QPointer<Clip>> clips; for (auto clip : getClips()) { clips.emplace_back(clip); }
+	const int mixerChannel = mixerChannelModel()->value(); const bool oldMute = isMutedByModel(), oldSolo = isSolo(), oldBeforeSolo = isMutedBeforeSolo();
+	const auto ready = [&] {
+		if (!owner || owner->m_retiring || !song || Engine::getSong() != song.data() || !tracks || owner->trackContainer() != tracks.data())
+		{ throw std::runtime_error("Native preset destination retired during replacement"); }
+		if (owner->getClips().size() != clips.size()) { throw std::runtime_error("Native preset destination clips changed"); }
+		for (std::size_t index = 0; index < clips.size(); ++index)
+		{ if (!clips[index] || owner->getClips()[index] != clips[index].data()) { throw std::runtime_error("Native preset destination clip identity changed"); } }
+	};
+	const auto check = [&] { ready(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready(); };
+	check(); InstrumentTrack::removeMidiPortNode(dataFile);
+	JournallingObject::KeepIdentityScope identity; NativeLinkedControls::RestoreScope links(dataFile);
+	if (!dataFile.content().firstChildElement("nativeLinkedControls").isNull()) { NativeLinkedControls::unlinkInternalGroups(NativeLinkedControls::trackModels(owner.data())); ready(); }
+	{
+		owner->m_permitPresetTrackLoad = true;
+		const auto permit = qScopeGuard([&] { if (owner) { owner->m_permitPresetTrackLoad = false; } });
+		owner->Track::loadPreset(dataFile.content().toElement());
+	}
+	check(); owner->setMuted(oldMute); check(); owner->setSolo(oldSolo); check(); owner->setMutedBeforeSolo(oldBeforeSolo);
+	owner->m_mixerChannelModel.setValue(mixerChannel); check();
+	QString linkedError; const bool linked = links.finish(dataFile.content(), linkedError); ready();
+	if (!linked) { song->collectError("Native preset links did not restore: " + linkedError); }
+	const QPointer<Instrument> native(owner->instrument()); Instrument* const selected = native.data();
+	song->setModified(); ready();
+	if (native.data() != selected || owner->instrument() != selected || owner->isMutedByModel() != oldMute || owner->isSolo() != oldSolo
+		|| owner->isMutedBeforeSolo() != oldBeforeSolo || owner->m_mixerChannelModel.value() != mixerChannel)
+	{ throw std::runtime_error("Native preset preservation state changed during final notification"); }
 }
-
-
 
 
 QString InstrumentTrack::getSavedInstrumentName(const QDomElement &thisElement) const
@@ -1043,18 +1249,41 @@ Instrument * InstrumentTrack::loadInstrument(const QString & _plugin_name,
 	if(keyFromDnd)
 		Q_ASSERT(!key);
 
-	silenceAllNotes( true );
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	if (m_retiring || isReplacingInstrument()) { return nullptr; }
+	const QPointer<InstrumentTrack> owner(this); InstrumentTrack* const identity = this;
+	const QString requestedName = _plugin_name;
+	const std::optional<Plugin::Descriptor::SubPluginFeatures::Key> requestedKey = key ? std::make_optional(*key) : std::nullopt;
+	FileResourceIO::EventSuspension events;
+	m_replacingInstrument = true;
+	const auto finish = qScopeGuard([owner] { if (owner && !owner->m_retiring) { owner->m_replacingInstrument = false; } });
+	QString failure; if (!FileResourceIO::check(failure)) { throw std::runtime_error(failure.toStdString()); }
+	if (!owner || owner->m_retiring) { return nullptr; }
+	silenceAllNotes(true);
+	if (!owner || owner->m_retiring) { return nullptr; }
+	// Audio ownership excludes native processing. Do not hold the track's
+	// nonrecursive mutex across plugin destructors, factories or observers.
+	const auto previous = owner->m_instrument; owner->m_instrument = nullptr;
+	delete previous.data();
+	if (!owner || owner->m_retiring || owner->m_instrument) { return nullptr; }
+	const QPointer<Instrument> native(owner->createInstrument(requestedName, requestedKey ? &*requestedKey : nullptr, keyFromDnd));
+	const auto cleanup = qScopeGuard([owner, native, identity] {
+		if (native && native->isFromTrack(identity) && (!owner || owner->m_instrument != native)) { delete native.data(); }
+	});
+	if (!FileResourceIO::check(failure)) { throw std::runtime_error(failure.toStdString()); }
+	if (!owner || owner->m_retiring || owner->m_instrument || !native || !native->isFromTrack(identity)) { return nullptr; }
+	owner->m_instrument = native;
+	const auto current = [&] { return owner && !owner->m_retiring && native && owner->m_instrument == native; };
+	const auto name = native->displayName(); if (!current()) { return nullptr; }
+	owner->setName(name); if (!current()) { return nullptr; }
+	emit owner->instrumentChanged();
+	return current() ? native.data() : nullptr;
+}
 
-	lock();
-	delete m_instrument;
-	m_instrument = Instrument::instantiate(_plugin_name, this,
-					key, keyFromDnd);
-	unlock();
-	setName(m_instrument->displayName());
-
-	emit instrumentChanged();
-
-	return m_instrument;
+Instrument* InstrumentTrack::createInstrument(const QString& name,
+	const Plugin::Descriptor::SubPluginFeatures::Key* key, bool keyFromDnd)
+{
+	return Instrument::instantiate(name, this, key, keyFromDnd);
 }
 
 

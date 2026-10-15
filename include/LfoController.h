@@ -2,7 +2,7 @@
  * LfoController.h - A LFO-based controller and dialog
  *
  * Copyright (c) 2008 Paul Giblock <drfaygo/at/gmail.com>
- * 
+ *
  * This file is part of LMMS - https://lmms.io
  *
  * This program is free software; you can redistribute it and/or
@@ -48,7 +48,7 @@ class LfoControllerDialog;
 }
 
 
-class LfoController : public Controller
+class LMMS_EXPORT LfoController : public Controller
 {
 	Q_OBJECT
 public:
@@ -59,6 +59,12 @@ public:
 	void saveSettings( QDomDocument & _doc, QDomElement & _this ) override;
 	void loadSettings( const QDomElement & _this ) override;
 	QString nodeName() const override;
+	bool setUserWave(const QString& path, QString& error);
+	const SampleBuffer& userWave() const { return *m_userDefSampleBuffer; }
+	std::shared_ptr<const SampleBuffer> userWaveBuffer() const { return m_userDefSampleBuffer; }
+	QString userWaveFile() const { return m_unresolvedWave.isEmpty() ? m_userDefSampleBuffer->audioFile() : m_unresolvedWave; }
+	bool userWaveUnresolved() const { return !m_unresolvedWave.isEmpty(); }
+	IntModel& waveModel() { return m_waveModel; }
 
 
 public slots:
@@ -83,7 +89,10 @@ protected:
 	sample_t (*m_sampleFunction)( const float );
 
 private:
-	float m_heldSample;
+	class ResourceContext;
+	bool setUserWaveImpl(const QString& path, QString& error, ResourceContext& work);
+	QString m_unresolvedWave;
+	float m_heldSample = 0;
 	std::shared_ptr<const SampleBuffer> m_userDefSampleBuffer = SampleBuffer::emptyBuffer();
 
 protected slots:

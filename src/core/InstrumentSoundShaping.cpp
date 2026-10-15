@@ -23,6 +23,8 @@
  */
 
 #include <QVarLengthArray>
+#include <QPointer>
+#include <stdexcept>
 #include <QDomElement>
 
 #include "InstrumentSoundShaping.h"
@@ -320,19 +322,28 @@ f_cnt_t InstrumentSoundShaping::releaseFrames() const
 
 static void saveEnvelopeAndLFOParameters(EnvelopeAndLfoParameters& p, const QString & tagName, QDomDocument & _doc, QDomElement & _this)
 {
-	p.saveState(_doc, _this).setTagName(tagName);
+	const QPointer<EnvelopeAndLfoParameters> owner(&p); const auto wave = p.getLfoUserWave(); const QString path = p.lfoUserWaveFile(); const bool pending = p.lfoUserWaveUnresolved();
+	auto element = p.saveState(_doc, _this);
+	if (!owner || owner->getLfoUserWave() != wave || owner->lfoUserWaveFile() != path || owner->lfoUserWaveUnresolved() != pending
+		|| element.attribute("userwavefile") != path || (element.attribute("userwaveunresolved") == "1") != pending)
+	{ throw std::runtime_error("Native envelope/LFO resource changed while publishing its tagged settings"); }
+	element.setTagName(tagName);
+	// saveState initially uses the class's generic el tag. Bind after the native
+	// parent assigns its actual elvol/elcut/elres resource-table tag.
+	if (!pending) { wave->registerResourceSource(_doc, element, "userwavefile", wave); }
 }
 
 void InstrumentSoundShaping::saveSettings( QDomDocument & _doc, QDomElement & _this )
 {
-	m_filterModel.saveSettings( _doc, _this, "ftype" );
-	m_filterCutModel.saveSettings( _doc, _this, "fcut" );
-	m_filterResModel.saveSettings( _doc, _this, "fres" );
-	m_filterEnabledModel.saveSettings( _doc, _this, "fwet" );
+	const QPointer<InstrumentSoundShaping> owner(this); const auto ready = [&] { if (!owner) { throw std::runtime_error("Native sound shaping retired during serialization"); } };
+	m_filterModel.saveSettings( _doc, _this, "ftype" ); ready();
+	m_filterCutModel.saveSettings( _doc, _this, "fcut" ); ready();
+	m_filterResModel.saveSettings( _doc, _this, "fres" ); ready();
+	m_filterEnabledModel.saveSettings( _doc, _this, "fwet" ); ready();
 
-	saveEnvelopeAndLFOParameters(getVolumeParameters(), getVolumeNodeName(), _doc, _this);
-	saveEnvelopeAndLFOParameters(getCutoffParameters(), getCutoffNodeName(), _doc, _this);
-	saveEnvelopeAndLFOParameters(getResonanceParameters(), getResonanceNodeName(), _doc, _this);
+	saveEnvelopeAndLFOParameters(getVolumeParameters(), getVolumeNodeName(), _doc, _this); ready();
+	saveEnvelopeAndLFOParameters(getCutoffParameters(), getCutoffNodeName(), _doc, _this); ready();
+	saveEnvelopeAndLFOParameters(getResonanceParameters(), getResonanceNodeName(), _doc, _this); ready();
 }
 
 
@@ -340,10 +351,15 @@ void InstrumentSoundShaping::saveSettings( QDomDocument & _doc, QDomElement & _t
 
 void InstrumentSoundShaping::loadSettings( const QDomElement & _this )
 {
+	const QPointer<InstrumentSoundShaping> owner(this);
 	m_filterModel.loadSettings( _this, "ftype" );
+	if (!owner) { return; }
 	m_filterCutModel.loadSettings( _this, "fcut" );
+	if (!owner) { return; }
 	m_filterResModel.loadSettings( _this, "fres" );
+	if (!owner) { return; }
 	m_filterEnabledModel.loadSettings( _this, "fwet" );
+	if (!owner) { return; }
 
 	QDomNode node = _this.firstChild();
 	while (!node.isNull())
@@ -354,14 +370,17 @@ void InstrumentSoundShaping::loadSettings( const QDomElement & _this )
 			if (nodeName == getVolumeNodeName())
 			{
 				getVolumeParameters().restoreState(node.toElement());
+				if (!owner) { return; }
 			}
 			else if (nodeName == getCutoffNodeName())
 			{
 				getCutoffParameters().restoreState(node.toElement());
+				if (!owner) { return; }
 			}
 			else if (nodeName == getResonanceNodeName())
 			{
 				getResonanceParameters().restoreState(node.toElement());
+				if (!owner) { return; }
 			}
 		}
 

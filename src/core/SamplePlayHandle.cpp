@@ -56,10 +56,19 @@ SamplePlayHandle::SamplePlayHandle( const QString& sampleFile ) :
 
 
 SamplePlayHandle::SamplePlayHandle( SampleClip* clip ) :
-	SamplePlayHandle(&clip->sample(), false)
+	SamplePlayHandle(clip, clip->sample())
 {
+}
+
+SamplePlayHandle::SamplePlayHandle(SampleClip* clip, const Sample& playbackSample) :
+	SamplePlayHandle(nullptr, false)
+{
+	// The immutable decoded buffer is shared, while frame bounds and playback
+	// settings belong to this handle. Rendering must not edit the source clip.
+	m_clipSample = std::make_unique<Sample>(playbackSample);
+	m_sample = m_clipSample.get();
 	m_track = clip->getTrack();
-	setAudioBusHandle(((SampleTrack *)clip->getTrack())->audioBusHandle());
+	setAudioBusHandle(static_cast<SampleTrack*>(clip->getTrack())->audioBusHandle());
 }
 
 

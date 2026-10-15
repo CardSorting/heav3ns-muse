@@ -31,6 +31,11 @@
 #ifdef LMMS_HAVE_SNDIO
 
 #include <QThread>
+#include <array>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <poll.h>
 
 #include "MidiClient.h"
 
@@ -40,6 +45,8 @@ struct mio_hdl;
 namespace lmms
 {
 
+namespace detail { struct SndioMidiApi; class MidiIoWakeup; class RawMidiOutput; }
+
 
 class MidiSndio : public QThread, public MidiClientRaw
 {
@@ -47,6 +54,12 @@ class MidiSndio : public QThread, public MidiClientRaw
 public:
 	MidiSndio();
 	~MidiSndio() override;
+	InputBackendStatus inputBackendStatus() const override;
+	bool isAvailable() const;
+	OutputBackendStatus outputBackendStatus() const override;
+	void addPort(MidiPort* port) override;
+	void removePort(MidiPort* port) override;
+	void cancelOutputEvents(const MidiPort* port) override;
 
 	static QString probeDevice();
 
@@ -64,10 +77,25 @@ public:
 protected:
 	void sendByte(const unsigned char c) override;
 	void run() override;
+	void processOutEvent(const MidiEvent& event, const TimePos& time, const MidiPort* port) override;
 
 private:
-	mio_hdl *m_hdl;
-	volatile bool m_quit;
+	friend class RawMidiIoTestAccess;
+	explicit MidiSndio(const detail::SndioMidiApi& api);
+	void closeResources() noexcept;
+	void inputFailed(int error) noexcept;
+	void finishPortTransferOutput(const std::function<bool()>& cancelled) override;
+	void drainOutput(const std::function<bool()>& cancelled);
+	int writeOutput(const std::uint8_t* bytes, std::size_t size);
+	const detail::SndioMidiApi& m_api;
+	std::unique_ptr<detail::MidiIoWakeup> m_wakeup;
+	std::unique_ptr<detail::RawMidiOutput> m_outputQueue;
+	std::mutex m_ioMutex;
+	mio_hdl* m_hdl = nullptr;
+	static constexpr int MaximumDescriptors = 64;
+	std::array<pollfd, MaximumDescriptors + 1> m_descriptors{};
+	std::atomic_bool m_quit{false}, m_active{false};
+	std::atomic_int m_nativeError{0};
 } ;
 
 

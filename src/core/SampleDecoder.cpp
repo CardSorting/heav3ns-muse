@@ -23,10 +23,17 @@
  */
 
 #include "SampleDecoder.h"
+#include "SampleDecoderBackends.h"
 
 #include <QFile>
 #include <QString>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <memory>
+#include <array>
+#include <stdexcept>
+#include <QScopeGuard>
 #include <sndfile.h>
 
 #ifdef LMMS_HAVE_OGGVORBIS
@@ -34,8 +41,10 @@
 #endif
 
 #include "AudioEngine.h"
+#include "AudioResampler.h"
 #include "DrumSynth.h"
 #include "Engine.h"
+#include "FileResourceIO.h"
 #include "LmmsTypes.h"
 
 namespace lmms {
@@ -46,56 +55,61 @@ using Decoder = std::optional<SampleDecoder::Result> (*)(const QString&);
 
 auto decodeSampleSF(const QString& audioFile) -> std::optional<SampleDecoder::Result>;
 auto decodeSampleDS(const QString& audioFile) -> std::optional<SampleDecoder::Result>;
-#ifdef LMMS_HAVE_OGGVORBIS
-auto decodeSampleOggVorbis(const QString& audioFile) -> std::optional<SampleDecoder::Result>;
-#endif
 
-static constexpr std::array<Decoder, 3> decoders = {&decodeSampleSF,
+static constexpr Decoder decoders[] = {&decodeSampleSF,
 #ifdef LMMS_HAVE_OGGVORBIS
-	&decodeSampleOggVorbis,
+	&detail::decodeSampleOggVorbis,
 #endif
 	&decodeSampleDS};
 
 auto decodeSampleSF(const QString& audioFile) -> std::optional<SampleDecoder::Result>
 {
-	SNDFILE* sndFile = nullptr;
+	QString error; if (!FileResourceIO::check(error)) { return std::nullopt; }
 	auto sfInfo = SF_INFO{};
 
 	// TODO: Remove use of QFile
 	auto file = QFile{audioFile};
 	if (!file.open(QIODevice::ReadOnly)) { return std::nullopt; }
 
-	sndFile = sf_open_fd(file.handle(), SFM_READ, &sfInfo, false);
-	if (sf_error(sndFile) != 0) { return std::nullopt; }
-
-	auto buf = std::vector<sample_t>(sfInfo.channels * sfInfo.frames);
-	sf_read_float(sndFile, buf.data(), buf.size());
-
-	sf_close(sndFile);
-	file.close();
-
-	auto result = std::vector<SampleFrame>(sfInfo.frames);
-	for (int i = 0; i < static_cast<int>(result.size()); ++i)
+	auto sndFile = std::unique_ptr<SNDFILE, decltype(&sf_close)>(
+		sf_open_fd(file.handle(), SFM_READ, &sfInfo, false), &sf_close);
+	if (!sndFile || sf_error(sndFile.get()) != 0 || sfInfo.frames <= 0 || sfInfo.channels <= 0
+		|| sfInfo.samplerate <= 0 || sfInfo.frames > std::numeric_limits<int>::max()) { return std::nullopt; }
+	const auto frames = static_cast<std::size_t>(sfInfo.frames);
+	const auto channels = static_cast<std::size_t>(sfInfo.channels);
+	const auto blockFrames = std::min(frames, std::size_t(4096));
+	if (blockFrames > std::vector<sample_t>().max_size() / channels
+		|| frames > std::vector<SampleFrame>().max_size() || !FileResourceIO::check(error)) { return std::nullopt; }
+	auto buf = std::vector<sample_t>(channels * blockFrames);
+	auto result = std::vector<SampleFrame>(frames);
+	std::size_t decoded = 0;
+	while (decoded < frames)
 	{
-		if (sfInfo.channels == 1)
+		if (!FileResourceIO::check(error)) { return std::nullopt; }
+		const auto count = std::min(blockFrames, frames - decoded);
+		if (sf_readf_float(sndFile.get(), buf.data(), static_cast<sf_count_t>(count)) != static_cast<sf_count_t>(count)
+			|| sf_error(sndFile.get()) != 0
+			|| std::any_of(buf.begin(), buf.begin() + count * channels, [](sample_t value) { return !std::isfinite(value); }))
 		{
-			// Upmix from mono to stereo
-			result[i] = {buf[i], buf[i]};
+			return std::nullopt;
 		}
-		else if (sfInfo.channels > 1)
+		for (std::size_t index = 0; index < count; ++index)
 		{
-			// TODO: Add support for higher number of channels (i.e., 5.1 channel systems)
-			// The current behavior assumes stereo in all cases excluding mono.
-			// This may not be the expected behavior, given some audio files with a higher number of channels.
-			result[i] = {buf[i * sfInfo.channels], buf[i * sfInfo.channels + 1]};
+			// Retain native mono upmix / first-two-channel behavior.
+			const auto left = buf[index * channels];
+			result[decoded + index] = {left, channels == 1 ? left : buf[index * channels + 1]};
 		}
+		decoded += count;
 	}
+	if (!FileResourceIO::check(error) || sf_close(sndFile.release()) != 0) { return std::nullopt; }
+	file.close();
 
 	return SampleDecoder::Result{std::move(result), static_cast<int>(sfInfo.samplerate)};
 }
 
 auto decodeSampleDS(const QString& audioFile) -> std::optional<SampleDecoder::Result>
 {
+	QString error; if (!FileResourceIO::check(error)) { return std::nullopt; }
 	// Populated by DrumSynth::GetDSFileSamples
 	int_sample_t* dataPtr = nullptr;
 
@@ -104,43 +118,60 @@ auto decodeSampleDS(const QString& audioFile) -> std::optional<SampleDecoder::Re
 	const auto frames = ds.GetDSFileSamples(audioFile, dataPtr, DEFAULT_CHANNELS, engineRate);
 	const auto data = std::unique_ptr<int_sample_t[]>{dataPtr}; // NOLINT, we have to use a C-style array here
 
-	if (frames <= 0 || !data) { return std::nullopt; }
+	if (frames <= 0 || frames > std::numeric_limits<int>::max() / DEFAULT_CHANNELS || !data
+		|| !FileResourceIO::check(error)) { return std::nullopt; }
 
 	auto result = std::vector<SampleFrame>(frames);
-	src_short_to_float_array(data.get(), &result[0][0], frames * DEFAULT_CHANNELS);
+	for (int offset = 0; offset < frames;)
+	{
+		if (!FileResourceIO::check(error)) { return std::nullopt; }
+		const int count = std::min(4096, frames - offset);
+		src_short_to_float_array(data.get() + offset * DEFAULT_CHANNELS, &result[offset][0], count * DEFAULT_CHANNELS);
+		offset += count;
+	}
 
 	return SampleDecoder::Result{std::move(result), static_cast<int>(engineRate)};
 }
 
+} // namespace
+
 #ifdef LMMS_HAVE_OGGVORBIS
-auto decodeSampleOggVorbis(const QString& audioFile) -> std::optional<SampleDecoder::Result>
+auto detail::decodeSampleOggVorbis(const QString& audioFile) -> std::optional<SampleDecoder::Result>
 {
+	return decodeSampleOggVorbis(audioFile, nullptr);
+}
+
+auto detail::decodeSampleOggVorbis(const QString& audioFile, bool* recognized) -> std::optional<SampleDecoder::Result>
+{
+	if (recognized) { *recognized = false; }
+	QString error; if (!FileResourceIO::check(error)) { return std::nullopt; }
 	static auto s_read = [](void* buffer, size_t size, size_t count, void* stream) -> size_t {
 		auto file = static_cast<QFile*>(stream);
-		return file->read(static_cast<char*>(buffer), size * count);
+		if (size == 0 || count == 0 || count > std::numeric_limits<size_t>::max() / size
+			|| count > static_cast<quint64>(std::numeric_limits<qint64>::max()) / size) { return 0; }
+		const auto bytes = file->read(static_cast<char*>(buffer), static_cast<qint64>(size * count));
+		return bytes > 0 ? static_cast<size_t>(bytes) / size : 0;
 	};
 
 	static auto s_seek = [](void* stream, ogg_int64_t offset, int whence) -> int {
 		auto file = static_cast<QFile*>(stream);
-		if (whence == SEEK_SET) { file->seek(offset); }
-		else if (whence == SEEK_CUR) { file->seek(file->pos() + offset); }
-		else if (whence == SEEK_END) { file->seek(file->size() + offset); }
+		qint64 base;
+		if (whence == SEEK_SET) { base = 0; }
+		else if (whence == SEEK_CUR) { base = file->pos(); }
+		else if (whence == SEEK_END) { base = file->size(); }
 		else { return -1; }
-		return 0;
-	};
-
-	static auto s_close = [](void* stream) -> int {
-		auto file = static_cast<QFile*>(stream);
-		file->close();
-		return 0;
+		if (base < 0 || offset < -base || offset > std::numeric_limits<qint64>::max() - base) { return -1; }
+		return file->seek(base + offset) ? 0 : -1;
 	};
 
 	static auto s_tell = [](void* stream) -> long {
 		auto file = static_cast<QFile*>(stream);
-		return file->pos();
+		const auto position = file->pos();
+		return position >= 0 && position <= std::numeric_limits<long>::max() ? static_cast<long>(position) : -1;
 	};
 
-	static ov_callbacks s_callbacks = {s_read, s_seek, s_close, s_tell};
+	// QFile owns its descriptor; ov_clear releases only the native decoder state.
+	static ov_callbacks s_callbacks = {s_read, s_seek, nullptr, s_tell};
 
 	// TODO: Remove use of QFile
 	auto file = QFile{audioFile};
@@ -148,42 +179,124 @@ auto decodeSampleOggVorbis(const QString& audioFile) -> std::optional<SampleDeco
 
 	auto vorbisFile = OggVorbis_File{};
 	if (ov_open_callbacks(&file, &vorbisFile, nullptr, 0, s_callbacks) < 0) { return std::nullopt; }
+	const auto cleanup = qScopeGuard([&] { ov_clear(&vorbisFile); });
+	if (recognized) { *recognized = true; }
 
-	const auto vorbisInfo = ov_info(&vorbisFile, -1);
-	if (vorbisInfo == nullptr) { return std::nullopt; }
+	const auto vorbisInfo = ov_info(&vorbisFile, 0);
+	if (vorbisInfo == nullptr || vorbisInfo->channels <= 0 || vorbisInfo->rate <= 0
+		|| vorbisInfo->rate > std::numeric_limits<int>::max()) { return std::nullopt; }
 
-	const auto numChannels = vorbisInfo->channels;
 	const auto sampleRate = vorbisInfo->rate;
-	const auto numSamples = ov_pcm_total(&vorbisFile, -1);
-	if (numSamples < 0) { return std::nullopt; }
-
-	auto buffer = std::vector<float>(numSamples);
+	const auto frames = ov_pcm_total(&vorbisFile, -1);
+	if (frames <= 0 || frames > std::numeric_limits<int>::max()
+		|| static_cast<std::size_t>(frames) > std::vector<SampleFrame>().max_size()) { return std::nullopt; }
+	const auto links = ov_streams(&vorbisFile);
+	if (links <= 0 || links > std::numeric_limits<int>::max()) { return std::nullopt; }
+	struct Link { ogg_int64_t frames; int rate; int channels; std::size_t outputLimit; };
+	std::vector<Link> layout;
+	std::size_t outputLimit = 0;
+	ogg_int64_t plannedInput = 0;
+	for (long index = 0; index < links; ++index)
+	{
+		if (!FileResourceIO::check(error)) { return std::nullopt; }
+		const auto info = ov_info(&vorbisFile, static_cast<int>(index));
+		const auto length = ov_pcm_total(&vorbisFile, static_cast<int>(index));
+		if (!info || info->channels <= 0 || info->rate <= 0 || info->rate > std::numeric_limits<int>::max()
+			|| length < 0 || length > frames - plannedInput) { return std::nullopt; }
+		const double ratio = static_cast<double>(sampleRate) / info->rate;
+		if (!src_is_valid_ratio(ratio)) { return std::nullopt; }
+		// Both factors fit positive native int, so this product fits qint64.
+		const qint64 scaled = length * sampleRate;
+		const auto limit = static_cast<std::size_t>(scaled / info->rate + (scaled % info->rate != 0));
+		if (limit > static_cast<std::size_t>(std::numeric_limits<int>::max()) - outputLimit) { return std::nullopt; }
+		layout.push_back({length, static_cast<int>(info->rate), info->channels, limit});
+		outputLimit += limit; plannedInput += length;
+	}
+	if (plannedInput != frames || outputLimit == 0 || outputLimit > std::vector<SampleFrame>().max_size()
+		|| !FileResourceIO::check(error)) { return std::nullopt; }
+	std::vector<SampleFrame> result;
+	result.reserve(outputLimit);
+	std::array<SampleFrame, 4096> input, converted;
 	auto output = static_cast<float**>(nullptr);
-
-	auto totalSamplesRead = 0;
-	while (true)
+	ogg_int64_t position = 0;
+	for (std::size_t index = 0; index < layout.size(); ++index)
 	{
-		auto samplesRead = ov_read_float(&vorbisFile, &output, numSamples, 0);
-
-		if (samplesRead < 0) { return std::nullopt; }
-		else if (samplesRead == 0) { break; }
-
-		std::copy_n(*output, samplesRead, buffer.begin() + totalSamplesRead);
-		totalSamplesRead += samplesRead;
+		if (!FileResourceIO::check(error)) { return std::nullopt; }
+		const auto& section = layout[index];
+		if (section.frames == 0) { continue; }
+		if (ov_pcm_seek(&vorbisFile, position) != 0) { return std::nullopt; }
+		position += section.frames;
+		std::unique_ptr<AudioResampler> resampler;
+		try
+		{
+			if (section.rate != sampleRate)
+			{
+				resampler = std::make_unique<AudioResampler>(AudioResampler::Mode::SincBest);
+				resampler->setRatio(static_cast<sample_rate_t>(section.rate), static_cast<sample_rate_t>(sampleRate));
+			}
+			const auto begin = result.size();
+			const auto append = [&](const SampleFrame* data, std::size_t count) {
+				if (count > section.outputLimit - (result.size() - begin)
+					|| std::any_of(data, data + count, [](const SampleFrame& value) { return value.containsNaN() || value.containsInf(); })) { return false; }
+				result.insert(result.end(), data, data + count); return true;
+			};
+			ogg_int64_t decoded = 0;
+			while (decoded < section.frames)
+			{
+				if (!FileResourceIO::check(error)) { return std::nullopt; }
+				int link = -1;
+				const auto count = ov_read_float(&vorbisFile, &output,
+					static_cast<int>(std::min<ogg_int64_t>(input.size(), section.frames - decoded)), &link);
+				if (count <= 0 || link != static_cast<int>(index) || !output || !output[0]
+					|| count > section.frames - decoded || count > static_cast<long>(input.size())) { return std::nullopt; }
+				for (int channel = 0; channel < section.channels; ++channel)
+				{
+					if (!output[channel] || std::any_of(output[channel], output[channel] + count,
+						[](float sample) { return !std::isfinite(sample); })) { return std::nullopt; }
+				}
+				for (long frame = 0; frame < count; ++frame)
+				{
+					const auto left = output[0][frame];
+					input[frame] = {left, section.channels == 1 ? left : output[1][frame]};
+				}
+				decoded += count;
+				if (!resampler) { if (!append(input.data(), static_cast<std::size_t>(count))) { return std::nullopt; } continue; }
+				std::size_t consumed = 0;
+				while (consumed < static_cast<std::size_t>(count))
+				{
+					if (!FileResourceIO::check(error)) { return std::nullopt; }
+					const auto convertedBlock = resampler->process(
+						{input[consumed].data(), 2, static_cast<std::size_t>(count) - consumed},
+						{converted[0].data(), 2, converted.size()}, decoded == section.frames);
+					if (static_cast<std::size_t>(convertedBlock.inputFramesUsed) > static_cast<std::size_t>(count) - consumed
+						|| static_cast<std::size_t>(convertedBlock.outputFramesGenerated) > converted.size()
+						|| (convertedBlock.inputFramesUsed == 0 && convertedBlock.outputFramesGenerated == 0)
+						|| !append(converted.data(), static_cast<std::size_t>(convertedBlock.outputFramesGenerated))) { return std::nullopt; }
+					consumed += static_cast<std::size_t>(convertedBlock.inputFramesUsed);
+				}
+			}
+			if (resampler)
+			{
+				for (;;)
+				{
+					if (!FileResourceIO::check(error)) { return std::nullopt; }
+					const auto tail = resampler->process({input[0].data(), 2, 0}, {converted[0].data(), 2, converted.size()}, true);
+					if (tail.inputFramesUsed != 0
+						|| static_cast<std::size_t>(tail.outputFramesGenerated) > converted.size()
+						|| !append(converted.data(), static_cast<std::size_t>(tail.outputFramesGenerated))) { return std::nullopt; }
+					if (tail.outputFramesGenerated == 0) { break; }
+				}
+			}
+			// Native conversion can round the link duration by at most one frame.
+			const auto generated = result.size() - begin;
+			if (section.outputLimit - generated > 1) { return std::nullopt; }
+		}
+		catch (const std::runtime_error&) { return std::nullopt; }
 	}
-
-	auto result = std::vector<SampleFrame>(totalSamplesRead / numChannels);
-	for (auto i = std::size_t{0}; i < result.size(); ++i)
-	{
-		if (numChannels == 1) { result[i] = {buffer[i], buffer[i]}; }
-		else if (numChannels > 1) { result[i] = {buffer[i * numChannels], buffer[i * numChannels + 1]}; }
-	}
-
-	ov_clear(&vorbisFile);
+	if (position != frames || result.empty() || file.error() != QFileDevice::NoError || !FileResourceIO::check(error)) { return std::nullopt; }
 	return SampleDecoder::Result{std::move(result), static_cast<int>(sampleRate)};
 }
 #endif // LMMS_HAVE_OGGVORBIS
-} // namespace
 
 auto SampleDecoder::supportedAudioTypes() -> const std::vector<AudioType>&
 {
@@ -192,6 +305,9 @@ auto SampleDecoder::supportedAudioTypes() -> const std::vector<AudioType>&
 
 		// Add DrumSynth by default since that support comes from us
 		types.push_back(AudioType{"DrumSynth", "ds"});
+#ifdef LMMS_HAVE_OGGVORBIS
+		types.push_back(AudioType{"OGG", "ogg"});
+#endif
 
 		auto sfFormatInfo = SF_FORMAT_INFO{};
 		auto simpleTypeCount = 0;
@@ -223,11 +339,31 @@ auto SampleDecoder::supportedAudioTypes() -> const std::vector<AudioType>&
 auto SampleDecoder::decode(const QString& audioFile) -> std::optional<Result>
 {
 	auto result = std::optional<Result>{};
-	for (const auto& decoder : decoders)
+	QString error;
+	try
 	{
-		result = decoder(audioFile);
-		if (result) { break; }
+#ifdef LMMS_HAVE_OGGVORBIS
+		// libsndfile can accept only the first logical stream of a chained file.
+		// Route recognized Vorbis through its complete native chain reader. Other
+		// Ogg codecs can still use the ordinary libsndfile/backend fallback path.
+		if (!FileResourceIO::check(error)) { return std::nullopt; }
+		QFile source(audioFile);
+		if (source.open(QIODevice::ReadOnly) && source.read(4) == "OggS")
+		{
+			source.close(); bool recognized = false;
+			result = detail::decodeSampleOggVorbis(audioFile, &recognized);
+			if (result || recognized) { return result; }
+		}
+#endif
+		for (const auto& decoder : decoders)
+		{
+			if (!FileResourceIO::check(error)) { return std::nullopt; }
+			result = decoder(audioFile);
+			if (result) { break; }
+		}
 	}
+	catch (const std::bad_alloc&) { return std::nullopt; }
+	catch (const std::length_error&) { return std::nullopt; }
 
 	return result;
 }

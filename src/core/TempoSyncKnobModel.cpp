@@ -25,10 +25,17 @@
 
 #include <QAction>
 #include <QDomElement>
+#include <QPointer>
+#include <QScopeGuard>
+#include <QDebug>
+#include <exception>
+#include <cmath>
+#include <stdexcept>
 
 #include "TempoSyncKnobModel.h"
 #include "Engine.h"
 #include "Song.h"
+#include "NativeValueNotification.h"
 
 
 namespace lmms
@@ -45,9 +52,14 @@ TempoSyncKnobModel::TempoSyncKnobModel( const float _val, const float _min,
 	m_scale( _scale ),
 	m_custom( _parent )
 {
-	connect( Engine::getSong(), SIGNAL(tempoChanged(lmms::bpm_t)),
-			this, SLOT(calculateTempoSyncTime(lmms::bpm_t)),
-			Qt::DirectConnection );
+	connect(Engine::getSong(), &Song::tempoChanged, this, [this](bpm_t tempo) {
+		try { calculateTempoSyncTime(tempo); }
+		catch (...)
+		{
+			if (!NativeValueNotification::report(std::current_exception()))
+			{ qWarning("Tempo synchronization failed outside a native value notification frame"); }
+		}
+	}, Qt::DirectConnection);
 }
 
 
@@ -72,17 +84,24 @@ void TempoSyncKnobModel::setTempoSync( SyncMode _note_type )
 
 void TempoSyncKnobModel::calculateTempoSyncTime( bpm_t _bpm )
 {
+	const QPointer<TempoSyncKnobModel> receiver(this);
 	float conversionFactor = 1.0;
 	
 	if( m_tempoSyncMode != SyncMode::None )
 	{
+		if (_bpm <= 0 || !std::isfinite(m_scale) || m_scale <= 0.f)
+		{ throw std::invalid_argument("Native tempo synchronization requires positive tempo and scale"); }
 		switch( m_tempoSyncMode )
 		{
 			case SyncMode::Custom:
-				conversionFactor = 
-			static_cast<float>( m_custom.getDenominator() ) /
-			static_cast<float>( m_custom.getNumerator() );
+			{
+				const auto denominator = m_custom.getDenominator(); if (!receiver) { return; }
+				const auto numerator = receiver->m_custom.getNumerator(); if (!receiver) { return; }
+				if (denominator <= 0 || numerator <= 0)
+				{ throw std::invalid_argument("Native custom tempo synchronization requires a positive meter"); }
+				conversionFactor = static_cast<float>(denominator) / static_cast<float>(numerator);
 				break;
+			}
 			case SyncMode::DoubleWholeNote:
 				conversionFactor = 0.125;
 				break;
@@ -106,20 +125,27 @@ void TempoSyncKnobModel::calculateTempoSyncTime( bpm_t _bpm )
 				break;
 			default: ;
 		}
-		bool journalling = testAndSetJournalling( false );
+		const auto journalRestore = qScopeGuard([receiver, journalling = testAndSetJournalling(false)] { if (receiver) { receiver->setJournalling(journalling); } });
 		float oneUnit = 60000.0 / ( _bpm * conversionFactor * m_scale );
+		if (!std::isfinite(oneUnit) || oneUnit <= 0.f || !std::isfinite(oneUnit * maxValue()))
+		{ throw std::invalid_argument("Native tempo synchronization exceeds its finite parameter range"); }
 		setValue( oneUnit * maxValue() );
-		setJournalling( journalling );
+		if (!receiver) { return; }
 	}
 
 	if( m_tempoSyncMode != m_tempoLastSyncMode )
 	{
+		NativeValueNotification notification;
 		emit syncModeChanged( m_tempoSyncMode );
+		notification.rethrow();
+		if (!receiver) { return; }
 		m_tempoLastSyncMode = m_tempoSyncMode;
 	}
 	else if (m_tempoSyncMode == SyncMode::Custom)
 	{
+		NativeValueNotification notification;
 		emit syncModeChanged(m_tempoSyncMode);
+		notification.rethrow();
 	}
 }
 
@@ -140,8 +166,11 @@ void TempoSyncKnobModel::saveSettings( QDomDocument & _doc, QDomElement & _this,
 void TempoSyncKnobModel::loadSettings( const QDomElement & _this,
 							const QString & _name )
 {
+	const QPointer<TempoSyncKnobModel> receiver(this);
 	FloatModel::loadSettings( _this, _name );
+	if (!receiver) { return; }
 	m_custom.loadSettings( _this, _name );
+	if (!receiver) { return; }
 	setSyncMode( ( SyncMode ) _this.attribute( _name + "_syncmode" ).toInt() );
 }
 
@@ -155,9 +184,8 @@ void TempoSyncKnobModel::setSyncMode( SyncMode _new_mode )
 		m_tempoSyncMode = _new_mode;
 		if( _new_mode == SyncMode::Custom )
 		{
-			connect( &m_custom, SIGNAL(dataChanged()),
-					this, SLOT(updateCustom()),
-					Qt::DirectConnection );
+			connect(&m_custom, &Model::dataChanged, this, &TempoSyncKnobModel::receiveCustomChange,
+				static_cast<Qt::ConnectionType>(Qt::DirectConnection | Qt::UniqueConnection));
 		}
 	}
 	calculateTempoSyncTime( Engine::getSong()->getTempo() );
@@ -168,13 +196,27 @@ void TempoSyncKnobModel::setSyncMode( SyncMode _new_mode )
 
 void TempoSyncKnobModel::setScale( float _new_scale )
 {
+	const QPointer<TempoSyncKnobModel> receiver(this);
 	m_scale = _new_scale;
 	calculateTempoSyncTime( Engine::getSong()->getTempo() );
+	if (!receiver) { return; }
+	NativeValueNotification notification;
 	emit scaleChanged( _new_scale );
+	notification.rethrow();
 }
 
 
 
+
+void TempoSyncKnobModel::receiveCustomChange()
+{
+	try { updateCustom(); }
+	catch (...)
+	{
+		if (!NativeValueNotification::report(std::current_exception()))
+		{ qWarning("Custom tempo synchronization failed outside a native value notification frame"); }
+	}
+}
 
 void TempoSyncKnobModel::updateCustom()
 {

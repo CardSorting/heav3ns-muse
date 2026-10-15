@@ -72,32 +72,46 @@ RemotePluginBase::~RemotePluginBase()
 
 int RemotePluginBase::sendMessage(const message & _m)
 {
-#ifdef SYNC_WITH_SHM_FIFO
-	m_out->lock();
-	m_out->writeInt(_m.id);
-	m_out->writeInt(_m.data.size());
-	int j = 8;
-	for (unsigned int i = 0; i < _m.data.size(); ++i)
-	{
-		m_out->writeString(_m.data[i]);
-		j += 4 + _m.data[i].size();
-	}
-	m_out->unlock();
-	m_out->messageSent();
-#else
-	pthread_mutex_lock(&m_sendMutex);
-	writeInt(_m.id);
-	writeInt(_m.data.size());
-	int j = 8;
+	if (isInvalid()) { return 0; }
+	std::size_t bytes = 2 * sizeof(int32_t);
+	if (_m.data.size() > (maximumMessageBytes - bytes) / sizeof(int32_t)) { invalidate(); return 0; }
 	for (const auto& str : _m.data)
 	{
-		writeString(str);
-		j += 4 + str.size();
+		if (bytes > maximumMessageBytes - sizeof(int32_t)
+			|| str.size() > maximumMessageBytes - bytes - sizeof(int32_t))
+		{
+			invalidate();
+			return 0;
+		}
+		bytes += sizeof(int32_t) + str.size();
 	}
+	// Publish a complete FIFO message under one lock. Waiting for free capacity
+	// while holding the outer writer lock prevents the reader from draining it.
+	std::vector<char> packet(bytes);
+	std::size_t position = 0;
+	const auto appendInt = [&](int32_t value)
+	{
+		std::memcpy(packet.data() + position, &value, sizeof(value));
+		position += sizeof(value);
+	};
+	appendInt(_m.id);
+	appendInt(static_cast<int32_t>(_m.data.size()));
+	for (const auto& str : _m.data)
+	{
+		appendInt(static_cast<int32_t>(str.size()));
+		std::memcpy(packet.data() + position, str.data(), str.size());
+		position += str.size();
+	}
+#ifdef SYNC_WITH_SHM_FIFO
+	m_out->write(packet.data(), static_cast<int>(packet.size()));
+	if (!isInvalid()) { m_out->messageSent(); }
+#else
+	pthread_mutex_lock(&m_sendMutex);
+	write(packet.data(), static_cast<int>(packet.size()));
 	pthread_mutex_unlock(&m_sendMutex);
 #endif
 
-	return j;
+	return isInvalid() ? 0 : static_cast<int>(packet.size());
 }
 
 
@@ -106,28 +120,37 @@ int RemotePluginBase::sendMessage(const message & _m)
 RemotePluginBase::message RemotePluginBase::receiveMessage()
 {
 #ifdef SYNC_WITH_SHM_FIFO
-	m_in->waitForMessage();
-	m_in->lock();
-	message m;
-	m.id = m_in->readInt();
-	const int s = m_in->readInt();
-	for (int i = 0; i < s; ++i)
-	{
-		m.data.push_back(m_in->readString());
-	}
-	m_in->unlock();
+	if (!m_in->waitForMessage() || !m_in->lock()) { return {}; }
+	struct ReceiveUnlock { shmFifo* fifo; ~ReceiveUnlock() { fifo->unlock(); } } unlock{m_in};
+	const auto readBytes = [&](void* target, int bytes) { m_in->read(target, bytes); };
 #else
 	pthread_mutex_lock(&m_receiveMutex);
-	message m;
-	m.id = readInt();
-	const int s = readInt();
-	for (int i = 0; i < s; ++i)
-	{
-		m.data.push_back(readString());
-	}
-	pthread_mutex_unlock(&m_receiveMutex);
+	struct ReceiveUnlock { pthread_mutex_t* mutex; ~ReceiveUnlock() { pthread_mutex_unlock(mutex); } } unlock{&m_receiveMutex};
+	const auto readBytes = [&](void* target, int bytes) { read(target, bytes); };
 #endif
-	return m;
+	message m;
+	const auto nextInt = [&]
+	{
+		int32_t value = 0;
+		readBytes(&value, sizeof(value));
+		return value;
+	};
+	m.id = nextInt();
+	const auto fields = nextInt();
+	std::size_t remaining = maximumMessageBytes - 2 * sizeof(int32_t);
+	if (fields < 0 || static_cast<std::size_t>(fields) > remaining / sizeof(int32_t)) { invalidate(); }
+	for (int32_t i = 0; i < fields && !isInvalid(); ++i)
+	{
+		if (remaining < sizeof(int32_t)) { invalidate(); break; }
+		const auto length = nextInt();
+		remaining -= sizeof(int32_t);
+		if (length < 0 || static_cast<std::size_t>(length) > remaining) { invalidate(); break; }
+		std::string field(static_cast<std::size_t>(length), '\0');
+		readBytes(field.data(), length);
+		remaining -= length;
+		m.data.push_back(std::move(field));
+	}
+	return isInvalid() ? message{} : m;
 }
 
 
@@ -141,13 +164,13 @@ RemotePluginBase::message RemotePluginBase::waitForMessage(
 	if (_busy_waiting)
 	{
 		// No point processing events outside of the main thread
-		_busy_waiting = QThread::currentThread() ==
+		_busy_waiting = QCoreApplication::instance() && QThread::currentThread() ==
 					QCoreApplication::instance()->thread();
 	}
 
 	struct WaitDepthCounter
 	{
-		WaitDepthCounter(int & depth, bool busy) :
+		WaitDepthCounter(std::atomic_int& depth, bool busy) :
 			m_depth(depth),
 			m_busy(busy)
 		{
@@ -159,7 +182,7 @@ RemotePluginBase::message RemotePluginBase::waitForMessage(
 			if (m_busy) { --m_depth; }
 		}
 
-		int & m_depth;
+		std::atomic_int& m_depth;
 		bool m_busy;
 	};
 

@@ -25,8 +25,11 @@
 
 
 #include <QMdiArea>
+#include <QPointer>
+#include <exception>
 
 #include "TempoSyncKnob.h"
+#include "NativeValueNotification.h"
 #include "Engine.h"
 #include "CaptionMenu.h"
 #include "embed.h"
@@ -40,6 +43,20 @@
 
 namespace lmms::gui
 {
+
+namespace
+{
+template<typename Callback>
+void receiveTempoNotification(Callback&& callback) noexcept
+{
+	try { callback(); }
+	catch (...)
+	{
+		if (!NativeValueNotification::report(std::current_exception()))
+		{ qWarning("Tempo sync view update failed outside a native value notification frame"); }
+	}
+}
+}
 
 
 
@@ -92,9 +109,13 @@ void TempoSyncKnob::modelChanged()
 	{
 		m_custom->setModel( &model()->m_custom );
 	}
-	connect(model(), &TempoSyncKnobModel::syncModeChanged, this, &TempoSyncKnob::updateDescAndIcon);
-	connect( this, SIGNAL(sliderMoved(float)),
-			model(), SLOT(disableSync()));
+	connect(model(), &TempoSyncKnobModel::syncModeChanged, this, [this] {
+		receiveTempoNotification([this] { updateDescAndIcon(); });
+	});
+	const QPointer<TempoSyncKnobModel> bound(model());
+	connect(this, &Knob::sliderMoved, bound.data(), [bound] {
+		receiveTempoNotification([bound] { if (bound) { bound->disableSync(); } });
+	});
 	updateDescAndIcon();
 }
 
@@ -120,8 +141,10 @@ void TempoSyncKnob::contextMenuEvent( QContextMenuEvent * )
 	if( limit / 8.0f <= model()->maxValue() )
 	{
 
-	connect( syncMenu, SIGNAL(triggered(QAction*)),
-			model(), SLOT(setTempoSync(QAction*)));
+	const QPointer<TempoSyncKnobModel> bound(model());
+	connect(syncMenu, &QMenu::triggered, bound.data(), [bound](QAction* action) {
+		receiveTempoNotification([bound, action] { if (bound) { bound->setTempoSync(action); } });
+	});
 	syncMenu->addAction( embed::getIconPixmap( "note_none" ),
 		tr( "No Sync" ) )->setData( (int) TempoSyncKnobModel::SyncMode::None );
 	if( limit / 0.125f <= model()->maxValue() )
@@ -163,11 +186,9 @@ void TempoSyncKnob::contextMenuEvent( QContextMenuEvent * )
 	syncMenu->addAction( embed::getIconPixmap( "note_thirtysecond" ),
 					tr( "32nd note" ) )->setData(
 				(int) TempoSyncKnobModel::SyncMode::ThirtysecondNote );
-	syncMenu->addAction( embed::getIconPixmap( "dont_know" ),
-				tr( "Custom..." ),
-				this, SLOT(showCustom())
-						)->setData(
-					(int) TempoSyncKnobModel::SyncMode::Custom );
+	auto custom = syncMenu->addAction(embed::getIconPixmap("dont_know"), tr("Custom..."));
+	connect(custom, &QAction::triggered, this, [this] { receiveTempoNotification([this] { showCustom(); }); });
+	custom->setData(static_cast<int>(TempoSyncKnobModel::SyncMode::Custom));
 	contextMenu.addSeparator();
 
 	}

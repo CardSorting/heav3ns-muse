@@ -27,6 +27,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include "MidiEvent.h"
 
 #include "lmms_export.h"
 
@@ -44,6 +46,12 @@ namespace lmms
 //! @param bufsize Available size of the target buffer.
 //! @return Used size of the target buffer, or 0 if the MidiEvent could not be converted.
 std::size_t LMMS_EXPORT writeToByteSeq(const class MidiEvent& ev, uint8_t* data, std::size_t bufsize);
+
+// Decode one complete MIDI channel message. Reject running status, malformed
+// lengths/data and system messages, which the native output backends cannot
+// represent through writeToByteSeq. The result owns no borrowed bytes.
+std::optional<MidiEvent> LMMS_EXPORT readFromByteSeq(const uint8_t* data, std::size_t size,
+	MidiEvent::Source source = MidiEvent::Source::Internal);
 
 } // namespace lmms
 

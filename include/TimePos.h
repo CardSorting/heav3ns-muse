@@ -36,6 +36,8 @@ namespace lmms
 
 // note: a bar was erroneously called "tact" in older versions of LMMS
 const int DefaultTicksPerBar = 192;
+// Native project ticks have a fixed quarter-note resolution, independent of meter.
+const int TicksPerQuarterNote = DefaultTicksPerBar / 4;
 const int DefaultStepsPerBar = 16;
 const int DefaultBeatsPerBar = DefaultTicksPerBar / DefaultStepsPerBar;
 

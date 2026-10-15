@@ -28,6 +28,7 @@
 #include <QLayout>
 #include <QScrollBar>
 #include <QWheelEvent>
+#include <algorithm>
 
 #include "TrackContainer.h"
 #include "AudioEngine.h"
@@ -63,12 +64,15 @@ InstrumentLoaderThread::InstrumentLoaderThread( QObject *parent, InstrumentTrack
 
 void InstrumentLoaderThread::run()
 {
-	Instrument *i = m_it->loadInstrument(m_name, nullptr,
-										 true /*always DnD*/);
-	QObject *parent = i->parent();
+	const QPointer<InstrumentTrack> target(m_it); if (!target) { return; }
+	const QPointer<Instrument> i(target->loadInstrument(m_name, nullptr,
+										 true /*always DnD*/));
+	if (!target || !i) { return; }
+	const QPointer<QObject> parent(i->parent());
 	i->setParent( 0 );
+	if (!target || !i) { return; }
 	i->moveToThread( m_containerThread );
-	i->setParent( parent );
+	if (target && i) { i->setParent(parent.data()); }
 }
 
 namespace gui
@@ -118,6 +122,7 @@ TrackContainerView::TrackContainerView( TrackContainer * _tc ) :
 	connect( m_tc, SIGNAL(trackAdded(lmms::Track*)),
 			this, SLOT(createTrackView(lmms::Track*)),
 			Qt::QueuedConnection );
+	connect(m_tc, &TrackContainer::trackMoved, this, &TrackContainerView::syncTrackOrder);
 }
 
 
@@ -158,7 +163,7 @@ TrackView * TrackContainerView::addTrackView( TrackView * _tv )
 	m_scrollLayout->addWidget( _tv );
 	connect(this, &TrackContainerView::positionChanged,
 		_tv->getTrackContentWidget(), &TrackContentWidget::changePosition);
-	realignTracks();
+	syncTrackOrder();
 	return( _tv );
 }
 
@@ -195,16 +200,30 @@ void TrackContainerView::moveTrackView( TrackView * trackView, int indexTo )
 	int indexFrom = m_trackViews.indexOf( trackView );
 	if ( indexFrom == indexTo ) { return; }
 
-	PatternTrack::swapPatternTracks( trackView->getTrack(),
-			m_trackViews[indexTo]->getTrack() );
+	if (indexFrom < 0) { return; }
+	const auto& tracks = m_tc->tracks();
+	const auto target = std::find(tracks.begin(), tracks.end(), m_trackViews[indexTo]->getTrack());
+	if (target != tracks.end()) { m_tc->moveTrack(trackView->getTrack(), static_cast<int>(target - tracks.begin())); }
+}
 
-	m_tc->moveTrack(trackView->getTrack(), indexTo);
-
-	m_scrollLayout->removeWidget( trackView );
-	m_scrollLayout->insertWidget( indexTo, trackView );
-
-	m_trackViews.move( indexFrom, indexTo );
-
+void TrackContainerView::syncTrackOrder()
+{
+	int destination = 0;
+	for (const auto track : m_tc->tracks())
+	{
+		const auto found = std::find_if(m_trackViews.begin(), m_trackViews.end(),
+			[track](const auto view) { return view->getTrack() == track; });
+		// A newly added track may still be waiting for queued view creation.
+		if (found == m_trackViews.end()) { continue; }
+		const auto view = *found;
+		const int current = static_cast<int>(found - m_trackViews.begin());
+		if (current != destination)
+		{
+			m_trackViews.move(current, destination);
+			m_scrollLayout->removeWidget(view); m_scrollLayout->insertWidget(destination, view);
+		}
+		++destination;
+	}
 	realignTracks();
 }
 
@@ -406,7 +425,7 @@ void TrackContainerView::dropEvent( QDropEvent * _de )
 		PluginFactory::PluginInfoAndKey piakn =
 			getPluginFactory()->pluginSupportingExtension(FileItem::extension(value));
 		Instrument * i = it->loadInstrument(piakn.info.name(), &piakn.key);
-		i->loadFile( value );
+		if (i) { i->loadFile(value); }
 		//it->toggledInstrumentTrackButton( true );
 		_de->accept();
 	}
@@ -421,8 +440,8 @@ void TrackContainerView::dropEvent( QDropEvent * _de )
 	}
 	else if( type == "importedproject" )
 	{
-		ImportFilter::import( value, m_tc );
-		_de->accept();
+		if (ImportFilter::import(value, m_tc)) { _de->accept(); }
+		else { _de->ignore(); }
 	}
 
 	else if( type == "projectfile")

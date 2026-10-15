@@ -31,6 +31,11 @@
  */
 
  #include <cmath>
+#include "VstPrograms.h"
+#include "VstParameterWire.h"
+#include "VstParameterTransfer.h"
+#include "VstPresetAccess.h"
+#include "VstPresetFile.h"
 
 #include "lmmsconfig.h"
 
@@ -96,6 +101,7 @@
 #include <cassert>
 
 #include <aeffectx.h>
+#include "VstMidiBuffer.h"
 
 #if kVstVersion < 2400
 
@@ -264,9 +270,11 @@ public:
 
 	// read parameter-dump and set it for plugin
 	void setParameterDump( const message & _m );
+	void sendParameterPage(const message& request, bool textOnly);
+	void restoreParameterPage(const message& request);
 
 	// save settings chunk of plugin into file
-	void saveChunkToFile( const std::string & _file );
+	bool saveChunkToFile(const std::string& file);
 
 	// restore settings chunk of plugin from file
 	void loadChunkFromFile(const std::string& _file, std::size_t _len);
@@ -284,7 +292,8 @@ public:
 	void getProgramNames();
 
 	// Save presets/programs
-	void savePreset( const std::string & _file );
+	void savePreset(const std::string& file, bool bank);
+	VstPresetAccess presetAccess();
 
 	// number of inputs
 	virtual int inputCount() const
@@ -477,6 +486,8 @@ private:
 
 	using VstMidiEventList = std::vector<VstMidiEvent>;
 	VstMidiEventList m_midiEvents;
+	VstMidiBuffer m_midiBuffer;
+	VstParameterRestore m_parameterRestore;
 
 	bpm_t m_bpm;
 	double m_currentSamplePos;
@@ -626,26 +637,74 @@ bool RemoteVstPlugin::processMessage( const message & _m )
 			break;
 
 		case IdVstGetParameterDump:
-			getParameterDump();
+			try { getParameterDump(); }
+			catch (const std::exception& error) { sendMessage(message(IdVstParameterDump).addInt(-1).addString(error.what())); }
+			break;
+
+		case IdVstParameterPage:
+		case IdVstParameterTextPage:
+			try { sendParameterPage(_m, _m.id == IdVstParameterTextPage); }
+			catch (const std::exception& error) { sendMessage(message(_m.id).addInt(0).addString(error.what())); }
+			break;
+
+		case IdVstParameterRestore:
+			try { restoreParameterPage(_m); sendMessage(message(_m.id).addInt(1)); }
+			catch (const std::exception& error)
+			{
+				m_parameterRestore.abort();
+				sendMessage(message(_m.id).addInt(0).addString(error.what()));
+			}
 			break;
 
 		case IdVstSetParameterDump:
-			setParameterDump( _m );
+		case IdVstSetParameterDumpChecked:
+			try { setParameterDump(_m); sendMessage(message(_m.id).addInt(1)); }
+			catch (const std::exception& error) { sendMessage(message(_m.id).addInt(0).addString(error.what())); }
 			break;
 
 		case IdSaveSettingsToFile:
-			saveChunkToFile( _m.getString() );
-			sendMessage( IdSaveSettingsToFile );
+			try { sendMessage(message(IdSaveSettingsToFile).addInt(1).addInt(saveChunkToFile(_m.getString()))); }
+			catch (const std::exception& error) { sendMessage(message(IdSaveSettingsToFile).addInt(0).addString(error.what())); }
 			break;
 
 		case IdLoadSettingsFromFile:
-			loadChunkFromFile( _m.getString( 0 ), _m.getInt( 1 ) );
-			sendMessage( IdLoadSettingsFromFile );
+			try
+			{
+				const int length = _m.getInt(1);
+				if (length <= 0) { throw std::runtime_error("Invalid native VST chunk length"); }
+				loadChunkFromFile(_m.getString(0), static_cast<std::size_t>(length));
+				sendMessage(message(IdLoadSettingsFromFile).addInt(1));
+			}
+			catch (const std::exception& error) { sendMessage(message(IdLoadSettingsFromFile).addInt(0).addString(error.what())); }
 			break;
 
+		case IdVstPresetFile:
+		{
+			try
+			{
+				const auto mode = _m.getString(1);
+				if (mode == "inspect")
+				{
+					const auto bytes = readVstPresetFile(fopenUtf8(_m.getString(0), "rb"));
+					validateVstPresetTarget(decodeVstPreset(bytes), presetAccess());
+				}
+				else if (mode == "load") { loadPresetFile(_m.getString(0)); }
+				else if (mode == "save-program" || mode == "save-bank") { savePreset(_m.getString(0), mode == "save-bank"); }
+				else if (mode == "save-state")
+				{
+					const auto access = presetAccess();
+					const auto bytes = encodeVstPreset(captureVstPreset(access, access.programCount > 0));
+					writeVstPresetFile(fopenUtf8(_m.getString(0), "wb"), bytes);
+				}
+				else { throw std::runtime_error("Invalid VST preset file operation"); }
+				sendMessage(message(IdVstPresetFile).addInt(1));
+			}
+			catch (const std::exception& error) { sendMessage(message(IdVstPresetFile).addInt(0).addString(error.what())); }
+			break;
+		}
 		case IdLoadPresetFile:
-			loadPresetFile( _m.getString( 0 ) );
-			sendMessage( IdLoadPresetFile );
+			try { loadPresetFile(_m.getString(0)); sendMessage(message(IdLoadPresetFile).addInt(1)); }
+			catch (const std::exception& error) { sendMessage(message(IdLoadPresetFile).addInt(0).addString(error.what())); }
 			break;
 
 		case IdVstSetProgram:
@@ -654,8 +713,41 @@ bool RemoteVstPlugin::processMessage( const message & _m )
 			break;
 
 		case IdVstCurrentProgram:
-			sendMessage( message( IdVstCurrentProgram ).addInt( m_currentProgram ) );
+			m_currentProgram = m_plugin->numPrograms > 0 ? pluginDispatch(effGetProgram) : -1;
+			sendMessage(message(IdVstCurrentProgram).addInt(m_currentProgram));
 			break;
+		case IdVstProgramPage:
+		{
+			try
+			{
+				if (!isInitialized()) { throw std::runtime_error("VST plugin is not initialized"); }
+				const auto page = readVstPrograms(m_plugin->numPrograms, pluginDispatch(effGetProgram), _m.getInt(0), _m.getInt(1),
+					[this](int index) -> std::optional<std::string> {
+						char name[256] = {};
+						if (!pluginDispatch(effGetProgramNameIndexed, index, -1, name)) { return std::nullopt; }
+						name[sizeof(name) - 1] = 0;
+						return std::string(name);
+					}, [this] { return std::string(programName()); });
+				auto reply = message(IdVstProgramPage).addInt(1).addInt(page.total).addInt(page.current).addInt(page.offset).addInt(static_cast<int>(page.programs.size()));
+				for (const auto& program : page.programs) { reply.addInt(program.index).addString(program.name).addInt(program.nameAvailable); }
+				sendMessage(reply);
+			}
+			catch (const std::exception& error) { sendMessage(message(IdVstProgramPage).addInt(0).addString(error.what())); }
+			break;
+		}
+		case IdVstSelectProgram:
+		{
+			try
+			{
+				if (!isInitialized()) { throw std::runtime_error("VST plugin is not initialized"); }
+				m_currentProgram = selectVstProgram(m_plugin->numPrograms, _m.getInt(0),
+					[this](int index) { pluginDispatch(effSetProgram, 0, index); }, [this] { return static_cast<int>(pluginDispatch(effGetProgram)); });
+				sendCurrentProgramName();
+				sendMessage(message(IdVstSelectProgram).addInt(1).addInt(m_currentProgram));
+			}
+			catch (const std::exception& error) { sendMessage(message(IdVstSelectProgram).addInt(0).addString(error.what())); }
+			break;
+		}
 
 		case IdVstRotateProgram:
 			rotateProgram( _m.getInt( 0 ) );
@@ -667,30 +759,50 @@ bool RemoteVstPlugin::processMessage( const message & _m )
 			break;
 
 		case IdSavePresetFile:
-			savePreset( _m.getString( 0 ) );
-			sendMessage( IdSavePresetFile );
+			// The checked host uses IdVstPresetFile with an explicit kind.
+			sendMessage(message(IdSavePresetFile).addInt(0).addString("Use the checked VST preset file protocol"));
 			break;
 
 		case IdVstSetParameter:
-			m_plugin->setParameter( m_plugin, _m.getInt( 0 ), _m.getFloat( 1 ) );
-			//sendMessage( IdVstSetParameter );
+		{
+			// Audio automation stays ordered on the processing thread without a new
+			// reply per sample/block. Malformed writes are refused, never coerced to zero.
+			try
+			{
+				const int index = vstParameterInteger(_m.getString(0));
+				const float value = vstParameterValue(_m.getString(1));
+				if (isInitialized() && _m.argumentCount() == 2 && index >= 0 && index < m_plugin->numParams)
+				{ m_plugin->setParameter(m_plugin, index, value); }
+			}
+			catch (const std::exception& error) { debugMessage(error.what()); }
 			break;
+		}
 
 		case IdVstLoadAllParameterDisplays:
-			loadAllParameterDisplays();
-			break;
-
 		case IdVstLoadAllParameterLabels:
-			loadAllParameterLabels();
-			break;
-
 		case IdVstUpdateParameterDisplay:
-			updateParameterDisplay(_m.getInt());
-			break;
-
 		case IdVstUpdateParameterLabel:
-			updateParameterLabel(_m.getInt());
+		{
+			try
+			{
+				if (!isInitialized() || m_plugin->numParams < 0)
+				{ throw std::runtime_error("VST plugin is unavailable for parameter text queries"); }
+				const bool single = _m.id == IdVstUpdateParameterDisplay || _m.id == IdVstUpdateParameterLabel;
+				if (_m.argumentCount() != (single ? 1u : 0u))
+				{ throw std::runtime_error("Malformed VST parameter text request"); }
+				if (single)
+				{
+					const int index = vstParameterInteger(_m.getString());
+					if (index < 0 || index >= m_plugin->numParams) { throw std::out_of_range("Invalid VST parameter text index"); }
+					if (_m.id == IdVstUpdateParameterDisplay) { updateParameterDisplay(index); }
+					else { updateParameterLabel(index); }
+				}
+				else if (_m.id == IdVstLoadAllParameterDisplays) { loadAllParameterDisplays(); }
+				else { loadAllParameterLabels(); }
+			}
+			catch (const std::exception& error) { sendMessage(message(_m.id).addInt(-1).addString(error.what())); }
 			break;
+		}
 
 		case IdVstIdleUpdate:
 		{
@@ -1044,39 +1156,10 @@ bool RemoteVstPlugin::load( const std::string & _plugin_file )
 
 void RemoteVstPlugin::process( const SampleFrame* _in, SampleFrame* _out )
 {
-	// first we gonna post all MIDI-events we enqueued so far
-	if( m_midiEvents.size() )
+	if (!m_midiEvents.empty())
 	{
-		// since MIDI-events are not received immediately, we
-		// have to have them stored somewhere even after
-		// dispatcher-call, so we create static copies of the
-		// data and post them
-#define MIDI_EVENT_BUFFER_COUNT		1024
-		static char eventsBuffer[sizeof( VstEvents ) + sizeof( VstMidiEvent * ) * MIDI_EVENT_BUFFER_COUNT];
-		static VstMidiEvent vme[MIDI_EVENT_BUFFER_COUNT];
-
-		// first sort events chronologically, since some plugins
-		// (e.g. Sinnah) can hang if they're out of order
-		// TODO: Sort on the server side instead
-		std::stable_sort( m_midiEvents.begin(), m_midiEvents.end(),
-				[]( const VstMidiEvent &a, const VstMidiEvent &b )
-				{
-					return a.deltaFrames < b.deltaFrames;
-				} );
-
-		auto events = (VstEvents*)eventsBuffer;
-		events->reserved = 0;
-		events->numEvents = m_midiEvents.size();
-
-		int idx = 0;
-		for( VstMidiEventList::iterator it = m_midiEvents.begin(); it != m_midiEvents.end(); ++it, ++idx )
-		{
-			memcpy( &vme[idx], &*it, sizeof( VstMidiEvent ) );
-			events->events[idx] = (VstEvent *) &vme[idx];
-		}
-
-		m_midiEvents.clear();
-		pluginDispatch( effProcessEvents, 0, 0, events );
+		m_midiBuffer.assign(m_midiEvents);
+		pluginDispatch(effProcessEvents, 0, 0, m_midiBuffer.data());
 	}
 
 	// now we're ready to fetch sound from VST-plugin
@@ -1156,7 +1239,7 @@ void RemoteVstPlugin::processMidiEvent( const MidiEvent& event, const f_cnt_t of
 	}
 	vme.midiData[3] = 0;
 
-	// TODO: Would this cause a data race with the process method? The two methods must not be called concurrently
+	// MIDI receipt and audio processing are serialized on processingThread.
 	m_midiEvents.push_back( vme );
 }
 
@@ -1218,10 +1301,9 @@ const char * RemoteVstPlugin::programName()
 void RemoteVstPlugin::loadAllParameterDisplays()
 {
 	std::string paramDisplays;
-	static char buf[9]; // buffer for getting string
 	for (int i=0; i< m_plugin->numParams; ++i)
 	{
-		memset( buf, 0, sizeof( buf ) ); // fill with '\0' because got string may not to be ended with '\0'
+		char buf[9] = {};
 		pluginDispatch( effGetParamDisplay, i, 0, buf );
 		buf[8] = 0;
 
@@ -1239,10 +1321,9 @@ void RemoteVstPlugin::loadAllParameterDisplays()
 void RemoteVstPlugin::loadAllParameterLabels()
 {
 	std::string paramLabels;
-	static char buf[9]; // buffer for getting string
 	for (int i=0; i< m_plugin->numParams; ++i)
 	{
-		memset( buf, 0, sizeof( buf ) ); // fill with '\0' because got string may not to be ended with '\0'
+		char buf[9] = {};
 		pluginDispatch( effGetParamLabel, i, 0, buf );
 		buf[8] = 0;
 
@@ -1259,9 +1340,7 @@ void RemoteVstPlugin::loadAllParameterLabels()
 
 void RemoteVstPlugin::updateParameterDisplay(int index)
 {
-	assert(index < m_plugin->numParams);
-
-	static char display[9] = {};
+	char display[9] = {};
 	pluginDispatch(effGetParamDisplay, index, 0, display);
 	display[8] = '\0';
 
@@ -1273,9 +1352,7 @@ void RemoteVstPlugin::updateParameterDisplay(int index)
 
 void RemoteVstPlugin::updateParameterLabel(int index)
 {
-	assert(index < m_plugin->numParams);
-
-	static char label[9] = {};
+	char label[9] = {};
 	pluginDispatch(effGetParamLabel, index, 0, label);
 	label[8] = '\0';
 
@@ -1288,9 +1365,10 @@ void RemoteVstPlugin::updateParameterLabel(int index)
 void RemoteVstPlugin::sendCurrentProgramName()
 {
 	char presName[64] = {};
+	m_currentProgram = m_plugin->numPrograms > 0 ? pluginDispatch(effGetProgram) : -1;
 	std::snprintf(presName, sizeof(presName),
 		"%d/%d: %s",
-		pluginDispatch(effGetProgram) + 1,
+		m_currentProgram + 1,
 		m_plugin->numPrograms,
 		programName()
 	);
@@ -1301,6 +1379,8 @@ void RemoteVstPlugin::sendCurrentProgramName()
 
 void RemoteVstPlugin::getParameterDump()
 {
+	if (!isInitialized() || !m_plugin || m_plugin->numParams < 0)
+	{ throw std::runtime_error("VST plugin is not initialized"); }
 	message m( IdVstParameterDump );
 	m.addInt( m_plugin->numParams );
 
@@ -1313,7 +1393,7 @@ void RemoteVstPlugin::getParameterDump()
 
 		m.addInt( i );
 		m.addString( paramName );
-		m.addFloat( m_plugin->getParameter( m_plugin, i ) );
+		m.addString(vstParameterText(m_plugin->getParameter(m_plugin, i)));
 	}
 
 	sendMessage( m );
@@ -1322,68 +1402,90 @@ void RemoteVstPlugin::getParameterDump()
 
 
 
-void RemoteVstPlugin::setParameterDump( const message & _m )
+void RemoteVstPlugin::setParameterDump(const message& update)
 {
-	const int n = _m.getInt( 0 );
-	const int params = ( n > m_plugin->numParams ) ?
-					m_plugin->numParams : n;
-	int p = 0;
-	for( int i = 0; i < params; ++i )
-	{
-		VstParameterDumpItem item;
-		item.index = _m.getInt( ++p );
-		item.shortLabel = _m.getString( ++p );
-		item.value = _m.getFloat( ++p );
-		m_plugin->setParameter( m_plugin, item.index, item.value );
-	}
+	if (!isInitialized() || !m_plugin) { throw std::runtime_error("VST plugin is not initialized"); }
+	applyVstParameterDump(m_plugin->numParams, update.argumentCount(),
+		[&update](int index) { return update.getString(index); },
+		[this](int index, float value) { m_plugin->setParameter(m_plugin, index, value); });
 }
 
-
-
-
-void RemoteVstPlugin::saveChunkToFile( const std::string & _file )
+void RemoteVstPlugin::sendParameterPage(const message& request, bool textOnly)
 {
-	if( m_plugin->flags & 32 )
+	if (!isInitialized() || !m_plugin) { throw std::runtime_error("VST plugin is not initialized"); }
+	if (request.argumentCount() != (textOnly ? 3u : 2u))
+	{ throw std::runtime_error("Malformed VST parameter page request"); }
+	const auto range = vstParameterRange(m_plugin->numParams,
+		vstParameterInteger(request.getString(0)), vstParameterInteger(request.getString(1)));
+	const auto kind = textOnly ? request.getString(2) : std::string{};
+	if (textOnly && kind != "labels" && kind != "displays")
+	{ throw std::runtime_error("Unknown VST parameter text kind"); }
+	message reply(request.id);
+	reply.addInt(1).addInt(range.total).addInt(range.offset).addInt(range.count);
+	for (int relative = 0; relative < range.count; ++relative)
 	{
-		void * chunk = nullptr;
-		const int len = pluginDispatch(effGetChunk, 0, 0, &chunk);
-		if( len > 0 )
+		const int index = range.offset + relative;
+		reply.addInt(index);
+		if (textOnly)
 		{
-			FILE* fp = fopenUtf8(_file, "wb");
-			if (!fp)
-			{
-				fprintf( stderr,
-					"Error opening file for saving chunk.\n" );
-				return;
-			}
-			if (fwrite(chunk, 1, len, fp) != static_cast<std::size_t>(len))
-			{
-				fprintf( stderr,
-					"Error saving chunk to file.\n" );
-			}
-			close_check( fp );
+			char text[9]{};
+			pluginDispatch(kind == "labels" ? effGetParamLabel : effGetParamDisplay, index, 0, text);
+			text[8] = 0;
+			reply.addString(text);
+		}
+		else
+		{
+			char name[256]{};
+			pluginDispatch(effGetParamName, index, 0, name);
+			name[255] = 0;
+			reply.addString(name).addString(vstParameterText(m_plugin->getParameter(m_plugin, index)));
 		}
 	}
+	sendMessage(reply);
 }
 
+void RemoteVstPlugin::restoreParameterPage(const message& request)
+{
+	if (!isInitialized() || !m_plugin) { throw std::runtime_error("VST plugin is not initialized"); }
+	const auto mode = request.getString(0);
+	if (mode == "begin" && request.argumentCount() == 2)
+	{ m_parameterRestore.begin(m_plugin->numParams, vstParameterInteger(request.getString(1))); }
+	else if (mode == "append" && request.argumentCount() >= 3)
+	{
+		const int offset = vstParameterInteger(request.getString(1));
+		const int count = vstParameterInteger(request.getString(2));
+		if (count < 1 || count > VstParameterPageSize || request.argumentCount() != 3 + static_cast<std::size_t>(count))
+		{ throw std::runtime_error("Malformed VST parameter restore page"); }
+		std::vector<float> values;
+		values.reserve(count);
+		for (int index = 0; index < count; ++index) { values.push_back(vstParameterValue(request.getString(3 + index))); }
+		m_parameterRestore.append(m_plugin->numParams, offset, values);
+	}
+	else if (mode == "commit" && request.argumentCount() == 1)
+	{
+		m_parameterRestore.commit(m_plugin->numParams,
+			[this](int index, float value) { m_plugin->setParameter(m_plugin, index, value); });
+	}
+	else if (mode == "abort" && request.argumentCount() == 1) { m_parameterRestore.abort(); }
+	else { throw std::runtime_error("Malformed VST parameter restore request"); }
+}
 
-
+bool RemoteVstPlugin::saveChunkToFile(const std::string& file)
+{
+	const auto access = presetAccess();
+	if (!access.usesChunks) { return false; }
+	const auto chunk = access.chunk(false);
+	writeVstPresetFile(fopenUtf8(file, "wb"), chunk);
+	return true;
+}
 
 void RemoteVstPlugin::setProgram( int program )
 {
-	if( isInitialized() == false )
+	if (!isInitialized() || program < 0 || program >= m_plugin->numPrograms)
 	{
 		return;
 	}
 
-	if( program < 0 )
-	{
-		program = 0;
-	}
-	else if( program >= m_plugin->numPrograms )
-	{
-		program = m_plugin->numPrograms - 1;
-	}
 	pluginDispatch( effSetProgram, 0, program );
 
 	sendCurrentProgramName();
@@ -1394,12 +1496,12 @@ void RemoteVstPlugin::setProgram( int program )
 
 void RemoteVstPlugin::rotateProgram( int offset )
 {
-	if( isInitialized() == false )
+	if (!isInitialized() || m_plugin->numPrograms <= 0)
 	{
 		return;
 	}
 
-	int newProgram = pluginDispatch( effGetProgram ) + offset;
+	int64_t newProgram = static_cast<int64_t>(pluginDispatch(effGetProgram)) + offset;
 
 	if( newProgram < 0 )
 	{
@@ -1419,335 +1521,82 @@ void RemoteVstPlugin::rotateProgram( int offset )
 
 void RemoteVstPlugin::getProgramNames()
 {
-	char presName[1024 + 256 * 30] = {};
-	char curProgName[30] = {};
-	if (!isInitialized()) { return; }
-	const bool progNameIndexed = pluginDispatch(effGetProgramNameIndexed, 0, -1, curProgName) == 1;
-
-	if (m_plugin->numPrograms > 1)
+	// Legacy wire reply for older clients. Never switch the live program just
+	// to name it; the structured paged API carries name availability explicitly.
+	if (!isInitialized()) { sendMessage(message(IdVstProgramNames).addString("")); return; }
+	std::string names;
+	const int current = pluginDispatch(effGetProgram);
+	for (int index = 0; index < m_plugin->numPrograms; ++index)
 	{
-		const auto maxPrograms = std::min(m_plugin->numPrograms, 256);
-		if (progNameIndexed)
-		{
-			for (int i = 0; i < maxPrograms; i++)
-			{
-				pluginDispatch(effGetProgramNameIndexed, i, -1, curProgName);
-				if (i == 0) { std::snprintf(presName, sizeof(presName), "%s", curProgName); }
-				else
-				{
-					const auto len = std::strlen(presName);
-					std::snprintf(presName + len, sizeof(presName) - len, "|%s", curProgName);
-				}
-			}
-		}
-		else
-		{
-			const int currProgram = pluginDispatch(effGetProgram);
-			for (int i = 0; i < maxPrograms; i++)
-			{
-				pluginDispatch(effSetProgram, 0, i);
-				if (i == 0) { std::snprintf(presName, sizeof(presName), "%s", programName()); }
-				else
-				{
-					const auto len = std::strlen(presName);
-					std::snprintf(presName + len, sizeof(presName) - len, "|%s", programName());
-				}
-			}
-			pluginDispatch(effSetProgram, 0, currProgram);
-		}
+		char name[256] = {};
+		if (index == current) { std::snprintf(name, sizeof(name), "%s", programName()); }
+		else { pluginDispatch(effGetProgramNameIndexed, index, -1, name); }
+		name[sizeof(name) - 1] = 0;
+		if (index) { names += '|'; }
+		names += name;
 	}
-	else { std::snprintf(presName, sizeof(presName), "%s", programName()); }
-
-	sendMessage(message(IdVstProgramNames).addString(presName));
+	sendMessage(message(IdVstProgramNames).addString(names));
 }
 
 
-
-
-inline unsigned int endian_swap(unsigned int& x)
+VstPresetAccess RemoteVstPlugin::presetAccess()
 {
-    return (x>>24) | ((x<<8) & 0x00FF0000) | ((x>>8) & 0x0000FF00) | (x<<24);
+	if (!isInitialized() || !m_plugin) { throw std::runtime_error("VST plugin is not initialized"); }
+	VstPresetAccess access;
+	access.pluginId = static_cast<std::uint32_t>(m_plugin->uniqueID);
+	access.pluginVersion = static_cast<std::uint32_t>(pluginVersion());
+	access.parameterCount = m_plugin->numParams; access.programCount = m_plugin->numPrograms;
+	access.usesChunks = (m_plugin->flags & (1 << 5)) != 0;
+	access.current = [this] { return static_cast<int>(pluginDispatch(effGetProgram)); };
+	access.select = [this](int index) { pluginDispatch(effSetProgram, 0, index); };
+	access.name = [this] { return std::string(programName()); };
+	access.setName = [this](const std::string& value) {
+		char name[24] = {};
+		std::copy_n(value.data(), std::min(value.size(), sizeof(name) - 1), name);
+		pluginDispatch(effSetProgramName, 0, 0, name);
+	};
+	access.parameter = [this](int index) { return m_plugin->getParameter(m_plugin, index); };
+	access.setParameter = [this](int index, float value) { m_plugin->setParameter(m_plugin, index, value); };
+	access.chunk = [this](bool program) {
+		void* data = nullptr;
+		const auto length = pluginDispatch(effGetChunk, program, 0, &data);
+		if (length <= 0 || static_cast<std::uint64_t>(length) > VstPresetMaxBytes - 160 || !data)
+		{ throw std::runtime_error("VST returned an empty, invalid or oversized preset chunk"); }
+		const auto begin = static_cast<const std::uint8_t*>(data);
+		return std::vector<std::uint8_t>(begin, begin + length);
+	};
+	access.setChunk = [this](bool program, const std::vector<std::uint8_t>& chunk) {
+		// VST2 does not define a reliable success return for effSetChunk. The file
+		// envelope is checked here; interpreting the opaque payload belongs to the plugin.
+		pluginDispatch(effSetChunk, program, chunk.size(), const_cast<std::uint8_t*>(chunk.data()));
+	};
+	return access;
 }
 
-struct Bank
+void RemoteVstPlugin::savePreset(const std::string& file, bool bank)
 {
-	unsigned int chunkMagic;
-	unsigned int byteSize;
-	unsigned int fxMagic;
-	unsigned int version;
-	unsigned int fxID;
-	unsigned int fxVersion;
-	unsigned int numPrograms;
-	char prgName[28];
-};
-
-void RemoteVstPlugin::savePreset( const std::string & _file )
-{
-	unsigned int chunk_size = 0;
-	auto bank = Bank{};
-	char progName[ 128 ] = { 0 };
-	char* data = nullptr; // TODO: Fix convoluted and potentially leaky memory management
-	const bool chunky = ( m_plugin->flags & ( 1 << 5 ) ) != 0;
-	bool isPreset = _file.substr( _file.find_last_of( "." ) + 1 )  == "fxp";
-	int presNameLen = _file.find_last_of( "/" ) + _file.find_last_of( "\\" ) + 2;
-
-	if (isPreset)
-	{
-		for (size_t i = 0; i < _file.length() - 4 - presNameLen; i++)
-		{
-			progName[i] = i < 23 ? _file[presNameLen + i] : 0;
-		}
-		pluginDispatch(effSetProgramName, 0, 0, progName);
-	}
-
-	if (chunky)
-	{
-		chunk_size = pluginDispatch(effGetChunk, isPreset, 0, &data);
-	}
-	else
-	{
-		if (isPreset)
-		{
-			chunk_size = m_plugin->numParams * sizeof( float );
-			data = new char[ chunk_size ];
-			auto toUIntArray = reinterpret_cast<unsigned int*>(data);
-			for ( int i = 0; i < m_plugin->numParams; i++ )
-			{
-				float value = m_plugin->getParameter( m_plugin, i );
-				auto pValue = reinterpret_cast<unsigned int*>(&value);
-				toUIntArray[ i ] = endian_swap( *pValue );
-			}
-		}
-		else
-		{
-			chunk_size = (((m_plugin->numParams * sizeof(float)) + 56) * m_plugin->numPrograms);
-		}
-	}
-
-	bank.chunkMagic = 0x4B6E6343;
-	bank.byteSize = chunk_size + (chunky ? sizeof(int) : 0) + 48;
-	if (!isPreset) { bank.byteSize += 100; }
-	bank.byteSize = endian_swap(bank.byteSize);
-	bank.fxMagic = chunky ? 0x68435046 : 0x6B437846;
-	if (!isPreset &&  chunky) { bank.fxMagic = 0x68434246; }
-	if (!isPreset && !chunky) { bank.fxMagic = 0x6B427846; }
-
-	bank.version = 0x01000000;
-	auto uIntToFile = (unsigned int)m_plugin->uniqueID;
-	bank.fxID = endian_swap(uIntToFile);
-	uIntToFile = (unsigned int) pluginVersion();
-	bank.fxVersion = endian_swap(uIntToFile);
-	uIntToFile = (unsigned int) chunky ? m_plugin->numPrograms : m_plugin->numParams;
-	if (!isPreset &&!chunky) uIntToFile = (unsigned int) m_plugin->numPrograms;
-	bank.numPrograms = endian_swap(uIntToFile);
-
-	FILE* stream = fopenUtf8(_file, "wb");
-	if (!stream)
-	{
-		fprintf( stderr,
-			"Error opening file for saving preset.\n" );
-		return;
-	}
-	fwrite(&bank, 1, 28, stream);
-	fwrite ( progName, 1, isPreset ? 28 : 128, stream );
-	if ( chunky ) {
-		uIntToFile = endian_swap( chunk_size );
-		fwrite ( &uIntToFile, 1, 4, stream );
-	}
-
-	if (bank.fxMagic != 0x6B427846)
-	{
-		fwrite ( data, 1, chunk_size, stream );
-	}
-	else
-	{
-		int numPrograms = m_plugin->numPrograms;
-		int currProgram = pluginDispatch( effGetProgram );
-		chunk_size = (m_plugin->numParams * sizeof( float ));
-		bank.byteSize = chunk_size + 48;
-		bank.byteSize = endian_swap(bank.byteSize);
-		bank.fxMagic = 0x6B437846;
-		uIntToFile = (unsigned int) m_plugin->numParams;
-		bank.numPrograms = endian_swap(uIntToFile);
-		data = new char[ chunk_size ];
-		unsigned int* pValue;
-		unsigned int* toUIntArray = reinterpret_cast<unsigned int*>(data);
-		float value;
-		for (int j = 0; j < numPrograms; j++)
-		{
-			pluginDispatch( effSetProgram, 0, j );
-			pluginDispatch(effGetProgramName, 0, 0, bank.prgName);
-			fwrite(&bank, 1, 56, stream);
-			for ( int i = 0; i < m_plugin->numParams; i++ )
-			{
-				value = m_plugin->getParameter( m_plugin, i );
-				pValue = ( unsigned int * ) &value;
-				toUIntArray[ i ] = endian_swap( *pValue );
-			}
-			fwrite ( data, 1, chunk_size, stream );
-		}
-		pluginDispatch( effSetProgram, 0, currProgram );
-	}
-	fclose( stream );
-
-	if (!chunky)
-	{
-		delete[] data;
-	}
+	const auto bytes = encodeVstPreset(captureVstPreset(presetAccess(), bank));
+	writeVstPresetFile(fopenUtf8(file, "wb"), bytes);
 }
 
-
-
-
-void RemoteVstPlugin::loadPresetFile( const std::string & _file )
+void RemoteVstPlugin::loadPresetFile(const std::string& file)
 {
-	std::unique_ptr<char[]> chunk;
-	unsigned int pLen = 0;
-	unsigned int len = 0;
-	auto bank = Bank{};
-	FILE* stream = fopenUtf8(_file, "rb");
-	if (!stream)
-	{
-		fprintf( stderr,
-			"Error opening file for loading preset.\n" );
-		return;
-	}
-
-	if (fread(&bank, 1, 56, stream) != 56)
-	{
-		fprintf( stderr, "Error loading preset file.\n" );
-	}
-	bank.fxID = endian_swap(bank.fxID);
-	bank.numPrograms = endian_swap(bank.numPrograms);
-	unsigned int toUInt;
-	float * pFloat;
-
-	if (static_cast<std::uint_fast32_t>(m_plugin->uniqueID) != bank.fxID)
-	{
-		sendMessage( message( IdVstCurrentProgramName ).
-					addString( "Error: Plugin UniqID not match" ) );
-		fclose( stream );
-		return;
-	}
-
-	if (_file.substr(_file.find_last_of('.') + 1) != "fxp")
-	{
-		fseek(stream, 156, SEEK_SET);
-	}
-
-	if (bank.fxMagic != 0x6B427846)
-	{
-		if (bank.fxMagic != 0x6B437846)
-		{
-			if ( fread (&pLen, 1, 4, stream) != 4 )
-			{
-				fprintf( stderr,
-					"Error loading preset file.\n" );
-			}
-			len = endian_swap(pLen);
-		}
-		else
-		{
-			len = static_cast<unsigned int>(sizeof(float) * bank.numPrograms);
-		}
-
-		chunk = std::make_unique_for_overwrite<char[]>(len);
-		if (fread(chunk.get(), len, 1, stream) != 1)
-		{
-			fprintf( stderr, "Error loading preset file.\n" );
-		}
-		fclose( stream );
-	}
-
-	if (_file.substr(_file.find_last_of(".") + 1) == "fxp")
-	{
-		// TODO: Could this crash if chunk is null?
-		bank.prgName[23] = '\0';
-		pluginDispatch(effSetProgramName, 0, 0, bank.prgName);
-		if (bank.fxMagic != 0x6B437846)
-		{
-			pluginDispatch(effSetChunk, 1, len, chunk.get());
-		}
-		else
-		{
-			auto toUIntArray = reinterpret_cast<unsigned int*>(chunk.get());
-			for (auto i = 0u; i < bank.numPrograms; i++)
-			{
-				toUInt = endian_swap( toUIntArray[ i ] );
-				pFloat = reinterpret_cast<float*>(&toUInt);
-				m_plugin->setParameter( m_plugin, i, *pFloat );
-			}
-		}
-	}
-	else
-	{
-		if (bank.fxMagic != 0x6B427846)
-		{
-			// TODO: Could this crash if chunk is null?
-			pluginDispatch(effSetChunk, 0, len, chunk.get());
-		}
-		else
-		{
-			int numPrograms = static_cast<int>(bank.numPrograms);
-			unsigned int * toUIntArray;
-			int currProgram = pluginDispatch( effGetProgram );
-
-			len = static_cast<unsigned int>(sizeof(float) * m_plugin->numParams);
-			chunk = std::make_unique_for_overwrite<char[]>(len);
-			toUIntArray = reinterpret_cast<unsigned int*>(chunk.get());
-
-			for (int i = 0; i < numPrograms; i++)
-			{
-				if (fread(&bank, 1, 56, stream) != 56)
-				{
-					fprintf( stderr,
-					"Error loading preset file.\n" );
-				}
-				if (fread(chunk.get(), len, 1, stream) != 1)
-				{
-					fprintf( stderr,
-					"Error loading preset file.\n" );
-				}
-				pluginDispatch( effSetProgram, 0, i );
-				bank.prgName[23] = '\0';
-				pluginDispatch(effSetProgramName, 0, 0, bank.prgName);
-				for (int j = 0; j < m_plugin->numParams; j++)
-				{
-					toUInt = endian_swap( toUIntArray[ j ] );
-					pFloat = reinterpret_cast<float*>(&toUInt);
-					m_plugin->setParameter( m_plugin, j, *pFloat );
-				}
-			}
-			pluginDispatch( effSetProgram, 0, currProgram );
-			fclose( stream );
-		}
-	}
-
+	const auto bytes = readVstPresetFile(fopenUtf8(file, "rb"));
+	const auto preset = decodeVstPreset(bytes);
+	applyVstPreset(preset, presetAccess());
 	sendCurrentProgramName();
 }
 
-void RemoteVstPlugin::loadChunkFromFile(const std::string& _file, std::size_t _len)
+void RemoteVstPlugin::loadChunkFromFile(const std::string& file, std::size_t length)
 {
-	FILE* fp = fopenUtf8(_file, "rb");
-	if (!fp)
-	{
-		fprintf( stderr,
-			"Error opening file for loading chunk.\n" );
-		return;
-	}
-
-	auto chunk = std::make_unique_for_overwrite<char[]>(_len);
-	if (fread(chunk.get(), 1, _len, fp) != _len)
-	{
-		fprintf( stderr, "Error loading chunk from file.\n" );
-	}
-	close_check( fp );
-
-	pluginDispatch(effSetChunk, 0, _len, chunk.get());
+	const auto access = presetAccess();
+	if (!access.usesChunks || length == 0 || length > VstPresetMaxBytes)
+	{ throw std::runtime_error("Invalid or unsupported native VST state chunk"); }
+	const auto chunk = readVstPresetFile(fopenUtf8(file, "rb"));
+	if (chunk.size() != length) { throw std::runtime_error("Native VST chunk length does not match its file"); }
+	access.setChunk(false, chunk);
+	sendCurrentProgramName();
 }
-
-
-
 
 int RemoteVstPlugin::updateInOutCount()
 {

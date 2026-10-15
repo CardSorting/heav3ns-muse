@@ -99,9 +99,8 @@ public slots:
 
 private slots:
 	void updateFaders();
-	// TODO This should be improved. Currently the solo and mute models are connected via
-	// the MixerChannelView's constructor with the MixerView. It would already be an improvement
-	// if the MixerView connected itself to each new MixerChannel that it creates/handles.
+	void channelMoved(int from, int to);
+	// The native mixer owns mute/solo changes; these slots refresh presentation.
 	void toggledSolo();
 	void toggledMute();
 
@@ -110,6 +109,8 @@ private:
 	void updateAllMixerChannels();
 	void connectToSoloAndMute(int channelIndex);
 	void disconnectFromSoloAndMute(int channelIndex);
+	void deleteChannelImpl(int index);
+	void refreshDisplayImpl();
 
 private:
 	QVector<MixerChannelView*> m_mixerChannelViews;
@@ -122,8 +123,7 @@ private:
 	QStackedLayout* m_racksLayout;
 	QWidget* m_racksWidget;
 	Mixer* m_mixer;
-
-	void updateMaxChannelSelector();
+	bool m_changingViews = false;
 
 	friend class MixerChannelView;
 } ;

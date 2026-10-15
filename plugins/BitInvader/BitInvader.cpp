@@ -183,23 +183,20 @@ void BitInvader::saveSettings( QDomDocument & _doc, QDomElement & _this )
 
 void BitInvader::loadSettings( const QDomElement & _this )
 {
-	// Clear wavetable before loading a new
-	m_graph.clear();
-
-	// Load sample length
-	m_sampleLength.loadSettings( _this, "sampleLength" );
-
-	int sampleLength = (int)m_sampleLength.value();
-
-	// Load sample shape
-	int size = 0;
-	char * dst = 0;
-	base64::decode( _this.attribute( "sampleShape"), &dst, &size );
-
-	m_graph.setLength(size / sizeof(float));
-	m_graph.setSamples(reinterpret_cast<float*>(dst));
-	m_graph.setLength(sampleLength);
-	delete[] dst;
+	// Validate the full stored table before publishing it. The visible length
+	// can be shorter; its hidden tail remains part of native serialization.
+	graphModel stored(-1.f, 1.f, wavetableSize, nullptr);
+	const bool hasShape = _this.hasAttribute("sampleShape");
+	const bool validShape = !hasShape || stored.loadSampleAttribute(_this, "sampleShape", true);
+	m_sampleLength.loadSettings(_this, "sampleLength");
+	if (hasShape && validShape)
+	{
+		const int visibleLength = m_sampleLength.value();
+		m_graph.setLength(wavetableSize);
+		m_graph.setSamples(stored.samples());
+		m_graph.setLength(visibleLength);
+		normalize();
+	}
 
 	// Load LED normalize 
 	m_interpolation.loadSettings( _this, "interpolation" );
@@ -501,7 +498,7 @@ void BitInvaderView::noiseWaveClicked()
 
 void BitInvaderView::usrWaveClicked()
 {
-	QString fileName = m_graph->model()->setWaveToUser();
+	QString fileName = Graph::loadUserWaveform(m_graph->model());
 	if (!fileName.isEmpty())
 	{
 		m_usrWaveBtn->setToolTip(fileName);

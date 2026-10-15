@@ -25,14 +25,22 @@
 
 #include "Patman.h"
 
+#include <algorithm>
+#include <limits>
+#include <new>
+#include <QFile>
+#include <QFileInfo>
 #include <QDragEnterEvent>
 #include <QPainter>
 #include <QDomElement>
+#include <QtEndian>
 
+#include "AudioEngine.h"
 #include "ConfigManager.h"
-#include "endian_handling.h"
+#include "DataFile.h"
 #include "Engine.h"
 #include "FileDialog.h"
+#include "FileResourceSnapshot.h"
 #include "FontHelper.h"
 #include "InstrumentTrack.h"
 #include "NotePlayHandle.h"
@@ -81,8 +89,8 @@ PLUGIN_EXPORT Plugin * lmms_plugin_main( Model *m, void * )
 
 PatmanInstrument::PatmanInstrument( InstrumentTrack * _instrument_track ) :
 	Instrument( _instrument_track, &patman_plugin_descriptor ),
-	m_loopedModel( true, this ),
-	m_tunedModel( true, this )
+	m_loopedModel(true, this, tr("Loop sample")),
+	m_tunedModel(true, this, tr("Tune sample"))
 {
 }
 
@@ -100,6 +108,7 @@ PatmanInstrument::~PatmanInstrument()
 void PatmanInstrument::saveSettings( QDomDocument & _doc, QDomElement & _this )
 {
 	_this.setAttribute( "src", m_patchFile );
+	if (m_patchSnapshot) { DataFile::registerResourceSnapshot(_doc, _this, "src", m_patchSnapshot); }
 	m_loopedModel.saveSettings( _doc, _this, "looped" );
 	m_tunedModel.saveSettings( _doc, _this, "tuned" );
 }
@@ -109,7 +118,10 @@ void PatmanInstrument::saveSettings( QDomDocument & _doc, QDomElement & _this )
 
 void PatmanInstrument::loadSettings( const QDomElement & _this )
 {
-	setFile( _this.attribute( "src" ), false );
+	{
+		DataFile::ResourceReferenceScope resource(_this, "src");
+		setFile( _this.attribute( "src" ), false );
+	}
 	m_loopedModel.loadSettings( _this, "looped" );
 	m_tunedModel.loadSettings( _this, "tuned" );
 }
@@ -177,200 +189,136 @@ void PatmanInstrument::deleteNotePluginData( NotePlayHandle * _n )
 
 
 
-void PatmanInstrument::setFile( const QString & _patch_file, bool _rename )
+std::vector<Plugin::FileResource> PatmanInstrument::fileResources() const
 {
-	if( _patch_file.size() <= 0 )
-	{
-		m_patchFile = QString();
-		return;
-	}
+	return {{"patch", tr("GUS patch"), m_patchFile, {"pat"}}};
+}
 
-	// is current instrument-track-name equal to previous-filename??
-	if( _rename &&
-		( instrumentTrack()->name() ==
-					QFileInfo( m_patchFile ).fileName() ||
-				   	m_patchFile == "" ) )
+bool PatmanInstrument::setFileResource(const QString& key, const QString& path, QString& error)
+{
+	if (key != "patch") { error = tr("Unknown Patman resource"); return false; }
+	QVector<std::shared_ptr<Sample>> candidate;
+	std::shared_ptr<FileResourceSnapshot> snapshot;
+	QString relativePath;
+	if (!path.isEmpty())
 	{
-		// then set it to new one
-		instrumentTrack()->setName( PathUtil::cleanName( _patch_file ) );
+		bool invalid = false;
+		const auto absolute = PathUtil::toAbsolute(path, &invalid);
+		const QFileInfo file(FileResourceSnapshot::readableSourcePath(absolute));
+		if (invalid || !file.isFile() || !file.isReadable()) { error = tr("Patch path is not a readable file: %1").arg(path); return false; }
+		snapshot = FileResourceSnapshot::capture(absolute, error);
+		if (!snapshot || !loadPatch(snapshot->path(), candidate, error)) { return false; }
+		relativePath = PathUtil::toShortestRelative(absolute);
 	}
-	// else we don't touch the instrument-track-name, because the user
-	// named it self
-
-	m_patchFile = PathUtil::toShortestRelative( _patch_file );
-	LoadError error = loadPatch( PathUtil::toAbsolute( _patch_file ) );
-	if( error != LoadError::OK )
 	{
-		printf("Load error\n");
+		auto guard = Engine::audioEngine()->requestChangesGuard();
+		m_patchSamples.swap(candidate);
+		m_patchSnapshot.swap(snapshot);
+		m_patchFile = relativePath;
 	}
-
 	emit fileChanged();
+	error.clear(); return true;
 }
 
-
-
-
-PatmanInstrument::LoadError PatmanInstrument::loadPatch(
-						const QString & _filename )
+void PatmanInstrument::setFile(const QString& path, bool rename)
 {
-	unloadCurrentPatch();
-
-	FILE * fd = fopen( _filename.toUtf8().constData() , "rb" );
-	if( !fd )
-	{
-		perror( "fopen" );
-		return( LoadError::Open );
-	}
-
-	auto header = std::array<unsigned char, 239>{};
-
-	if (fread(header.data(), 1, 239, fd ) != 239 ||
-			(memcmp(header.data(), "GF1PATCH110\0ID#000002", 22)
-			&& memcmp(header.data(), "GF1PATCH100\0ID#000002", 22)))
-	{
-		fclose( fd );
-		return( LoadError::NotGUS );
-	}
-
-	if( header[82] != 1 && header[82] != 0 )
-	{
-		fclose( fd );
-		return( LoadError::Instruments );
-	}
-
-	if( header[151] != 1 && header[151] != 0 )
-	{
-		fclose( fd );
-		return( LoadError::Layers );
-	}
-
-	int sample_count = header[198];
-	for( int i = 0; i < sample_count; ++i )
-	{
-		unsigned short tmpshort;
-
-#define SKIP_BYTES( x ) \
-		if ( fseek( fd, x, SEEK_CUR ) == -1 ) \
-		{ \
-			fclose( fd ); \
-			return( LoadError::IO ); \
-		}
-
-#define READ_SHORT( x ) \
-		if ( fread( &tmpshort, 2, 1, fd ) != 1 ) \
-		{ \
-			fclose( fd ); \
-			return( LoadError::IO ); \
-		} \
-		x = byteswapIfBE<unsigned short>(tmpshort);
-
-#define READ_LONG( x ) \
-		if ( fread( &x, 4, 1, fd ) != 1 ) \
-		{ \
-			fclose( fd ); \
-			return( LoadError::IO ); \
-		} \
-		x = byteswapIfBE<unsigned int>(x);
-
-		// skip wave name, fractions
-		SKIP_BYTES( 7 + 1 );
-		unsigned data_length;
-		READ_LONG( data_length );
-		unsigned loop_start;
-		READ_LONG( loop_start );
-		unsigned loop_end;
-		READ_LONG( loop_end );
-		unsigned sample_rate;
-		READ_SHORT( sample_rate );
-		// skip low_freq, high_freq
-		SKIP_BYTES( 4 + 4 );
-		unsigned root_freq;
-		READ_LONG( root_freq );
-		// skip tuning, panning, envelope, tremolo, vibrato
-		SKIP_BYTES( 2 + 1 + 12 + 3 + 3 );
-		unsigned char modes;
-		if ( fread( &modes, 1, 1, fd ) != 1 )
-		{
-			fclose( fd );
-			return( LoadError::IO );
-		}
-		// skip scale frequency, scale factor, reserved space
-		SKIP_BYTES( 2 + 2 + 36 );
-
-		f_cnt_t frames;
-		std::unique_ptr<sample_t[]> wave_samples;
-		if( modes & MODES_16BIT )
-		{
-			frames = data_length >> 1;
-			wave_samples = std::make_unique<sample_t[]>(frames);
-			for( f_cnt_t frame = 0; frame < frames; ++frame )
-			{
-				short sample;
-				if ( fread( &sample, 2, 1, fd ) != 1 )
-				{
-					fclose( fd );
-					return( LoadError::IO );
-				}
-				sample = byteswapIfBE(sample);
-				if( modes & MODES_UNSIGNED )
-				{
-					sample ^= 0x8000;
-				}
-				wave_samples[frame] = sample / 32767.0f;
-			}
-
-			loop_start >>= 1;
-			loop_end >>= 1;
-		}
-		else
-		{
-			frames = data_length;
-			wave_samples = std::make_unique<sample_t[]>(frames);
-			for( f_cnt_t frame = 0; frame < frames; ++frame )
-			{
-				char sample;
-				if ( fread( &sample, 1, 1, fd ) != 1 )
-				{
-					fclose( fd );
-					return( LoadError::IO );
-				}
-				if( modes & MODES_UNSIGNED )
-				{
-					sample ^= 0x80;
-				}
-				wave_samples[frame] = sample / 127.0f;
-			}
-		}
-
-		auto data = new SampleFrame[frames];
-
-		for( f_cnt_t frame = 0; frame < frames; ++frame )
-		{
-			for( ch_cnt_t chnl = 0; chnl < DEFAULT_CHANNELS;
-									++chnl )
-			{
-				data[frame][chnl] = wave_samples[frame];
-			}
-		}
-
-		auto psample = std::make_shared<Sample>(data, frames, sample_rate);
-		psample->setFrequency(root_freq / 1000.0f);
-
-		if( modes & MODES_LOOPING )
-		{
-			psample->setLoopStartFrame( loop_start );
-			psample->setLoopEndFrame( loop_end );
-		}
-
-		m_patchSamples.push_back(psample);
-
-		delete[] data;
-	}
-	fclose( fd );
-	return( LoadError::OK );
+	const bool renameTrack = rename && !path.isEmpty()
+		&& (m_patchFile.isEmpty() || instrumentTrack()->name() == QFileInfo(m_patchFile).fileName());
+	QString error;
+	if (!setFileResource("patch", path, error)) { collectErrorForUI(error); return; }
+	if (renameTrack) { instrumentTrack()->setName(PathUtil::cleanName(path)); }
 }
 
-
+bool PatmanInstrument::loadPatch(const QString& filename, QVector<std::shared_ptr<Sample>>& samples, QString& error)
+{
+	// QFile opens native Unicode paths on every supported platform and owns its handle.
+	QFile file(filename);
+	if (!file.open(QIODevice::ReadOnly)) { error = tr("Could not open GUS patch: %1").arg(file.errorString()); return false; }
+	try
+	{
+		const auto header = file.read(239);
+		if (header.size() != 239 || (!header.startsWith(QByteArray("GF1PATCH110\0ID#000002", 22))
+			&& !header.startsWith(QByteArray("GF1PATCH100\0ID#000002", 22))))
+		{
+			error = tr("File is not a complete native GUS patch"); return false;
+		}
+		const auto instrumentCount = static_cast<unsigned char>(header[82]);
+		const auto layerCount = static_cast<unsigned char>(header[151]);
+		if (instrumentCount > 1) { error = tr("Patman does not support multi-instrument GUS patches"); return false; }
+		if (layerCount > 1) { error = tr("Patman does not support multi-layer GUS patches"); return false; }
+		const auto sampleCount = static_cast<unsigned char>(header[198]);
+		if (sampleCount == 0) { error = tr("GUS patch contains no samples"); return false; }
+		QVector<std::shared_ptr<Sample>> decoded;
+		decoded.reserve(sampleCount);
+		for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
+		{
+			const auto waveHeader = file.read(96);
+			if (waveHeader.size() != 96) { error = tr("Truncated GUS sample header %1").arg(sampleIndex); return false; }
+			const auto dataLength = qFromLittleEndian<quint32>(waveHeader.constData() + 8);
+			const auto loopStart = qFromLittleEndian<quint32>(waveHeader.constData() + 12);
+			const auto loopEnd = qFromLittleEndian<quint32>(waveHeader.constData() + 16);
+			const auto sampleRate = qFromLittleEndian<quint16>(waveHeader.constData() + 20);
+			const auto rootFrequency = qFromLittleEndian<quint32>(waveHeader.constData() + 30);
+			const auto modes = static_cast<unsigned char>(waveHeader[55]);
+			const quint32 sampleBytes = (modes & MODES_16BIT) ? 2 : 1;
+			const quint32 frames = dataLength / sampleBytes;
+			// Validate native frame coordinates and remaining bytes before any PCM allocation.
+			if (dataLength == 0 || dataLength % sampleBytes != 0 || static_cast<qint64>(dataLength) > file.bytesAvailable()
+				|| frames > static_cast<quint32>(std::numeric_limits<int>::max()) || frames > std::vector<SampleFrame>().max_size()
+				|| sampleRate == 0 || rootFrequency == 0)
+			{
+				error = tr("Invalid or truncated GUS sample metadata %1").arg(sampleIndex); return false;
+			}
+			const auto loopStartFrame = loopStart / sampleBytes, loopEndFrame = loopEnd / sampleBytes;
+			if ((modes & MODES_LOOPING) && (loopStartFrame >= loopEndFrame || loopEnd > dataLength))
+			{
+				error = tr("GUS sample %1 has invalid loop bounds").arg(sampleIndex); return false;
+			}
+			std::vector<SampleFrame> data(frames);
+			quint32 written = 0;
+			while (written < frames)
+			{
+				const auto count = std::min<quint32>(8192, frames - written);
+				const auto block = file.read(static_cast<qint64>(count) * sampleBytes);
+				if (block.size() != static_cast<qint64>(count) * sampleBytes)
+				{
+					error = tr("Incomplete GUS sample data %1").arg(sampleIndex); return false;
+				}
+				for (quint32 index = 0; index < count; ++index)
+				{
+					int value;
+					float denominator;
+					if (sampleBytes == 2)
+					{
+						const int bits = qFromLittleEndian<quint16>(block.constData() + index * 2);
+						value = (modes & MODES_UNSIGNED) ? bits - 32768 : (bits >= 32768 ? bits - 65536 : bits);
+						denominator = 32767.f;
+					}
+					else
+					{
+						const int bits = static_cast<unsigned char>(block[index]);
+						value = (modes & MODES_UNSIGNED) ? bits - 128 : (bits >= 128 ? bits - 256 : bits);
+						denominator = 127.f;
+					}
+					data[written + index] = SampleFrame(value / denominator);
+				}
+				written += count;
+			}
+			auto buffer = std::make_shared<const SampleBuffer>(std::move(data), sampleRate);
+			auto sample = std::make_shared<Sample>(std::move(buffer));
+			sample->setFrequency(rootFrequency / 1000.f);
+			if (modes & MODES_LOOPING)
+			{
+				sample->setLoopStartFrame(static_cast<int>(loopStartFrame));
+				sample->setLoopEndFrame(static_cast<int>(loopEndFrame));
+			}
+			decoded.push_back(std::move(sample));
+		}
+		samples.swap(decoded);
+	}
+	catch (const std::bad_alloc&) { error = tr("Insufficient memory to decode the native GUS patch"); return false; }
+	error.clear(); return true;
+}
 
 
 void PatmanInstrument::unloadCurrentPatch()
@@ -379,6 +327,7 @@ void PatmanInstrument::unloadCurrentPatch()
 	{
 		m_patchSamples.pop_back();
 	}
+	m_patchSnapshot.reset();
 }
 
 

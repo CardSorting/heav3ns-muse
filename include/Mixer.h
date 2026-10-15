@@ -32,15 +32,29 @@
 #include "ThreadableJob.h"
 
 #include <atomic>
+#include <cstdint>
 #include <optional>
 #include <QColor>
+#include <QPointer>
 
 namespace lmms
 {
 
 
 class MixerRoute;
+class Mixer;
 using MixerRouteVector = std::vector<MixerRoute*>;
+
+class LMMS_EXPORT MixerControlModel : public BoolModel
+{
+public:
+	MixerControlModel(bool value, Model* parent);
+	JournallingObject* journalTarget() override;
+	QDomElement saveJournalState(QDomDocument& document, QDomElement& parent) override;
+	bool restoreJournalState(const QDomElement& state, QString& error) override;
+private:
+	QPointer<Mixer> m_mixer;
+};
 
 class MixerChannel : public ThreadableJob
 {
@@ -56,14 +70,14 @@ public:
 	float m_peakLeft;
 	float m_peakRight;
 	AudioBuffer m_buffer;
-	bool m_muteBeforeSolo;
-	BoolModel m_muteModel;
-	BoolModel m_soloModel;
+	bool m_muteBeforeSolo = false;
+	MixerControlModel m_muteModel;
+	MixerControlModel m_soloModel;
 	FloatModel m_volumeModel;
 	QString m_name;
 	QMutex m_lock;
-	bool m_queued; // are we queued up for rendering yet?
-	bool m_muted; // are we muted? updated per period so we don't have to call m_muteModel.value() twice
+	std::atomic_bool m_queued; // are we queued up for rendering yet?
+	bool m_muted = false; // snapshot initialized for every channel before publishing dependencies
 
 	// pointers to other channels that this one sends to
 	MixerRouteVector m_sends;
@@ -73,13 +87,11 @@ public:
 
 	int index() const { return m_channelIndex; }
 	void setIndex(int index) { m_channelIndex = index; }
+	void setName(const QString& name);
 
 	bool isMaster() { return m_channelIndex == 0; }
 
 	bool requiresProcessing() const override { return true; }
-	void unmuteForSolo();
-	void unmuteSenderForSolo();
-	void unmuteReceiverForSolo();
 
 	auto color() const -> const std::optional<QColor>& { return m_color; }
 	void setColor(const std::optional<QColor>& color) { m_color = color; }
@@ -99,7 +111,7 @@ class MixerRoute : public QObject
 	Q_OBJECT
 public:
 	MixerRoute( MixerChannel * from, MixerChannel * to, float amount );
-	~MixerRoute() override = default;
+	~MixerRoute() override;
 
 	mix_ch_t senderIndex() const
 	{
@@ -131,7 +143,10 @@ public:
 	private:
 		MixerChannel * m_from;
 		MixerChannel * m_to;
+		QPointer<EffectChain> m_fromAnchor, m_toAnchor;
+		QPointer<Mixer> m_owner;
 		FloatModel m_amount;
+		friend class Mixer;
 };
 
 
@@ -145,6 +160,7 @@ public:
 	void mixToChannel(const AudioBuffer& buffer, mix_ch_t dest);
 
 	void prepareMasterMix();
+	void discardProcessingPeriod();
 	void masterMix( SampleFrame* _buf );
 
 	void saveSettings( QDomDocument & _doc, QDomElement & _parent ) override;
@@ -183,18 +199,21 @@ public:
 	// returns the index of the channel that was just added
 	int createChannel();
 
-	// delete a channel from the mixer.
-	void deleteChannel(int index);
+	// Delete a non-master channel. False means no admitted change.
+	bool deleteChannel(int index);
 
 	// delete all the mixer channels except master and remove all effects
 	void clear();
 
 	// re-arrange channels
+	// Move to a final index; master stays at zero. Existing channels, effects,
+	// route models and their automation bindings keep their native identities.
+	bool moveChannel(int from, int to);
 	void moveChannelLeft(int index);
 	void moveChannelRight(int index);
 
-	// reset a channel's name, fx, sends, etc
-	void clearChannel(mix_ch_t channelIndex);
+	// Reset a channel's name, fx, sends, etc. False means no admitted change.
+	bool clearChannel(mix_ch_t channelIndex);
 
 	// rename channels when moving etc. if they still have their original name
 	void validateChannelName( int index, int oldIndex );
@@ -203,9 +222,8 @@ public:
 	// or from any instrument or sample track
 	bool isChannelInUse(int index);
 
-	void toggledSolo();
-	void activateSolo();
-	void deactivateSolo();
+	int soloChannel() const { return m_lastSoloed; }
+	std::uint64_t replacementGeneration() const noexcept { return m_replacementGeneration; }
 
 	inline mix_ch_t numChannels() const
 	{
@@ -214,14 +232,65 @@ public:
 
 	MixerRouteVector m_mixerRoutes;
 
+signals:
+	void channelMoved(int from, int to);
+
 private:
+	class FlagGuard
+	{
+	public:
+		FlagGuard(Mixer* owner, bool Mixer::* flag);
+		~FlagGuard();
+		void check() const;
+		void restore() const;
+		FlagGuard(const FlagGuard&) = delete;
+		FlagGuard& operator=(const FlagGuard&) = delete;
+	private:
+		QPointer<Mixer> m_owner;
+		bool Mixer::* m_flag;
+		bool m_previous;
+	};
+	struct ChannelRef
+	{
+		QPointer<Mixer> owner;
+		MixerChannel* identity;
+		QPointer<EffectChain> anchor;
+		std::size_t row;
+		MixerChannel* get() const;
+		void check() const { get(); }
+	};
+	ChannelRef watchChannel(std::size_t row);
+	std::vector<ChannelRef> watchChannels();
 	// the mixer channels in the mixer. index 0 is always master.
 	std::vector<MixerChannel*> m_mixerChannels;
 
+	// Public topology mutations reject callbacks into an active transition.
+	// Internal composition (load/clear/create) stays inside the admitted change.
+	bool canChangeTopology() const;
+	int createChannelImpl();
+	bool deleteChannelImpl(int index);
+	bool clearChannelImpl(mix_ch_t index);
+	void clearImpl();
+	MixerRoute* createRouteImpl(MixerChannel* from, MixerChannel* to, float amount);
+	void deleteRouteImpl(MixerRoute* route);
+
 	// make sure we have at least num channels
 	void allocateChannelsTo(int num);
+	void updateChannelSelectorRanges();
+	void soloChanged(MixerChannel* channel);
+	void selectSolo(int index, bool preserveSnapshot = false);
+	void refreshSolo();
+	void applySoloMask();
+	QDomElement saveSoloJournal(QDomDocument& document, QDomElement& parent);
+	bool restoreSoloJournal(const QDomElement& state, QString& error);
+	friend class MixerControlModel;
+	friend class MixerRoute;
 
 	int m_lastSoloed;
+	bool m_updatingSolo = false;
+	bool m_changingTopology = false;
+	bool m_retiring = false;
+	std::uint64_t m_replacementGeneration = 0;
 } ;
 
 

@@ -49,6 +49,27 @@ void Instrument::play( SampleFrame* )
 {
 }
 
+bool Instrument::selectProgram(int, int, QString& error)
+{
+	error = tr("This native instrument does not expose checked program selection");
+	return false;
+}
+
+bool Instrument::analyzeSlices(bool, QString& error)
+{
+	error = tr("This native instrument does not expose sample slicing"); return false;
+}
+
+bool Instrument::setSlicePoints(const std::vector<float>&, QString& error)
+{
+	error = tr("This native instrument does not expose editable sample slices"); return false;
+}
+
+bool Instrument::sliceMidi(std::vector<Note>&, QString& error) const
+{
+	error = tr("This native instrument does not expose slice MIDI generation"); return false;
+}
+
 
 
 

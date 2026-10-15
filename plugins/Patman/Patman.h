@@ -34,6 +34,8 @@
 namespace lmms
 {
 
+class FileResourceSnapshot;
+
 namespace gui
 {
 class PixmapButton;
@@ -67,6 +69,8 @@ public:
 	void loadSettings( const QDomElement & _this ) override;
 
 	void loadFile( const QString & _file ) override;
+	std::vector<FileResource> fileResources() const override;
+	bool setFileResource(const QString& key, const QString& path, QString& error) override;
 
 	QString nodeName() const override;
 
@@ -91,22 +95,13 @@ private:
 	};
 
 	QString m_patchFile;
+	std::shared_ptr<FileResourceSnapshot> m_patchSnapshot;
 	QVector<std::shared_ptr<Sample>> m_patchSamples;
 	BoolModel m_loopedModel;
 	BoolModel m_tunedModel;
 
 
-	enum class LoadError
-	{
-		OK,
-		Open,
-		NotGUS,
-		Instruments,
-		Layers,
-		IO
-	} ;
-
-	LoadError loadPatch( const QString & _filename );
+	bool loadPatch(const QString& filename, QVector<std::shared_ptr<Sample>>& samples, QString& error);
 	void unloadCurrentPatch();
 
 	void selectSample( NotePlayHandle * _n );

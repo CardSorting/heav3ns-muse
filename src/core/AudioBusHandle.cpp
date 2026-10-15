@@ -26,6 +26,7 @@
 #include "AudioBusHandle.h"
 
 #include <QMutexLocker>
+#include <stdexcept>
 
 #include "AudioDevice.h"
 #include "AudioEngine.h"
@@ -33,13 +34,14 @@
 #include "Mixer.h"
 #include "Engine.h"
 #include "MixHelpers.h"
+#include "Track.h"
 
 namespace lmms
 {
 
 AudioBusHandle::AudioBusHandle(const QString& name, bool hasEffectChain,
 	FloatModel* volumeModel, FloatModel* panningModel,
-	BoolModel* mutedModel) :
+	BoolModel* mutedModel, const Track* renderTrack) :
 	m_bufferUsage(false),
 	m_buffer(Engine::audioEngine()->framesPerPeriod()),
 	m_extOutputEnabled(false),
@@ -48,12 +50,15 @@ AudioBusHandle::AudioBusHandle(const QString& name, bool hasEffectChain,
 	m_effects(hasEffectChain ? new EffectChain(nullptr) : nullptr),
 	m_volumeModel(volumeModel),
 	m_panningModel(panningModel),
-	m_mutedModel(mutedModel)
+	m_mutedModel(mutedModel),
+	m_renderTrack(renderTrack)
 {
 	m_buffer.allocateInterleavedBuffer();
 
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
 	Engine::audioEngine()->addAudioBusHandle(this);
-	setExtOutputEnabled(true);
+	try { setExtOutputEnabled(true); }
+	catch (...) { Engine::audioEngine()->removeAudioBusHandle(this); throw; }
 }
 
 
@@ -61,6 +66,8 @@ AudioBusHandle::AudioBusHandle(const QString& name, bool hasEffectChain,
 
 AudioBusHandle::~AudioBusHandle()
 {
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	if (m_externalOutput) { m_externalOutput->retire(); }
 	setExtOutputEnabled(false);
 	Engine::audioEngine()->removeAudioBusHandle(this);
 }
@@ -68,12 +75,22 @@ AudioBusHandle::~AudioBusHandle()
 
 
 
+std::shared_ptr<const AudioBusOutput> AudioBusHandle::externalOutput()
+{
+	const auto engine = Engine::audioEngine();
+	if (QThread::currentThread() != engine->thread())
+	{ throw std::logic_error("Native bus outputs must be acquired on the model owner thread"); }
+	const auto guard = engine->requestChangesGuard();
+	if (!m_externalOutput) { m_externalOutput.reset(new AudioBusOutput(engine->framesPerPeriod())); }
+	return m_externalOutput;
+}
+
 void AudioBusHandle::setExtOutputEnabled(bool enabled)
 {
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
 	if (enabled != m_extOutputEnabled)
 	{
-		m_extOutputEnabled = enabled;
-		if (m_extOutputEnabled)
+		if (enabled)
 		{
 			Engine::audioEngine()->audioDev()->registerPort(this);
 		}
@@ -81,6 +98,8 @@ void AudioBusHandle::setExtOutputEnabled(bool enabled)
 		{
 			Engine::audioEngine()->audioDev()->unregisterPort(this);
 		}
+		if (m_externalOutput) { m_externalOutput->silence(); }
+		m_extOutputEnabled = enabled;
 	}
 }
 
@@ -89,6 +108,7 @@ void AudioBusHandle::setExtOutputEnabled(bool enabled)
 
 void AudioBusHandle::setName(const QString& newName)
 {
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
 	m_name = newName;
 	Engine::audioEngine()->audioDev()->renamePort(this);
 }
@@ -109,15 +129,16 @@ bool AudioBusHandle::processEffects()
 
 void AudioBusHandle::doProcessing()
 {
-	if (m_mutedModel && m_mutedModel->value())
+	// Muted and render-excluded jobs still discard their previous audio. The
+	// external write period was cleared by AudioEngine before jobs were queued.
+	m_buffer.silenceAllChannels();
+	m_bufferUsage = false;
+	if ((m_mutedModel && m_mutedModel->value()) || (m_renderTrack && m_renderTrack->isRenderExcluded()))
 	{
 		return;
 	}
 
 	const f_cnt_t fpp = Engine::audioEngine()->framesPerPeriod();
-
-	// clear the buffer
-	m_buffer.silenceAllChannels();
 
 	//qDebug( "Playhandles: %d", m_playHandles.size() );
 	for (PlayHandle* ph : m_playHandles) // now we mix all playhandle buffers into our internal buffer
@@ -230,8 +251,10 @@ void AudioBusHandle::doProcessing()
 		// so they stay in sync
 		toPlanar(buffer, m_buffer.groupBuffers(0));
 
-		const auto sanitized = Engine::audioEngine()->sanitizationEnabled() ? m_buffer.sanitizeAll() : false;
-		m_corrupted.store(sanitized, std::memory_order_relaxed);
+		const bool corrupted = m_buffer.hasNonfiniteAudio();
+		if (Engine::audioEngine()->sanitizationEnabled()) { m_buffer.sanitizeAll(); }
+		m_corrupted.store(corrupted, std::memory_order_relaxed);
+		if (corrupted) { Engine::audioEngine()->reportDspFailure(AudioEngine::DspFailure::NonfiniteOutput); }
 
 		// Update silence status of all channels for instrument output
 		m_buffer.updateAllSilenceFlags();
@@ -243,6 +266,22 @@ void AudioBusHandle::doProcessing()
 	const bool anyOutputAfterEffects = processEffects();
 	if (anyOutputAfterEffects || m_bufferUsage)
 	{
+		if (m_extOutputEnabled && m_externalOutput)
+		{
+			// This is after native track gain/pan and effects, before mixer sends,
+			// mixer effects and master gain. Publish a whole, finite stereo period.
+			if (m_buffer.hasNonfiniteAudio())
+			{
+				Engine::audioEngine()->reportDspFailure(AudioEngine::DspFailure::NonfiniteOutput);
+			}
+			else
+			{
+				for (f_cnt_t frame = 0; frame < fpp; ++frame)
+				{
+					m_externalOutput->m_write[frame] = SampleFrame(m_buffer.buffer(0)[frame], m_buffer.buffer(1)[frame]);
+				}
+			}
+		}
 		// TODO: improve the flow here - convert to pull model
 		Engine::mixer()->mixToChannel(m_buffer, m_nextMixerChannel); // send output to mixer
 		m_bufferUsage = false;

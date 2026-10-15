@@ -27,6 +27,7 @@
 #define LMMS_GUI_EXPORT_PROJECT_DIALOG_H
 
 #include <QDialog>
+#include <QTimer>
 
 #include "RenderManager.h"
 
@@ -90,6 +91,8 @@ private:
 
 	QString m_path;
 	Mode m_mode;
+	QTimer m_deferredReject;
+	bool m_cancelRequested = false;
 	std::unique_ptr<RenderManager> m_renderManager;
 };
 

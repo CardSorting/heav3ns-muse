@@ -26,14 +26,17 @@
 #include "ExprSynth.h"
 
 #include <string>
+#include <algorithm>
 #include <vector>
 #include <cmath>
 #include <random>
 #include <numbers>
+#include <QScopedValueRollback>
 
 #include "lmms_math.h"
 #include "NotePlayHandle.h"
 #include "SampleFrame.h"
+#include "FileResourceIO.h"
 
 
 #include <exprtk.hpp>
@@ -198,7 +201,9 @@ struct WaveValueFunction : public exprtk::ifunction<T>
 
 	inline T operator()(const T& index) override
 	{
-		return m_vec[(int) ( positiveFraction(index) * m_size )];
+		if (!std::isfinite(index)) { return std::numeric_limits<T>::quiet_NaN(); }
+		const auto offset = static_cast<std::size_t>(positiveFraction(index) * m_size) % m_size;
+		return m_vec[offset];
 	}
 	const T *m_vec;
 	const std::size_t m_size;
@@ -216,8 +221,9 @@ struct WaveValueFunctionInterpolate : public exprtk::ifunction<T>
 
 	inline T operator()(const T& index) override
 	{
+		if (!std::isfinite(index)) { return std::numeric_limits<T>::quiet_NaN(); }
 		const T x = positiveFraction(index) * m_size;
-		const int ix = (int)x;
+		const auto ix = static_cast<std::size_t>(x) % m_size;
 		const float xfrc = fraction(x);
 		return std::lerp(m_vec[ix], m_vec[(ix + 1) % m_size], xfrc);
 	}
@@ -318,7 +324,7 @@ struct RandomVectorSeedFunction : public exprtk::ifunction<float>
 
 	static inline float randv(const float& index,int irseed)
 	{
-		if (index < 0 || std::isnan(index) || std::isinf(index))
+		if (index < 0 || !std::isfinite(index) || static_cast<double>(index) > std::numeric_limits<unsigned int>::max())
 		{
 			return 0;
 		}
@@ -332,7 +338,7 @@ struct RandomVectorSeedFunction : public exprtk::ifunction<float>
 
 	inline float operator()(const float& index,const float& seed) override
 	{
-		const int irseed = seed < 0 || std::isnan(seed) || std::isinf(seed) ? 0 : static_cast<int>(seed);
+		const int irseed = seed < 0 || !std::isfinite(seed) || static_cast<double>(seed) > std::numeric_limits<int>::max() ? 0 : static_cast<int>(seed);
 		return randv(index, irseed);
 	}
 
@@ -555,6 +561,8 @@ ExprFront::ExprFront(const char * expr, int last_func_samples)
 	}
 	catch(...)
 	{
+		delete m_data; m_data = nullptr;
+		m_error = "Native expression initialization failed";
 		WARN_EXPRTK;
 	}
 }
@@ -573,6 +581,8 @@ ExprFront::~ExprFront()
 bool ExprFront::compile()
 {
 	m_valid = false;
+	if (!m_data) { return false; }
+	m_error.clear();
 	try
 	{
 		m_data->m_expression.register_symbol_table(m_data->m_symbol_table);
@@ -583,9 +593,11 @@ bool ExprFront::compile()
 		parser_t parser(sstore);
 
 		m_valid=parser.compile(m_data->m_expression_string, m_data->m_expression);
+		if (!m_valid) { m_error = QString::fromStdString(parser.error()); }
 	}
 	catch(...)
 	{
+		m_error = "Native expression compilation raised an exception";
 		WARN_EXPRTK;
 	}
 	return m_valid;
@@ -601,6 +613,7 @@ float ExprFront::evaluate()
 	}
 	catch(...)
 	{
+		m_error = "Native expression evaluation raised an exception";
 		WARN_EXPRTK;
 	}
 	return 0;
@@ -608,6 +621,7 @@ float ExprFront::evaluate()
 }
 bool ExprFront::add_variable(const char* name, float& ref)
 {
+	if (!m_data) { return false; }
 	try
 	{
 		return m_data->m_symbol_table.add_variable(name, ref);
@@ -621,6 +635,7 @@ bool ExprFront::add_variable(const char* name, float& ref)
 
 bool ExprFront::add_constant(const char* name, float ref)
 {
+	if (!m_data) { return false; }
 	try
 	{
 		return m_data->m_symbol_table.add_constant(name, ref);
@@ -634,6 +649,7 @@ bool ExprFront::add_constant(const char* name, float ref)
 
 bool ExprFront::add_cyclic_vector(const char* name, const float* data, size_t length, bool interp)
 {
+	if (!m_data || !data || !length) { return false; }
 	try
 	{
 		if (interp)
@@ -676,6 +692,7 @@ size_t find_occurances(const std::string& haystack, const char* const needle)
 
 void ExprFront::setIntegrate(const unsigned int* const frameCounter, const unsigned int sample_rate)
 {
+	if (!m_data || !frameCounter || !sample_rate) { return; }
 	if (m_data->m_integ_func == nullptr)
 	{
 		const unsigned int ointeg = find_occurances(m_data->m_expression_string,"integrate");
@@ -692,6 +709,83 @@ void ExprFront::setIntegrate(const unsigned int* const frameCounter, const unsig
 			}
 		}
 	}
+}
+
+Plugin::ExpressionResult previewXpressiveExpression(const QString& source, const XpressiveExpressionContext& context)
+{
+	Plugin::ExpressionResult result;
+	if (source.size() > 65536) { result.error = "Native expressions are limited to 65536 characters"; return result; }
+	for (const auto character : source)
+	{
+		if (character.unicode() == 0 || character.unicode() > 127)
+		{
+			result.error = "Native expression source must contain ASCII characters without NUL"; return result;
+		}
+	}
+	if (context.length < 1 || context.length > 65536 || context.sampleRate < 1 || context.sampleRate > 65536)
+	{
+		result.error = "Invalid native expression preview dimensions"; return result;
+	}
+	const FileResourceIO::EventSuspension events;
+	if (!FileResourceIO::check(result.error)) { return result; }
+	// Validation must not consume the generator used by subsequent native
+	// expressions. A successful edit can retain the generated random sequence.
+	QScopedValueRollback<std::mt19937> randomState(SimpleRandom::generator);
+	QScopedValueRollback<std::uniform_real_distribution<float>> randomDistribution(SimpleRandom::dist);
+	result.sampleRate = context.sampleRate;
+	result.preview.resize(context.length, 0.f);
+	if (source.trimmed().isEmpty())
+	{
+		if (!context.output && context.currentWave)
+		{
+			if (context.currentWave->length() != context.length) { result.error = "Native retained waveform length changed"; result.preview.clear(); return result; }
+			std::copy_n(context.currentWave->samples(), context.length, result.preview.begin());
+		}
+		result.valid = true; return result;
+	}
+	const auto encoded = source.toLatin1();
+	ExprFront expression(encoded.constData(), context.sampleRate);
+	float time = 0;
+	unsigned int frame = 0;
+	bool symbols = expression.add_variable("t", time) && expression.add_constant("srate", context.sampleRate);
+	if (context.output)
+	{
+		symbols = expression.add_constant("f", context.frequency) && symbols;
+		symbols = expression.add_constant("key", context.key) && symbols;
+		symbols = expression.add_constant("rel", 0) && symbols;
+		symbols = expression.add_constant("trel", 0) && symbols;
+		symbols = expression.add_constant("bnote", context.baseNote) && symbols;
+		symbols = expression.add_constant("v", context.volume) && symbols;
+		symbols = expression.add_constant("tempo", context.tempo) && symbols;
+		for (int index = 0; index < 3; ++index)
+		{
+			const auto parameter = QByteArray("A") + QByteArray::number(index + 1);
+			const auto wave = QByteArray("W") + QByteArray::number(index + 1);
+			symbols = expression.add_constant(parameter.constData(), context.parameters[index]) && symbols;
+			const auto graph = context.waves[index];
+			symbols = graph && expression.add_cyclic_vector(wave.constData(), graph->samples(), graph->length(), context.interpolate[index]) && symbols;
+		}
+	}
+	expression.setIntegrate(&frame, context.sampleRate);
+	if (!symbols) { result.error = "Native expression preview symbols could not be registered"; result.preview.clear(); return result; }
+	if (!expression.compile()) { result.error = expression.error(); result.preview.clear(); return result; }
+	for (frame = 0; frame < static_cast<unsigned int>(context.length); ++frame)
+	{
+		if (frame % 64 == 0 && !FileResourceIO::check(result.error)) { result.preview.clear(); return result; }
+		time = frame / static_cast<float>(context.sampleRate);
+		auto sample = expression.evaluate();
+		if (!expression.error().isEmpty()) { result.error = expression.error(); result.preview.clear(); return result; }
+		if (!std::isfinite(sample)) { ++result.nonfiniteSamples; sample = 0; }
+		result.preview[frame] = sample;
+	}
+	if (!FileResourceIO::check(result.error)) { result.preview.clear(); return result; }
+	if (context.output && result.nonfiniteSamples)
+	{
+		result.error = "Native output expression produced nonfinite samples in its preview"; return result;
+	}
+	result.valid = true;
+	if (context.consumeRandom) { randomState.commit(); randomDistribution.commit(); }
+	return result;
 }
 
 ExprSynth::ExprSynth(const WaveSample *gW1, const WaveSample *gW2, const WaveSample *gW3,
@@ -753,6 +847,7 @@ void ExprSynth::renderOutput(f_cnt_t frames, SampleFrame* buf)
 		bool o2_valid = m_exprO2->isValid();
 		if (!o1_valid && !o2_valid)
 		{
+			std::fill_n(buf, frames, SampleFrame{});
 			return;
 		}
 		float o1 = 0, o2 = 0;
@@ -762,10 +857,10 @@ void ExprSynth::renderOutput(f_cnt_t frames, SampleFrame* buf)
 		const float freq_inc = (new_freq - m_frequency) / frames;
 		const bool is_released = m_nph->isReleased();
 
-		expression_t *o1_rawExpr = &(m_exprO1->getData()->m_expression);
-		expression_t *o2_rawExpr = &(m_exprO2->getData()->m_expression);
-		LastSampleFunction<float> * last_func1 = &m_exprO1->getData()->m_last_func;
-		LastSampleFunction<float> * last_func2 = &m_exprO2->getData()->m_last_func;
+		expression_t *o1_rawExpr = o1_valid ? &(m_exprO1->getData()->m_expression) : nullptr;
+		expression_t *o2_rawExpr = o2_valid ? &(m_exprO2->getData()->m_expression) : nullptr;
+		LastSampleFunction<float> * last_func1 = o1_valid ? &m_exprO1->getData()->m_last_func : nullptr;
+		LastSampleFunction<float> * last_func2 = o2_valid ? &m_exprO2->getData()->m_last_func : nullptr;
 		if (is_released && m_note_rel_sample == 0)
 		{
 			m_note_rel_sample = m_note_sample;

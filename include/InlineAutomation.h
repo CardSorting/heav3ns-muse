@@ -40,11 +40,13 @@ public:
 	}
 
 	InlineAutomation(const InlineAutomation& _copy) :
-		FloatModel(_copy.value(), _copy.minValue(), _copy.maxValue(), _copy.step<float>()),
-		m_autoClip(_copy.m_autoClip->clone())
+		FloatModel(_copy.storedValue(), _copy.minValue(), _copy.maxValue(), _copy.step<float>()),
+		m_autoClip(_copy.m_autoClip ? _copy.m_autoClip->clone() : nullptr)
 	{
-		m_autoClip->clearObjects();
-		m_autoClip->addObject(this);
+		if (m_autoClip)
+		{
+			m_autoClip->bindInlineObject(this);
+		}
 	}
 
 	~InlineAutomation() override
@@ -87,12 +89,19 @@ public:
 		}
 		return m_autoClip.get();
 	}
+	//! Inspect without creating the lazy native curve.
+	const AutomationClip* existingAutomationClip() const { return m_autoClip.get(); }
 
 	void saveSettings( QDomDocument & _doc, QDomElement & _parent ) override;
 	void loadSettings( const QDomElement & _this ) override;
+	// Owner-thread project/copy metadata; ordinary Note copies keep their native
+	// constructor path and do not allocate XML or discover project models.
+	void saveControlSettings(QDomDocument& document, QDomElement& parent);
+	void loadControlSettings(const QDomElement& parent);
 
 
 private:
+	void saveControlSettingsImpl(QDomDocument& document, QDomElement& parent, bool curveControls);
 	std::unique_ptr<AutomationClip> m_autoClip;
 
 } ;

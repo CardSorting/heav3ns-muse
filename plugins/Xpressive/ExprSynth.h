@@ -26,9 +26,11 @@
 #define EXPRSYNTH_H
 
 #include <cmath>
+#include <array>
 #include <cstddef>
 #include <limits>
-#include "Graph.h"
+#include "GraphModel.h"
+#include "Plugin.h"
 
 namespace lmms
 {
@@ -47,6 +49,7 @@ public:
 	ExprFront(const char* expr, int last_func_samples);
 	~ExprFront();
 	bool compile();
+	const QString& error() const { return m_error; }
 	inline bool isValid() { return m_valid; }
 	float evaluate();
 	bool add_variable(const char* name, float & ref);
@@ -55,12 +58,34 @@ public:
 	void setIntegrate(const unsigned int* frameCounter, unsigned int sample_rate);
 	ExprFrontData* getData() { return m_data; }
 private:
-	ExprFrontData *m_data;
+	ExprFrontData *m_data = nullptr;
 	bool m_valid;
+	QString m_error;
 	
 	static const int max_float_integer_mask=(1<<(std::numeric_limits<float>::digits))-1;
 
 };
+
+// The native editor preview context. Output playback still uses each note's
+// real time, rate, frequency, release state and live parameters in ExprSynth.
+struct XpressiveExpressionContext
+{
+	bool output = false;
+	int length = 4096;
+	int sampleRate = 4096;
+	float frequency = 10;
+	float key = 5;
+	float baseNote = 69;
+	float volume = .5f;
+	float tempo = 120;
+	std::array<float, 3> parameters{1, 1, 1};
+	std::array<const graphModel*, 3> waves{};
+	const graphModel* currentWave = nullptr;
+	std::array<bool, 3> interpolate{};
+	bool consumeRandom = false;
+};
+
+Plugin::ExpressionResult previewXpressiveExpression(const QString& source, const XpressiveExpressionContext& context);
 
 class WaveSample
 {
@@ -123,13 +148,11 @@ private:
 
 inline float positiveFraction(float x)
 {
-	if (std::isnan(x) || std::isinf(x))
-		return 0;
-	if (x<0)
-	{
-		x+=static_cast<int>(1-x);
-	}
-	return x-static_cast<int>(x);
+	if (!std::isfinite(x)) { return 0; }
+	const float wrapped = x - std::floor(x);
+	// Very small negative values can round up to exactly one. Avoid both an
+	// out-of-range endpoint and integer conversions for arbitrarily large t*f.
+	return wrapped < 1.f ? wrapped : 0.f;
 }
 
 template <typename T>

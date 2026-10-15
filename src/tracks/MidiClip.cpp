@@ -26,13 +26,20 @@
 #include "MidiClip.h"
 
 #include <algorithm>
+#include <limits>
+#include <memory>
 #include <QDomElement>
+#include <QDebug>
+#include <QScopeGuard>
+#include "AudioEngine.h"
 
 #include "GuiApplication.h"
 #include "InstrumentTrack.h"
 #include "MidiClipView.h"
 #include "PatternStore.h"
 #include "PianoRoll.h"
+#include "NativeNoteTransfer.h"
+#include "Song.h"
 
 
 
@@ -55,18 +62,26 @@ MidiClip::MidiClip( InstrumentTrack * _instrument_track ) :
 
 
 
-MidiClip::MidiClip( const MidiClip& other ) :
-	Clip(other),
-	m_instrumentTrack( other.m_instrumentTrack ),
+MidiClip::MidiClip(const MidiClip& other) : MidiClip(other, other.m_instrumentTrack) { }
+
+MidiClip::MidiClip(const MidiClip& other, InstrumentTrack* destination) :
+	Clip(other, destination),
+	m_instrumentTrack(destination),
 	m_clipType( other.m_clipType ),
 	m_steps( other.m_steps )
 {
-	for (const auto& note : other.m_notes)
-	{
-		m_notes.push_back(note->clone());
-	}
+	std::vector<std::unique_ptr<Note>> prepared;
+	prepared.reserve(other.m_notes.size());
+	for (const auto& note : other.m_notes) { prepared.emplace_back(note->clone()); }
+	m_notes.reserve(prepared.size());
+	for (const auto& note : prepared) { m_notes.push_back(note.get()); }
 
 	init();
+	// Initializing a song clip may recompute its geometry. A copy keeps the
+	// original playback window even when crossing the PatternStore boundary.
+	changeLength(other.length());
+	setStartTimeOffset(other.startTimeOffset());
+	for (auto& note : prepared) { note.release(); }
 }
 
 
@@ -180,7 +195,7 @@ TimePos MidiClip::beatClipLength() const
 Note * MidiClip::addNote( const Note & _new_note, const bool _quant_pos )
 {
 	auto new_note = _new_note.clone();
-	if (_quant_pos && gui::getGUI()->pianoRoll())
+	if (_quant_pos && gui::getGUI() != nullptr && gui::getGUI()->pianoRoll())
 	{
 		new_note->quantizePos(gui::getGUI()->pianoRoll()->quantization());
 	}
@@ -199,6 +214,50 @@ Note * MidiClip::addNote( const Note & _new_note, const bool _quant_pos )
 
 
 
+
+void MidiClip::appendRecordedNotes(const std::vector<Note>& notes, const std::function<void()>& checkpoint)
+{
+	if (notes.empty()) { return; }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	std::vector<std::unique_ptr<Note>> prepared; prepared.reserve(notes.size());
+	for (const auto& note : notes)
+	{
+		if (checkpoint && prepared.size() % 256 == 0) { checkpoint(); }
+		prepared.emplace_back(note.clone());
+	}
+	if (checkpoint) { checkpoint(); }
+	// Prepare the complete pointer vector before replacing native clip contents.
+	// An allocation/copy failure cannot publish a prefix of the take.
+	{
+		instrumentTrack()->lock();
+		const auto unlock = qScopeGuard([&] { instrumentTrack()->unlock(); });
+		NoteVector combined = m_notes; combined.reserve(m_notes.size() + prepared.size());
+		for (const auto& note : prepared) { combined.push_back(note.get()); }
+		std::stable_sort(combined.begin(), combined.end(), Note::lessThan);
+		if (checkpoint) { checkpoint(); }
+		m_notes.swap(combined);
+		for (auto& note : prepared) { note.release(); }
+	}
+	checkType(); updateLength(); emit dataChanged();
+}
+
+void MidiClip::appendPreparedNotes(std::vector<std::unique_ptr<Note>>& notes, const std::function<void()>& checkpoint, int stepCount)
+{
+	if (notes.empty() && stepCount < 0) { return; }
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	{
+		instrumentTrack()->lock(); const auto unlock = qScopeGuard([&] { instrumentTrack()->unlock(); });
+		NoteVector combined = m_notes; combined.reserve(m_notes.size() + notes.size());
+		for (const auto& note : notes) { combined.push_back(note.get()); }
+		std::stable_sort(combined.begin(), combined.end(), Note::lessThan);
+		// Allocate/sort before publishing history; checkpoint callbacks must not
+		// dispatch events or mutate this clip while its native track is locked.
+		checkpoint();
+		if (stepCount >= 0) { m_steps = stepCount; }
+		m_notes.swap(combined); for (auto& note : notes) { note.release(); }
+	}
+	checkType(); updateLength(); emit dataChanged();
+}
 
 NoteVector::const_iterator MidiClip::removeNote(NoteVector::const_iterator it)
 {
@@ -290,115 +349,40 @@ Note * MidiClip::addStepNote( int step )
 
 void MidiClip::setStep( int step, bool enabled )
 {
-	if( enabled )
-	{
-		if ( !noteAtStep( step ) )
-		{
-			addStepNote( step );
-		}
-		return;
-	}
-
-	while( Note * note = noteAtStep( step ) )
-	{
-		removeNote( note );
-	}
+	StepSetResult result; QString error;
+	if (!setStep(step, enabled, result, error)) { qWarning("Native step toggle refused: %s", qPrintable(error)); }
 }
 
 
 
 void MidiClip::reverseNotes(const NoteVector& notes)
 {
-	if (notes.empty()) { return; }
-
-	addJournalCheckPoint();
-
-	// Find the very first start position and the very last end position of all the notes.
-	TimePos firstPos = (*std::min_element(notes.begin(), notes.end(), [](const Note* n1, const Note* n2){ return Note::lessThan(n1, n2); }))->pos();
-	TimePos lastPos = (*std::max_element(notes.begin(), notes.end(), [](const Note* n1, const Note* n2){ return n1->endPos() < n2->endPos(); }))->endPos();
-
-	for (auto note : notes)
-	{
-		TimePos newStart = lastPos - (note->pos() - firstPos) - note->length();
-		note->setPos(newStart);
-	}
-
-	rearrangeAllNotes();
-	emit dataChanged();
+	bool changed; QString error;
+	if (!reverseNotes(notes, changed, error)) { qWarning("Native note reversal refused: %s", qPrintable(error)); }
 }
 
 
 
 void MidiClip::splitNotes(const NoteVector& notes, TimePos pos)
 {
-	if (notes.empty()) { return; }
+	NoteVector rights; QString error;
+	if (!splitNotes(notes, pos, rights, error)) { qWarning("Native note split refused: %s", qPrintable(error)); }
+}
 
-	addJournalCheckPoint();
-
-	for (const auto& note : notes)
-	{
-		int leftLength = pos.getTicks() - note->pos();
-		int rightLength = note->length() - leftLength;
-
-		// Split out of bounds
-		if (leftLength <= 0 || rightLength <= 0)
-		{
-			continue;
-		}
-
-		// Reduce note length
-		note->setLength(leftLength);
-
-		// Add new note with the remaining length
-		Note newNote = Note(*note);
-		newNote.setLength(rightLength);
-		newNote.setPos(note->pos() + leftLength);
-
-		addNote(newNote, false);
-	}
+bool MidiClip::splitNotes(const NoteVector& notes, TimePos pos, NoteVector& rightFragments, QString& error)
+{
+	return NativeNoteTransfer::split(this, notes, pos, rightFragments, error);
 }
 
 void MidiClip::splitNotesAlongLine(const NoteVector notes, TimePos pos1, int key1, TimePos pos2, int key2, bool deleteShortEnds)
 {
-	if (notes.empty()) { return; }
+	KnifeResult result; QString error;
+	if (!splitNotesAlongLine(notes, pos1, key1, pos2, key2, deleteShortEnds, result, error)) { qWarning("Native note knife refused: %s", qPrintable(error)); }
+}
 
-	// Don't split if the line is horitzontal
-	if (key1 == key2) { return; }
-
-	addJournalCheckPoint();
-
-	const auto slope = 1.f * (pos2 - pos1) / (key2 - key1);
-	const auto& [minKey, maxKey] = std::minmax(key1, key2);
-
-	for (const auto& note : notes)
-	{
-		// Skip if the key is <= to minKey, since the line is drawn from the top of minKey to the top of maxKey, but only passes through maxKey - minKey - 1 total keys.
-		if (note->key() <= minKey || note->key() > maxKey) { continue; }
-
-		// Subtracting 0.5 to get the line's intercept at the "center" of the key, not the top.
-		const TimePos keyIntercept = slope * (note->key() - 0.5 - key1) + pos1;
-		if (note->pos() < keyIntercept && note->endPos() > keyIntercept)
-		{
-			auto newNote1 = Note{*note};
-			newNote1.setLength(keyIntercept - note->pos());
-
-			auto newNote2 = Note{*note};
-			newNote2.setPos(keyIntercept);
-			newNote2.setLength(note->endPos() - keyIntercept);
-
-			if (deleteShortEnds)
-			{
-				addNote(newNote1.length() >= newNote2.length() ? newNote1 : newNote2, false);
-			}
-			else
-			{
-				addNote(newNote1, false);
-				addNote(newNote2, false);
-			}
-
-			removeNote(note);
-		}
-	}
+bool MidiClip::splitNotesAlongLine(const NoteVector& notes, TimePos pos1, int key1, TimePos pos2, int key2, bool deleteShortEnds, KnifeResult& result, QString& error)
+{
+	return NativeNoteTransfer::knife(this, notes, pos1, key1, pos2, key2, deleteShortEnds, result.rights, result.positions, error);
 }
 
 
@@ -430,7 +414,7 @@ void MidiClip::exportToXML(QDomDocument& doc, QDomElement& midiClipElement, bool
 	midiClipElement.setAttribute("name", name());
 	midiClipElement.setAttribute("autoresize", QString::number(getAutoResize()));
 	midiClipElement.setAttribute("off", startTimeOffset());
-	
+
 	if (const auto& c = color())
 	{
 		midiClipElement.setAttribute("color", c->name());
@@ -447,7 +431,7 @@ void MidiClip::exportToXML(QDomDocument& doc, QDomElement& midiClipElement, bool
 	{
 		midiClipElement.setAttribute("pos", startPosition());
 	}
-	midiClipElement.setAttribute("muted", isMuted());
+	saveControlSettings(doc, midiClipElement);
 	midiClipElement.setAttribute("steps", m_steps);
 	midiClipElement.setAttribute("len", length());
 
@@ -485,18 +469,15 @@ void MidiClip::loadSettings( const QDomElement & _this )
 	{
 		movePosition( _this.attribute( "pos" ).toInt() );
 	}
-	if (static_cast<bool>(_this.attribute("muted").toInt()) != isMuted())
-	{
-		toggleMute();
-	}
+	loadControlSettings(_this);
 
 	clearNotes();
 
 	QDomNode node = _this.firstChild();
 	while( !node.isNull() )
 	{
-		if( node.isElement() &&
-			!node.toElement().attribute( "metadata" ).toInt() )
+		if( node.isElement() && node.nodeName() != "muted" && node.nodeName() != "solo"
+			&& node.nodeName() != "connection" && !node.toElement().attribute( "metadata" ).toInt() )
 		{
 			auto n = new Note;
 			n->restoreState( node.toElement() );
@@ -523,7 +504,7 @@ void MidiClip::loadSettings( const QDomElement & _this )
 	{
 		changeLength(len);
 	}
-	
+
 	setAutoResize(_this.attribute("autoresize", "1").toInt());
 	setStartTimeOffset(_this.attribute("off").toInt());
 
@@ -562,8 +543,8 @@ MidiClip * MidiClip::adjacentMidiClipByOffset(int offset) const
 
 void MidiClip::clear()
 {
-	addJournalCheckPoint();
-	clearNotes();
+	int removed = 0; QString error;
+	if (!clearNotes(removed, error)) { qWarning("Native note clearing refused: %s", qPrintable(error)); }
 }
 
 
@@ -571,30 +552,16 @@ void MidiClip::clear()
 
 void MidiClip::addSteps()
 {
-	m_steps += TimePos::stepsPerBar();
-	updateLength();
-	emit dataChanged();
+	const qint64 target = static_cast<qint64>(m_steps) + TimePos::stepsPerBar();
+	StepResizeResult result; QString error;
+	if (target > std::numeric_limits<int>::max()) { qWarning("Native step addition exceeds count bounds"); return; }
+	if (!resizeSteps(static_cast<int>(target), result, error)) { qWarning("Native step addition refused: %s", qPrintable(error)); }
 }
 
 void MidiClip::cloneSteps()
 {
-	int oldLength = m_steps;
-	m_steps *= 2; // cloning doubles the track
-	for(int i = 0; i < oldLength; ++i )
-	{
-		Note *toCopy = noteAtStep( i );
-		if( toCopy )
-		{
-			setStep( oldLength + i, true );
-			Note *newNote = noteAtStep( oldLength + i );
-			newNote->setKey( toCopy->key() );
-			newNote->setLength( toCopy->length() );
-			newNote->setPanning( toCopy->getPanning() );
-			newNote->setVolume( toCopy->getVolume() );
-		}
-	}
-	updateLength();
-	emit dataChanged();
+	StepCloneResult result; QString error;
+	if (!cloneSteps(result, error)) { qWarning("Native step clone refused: %s", qPrintable(error)); }
 }
 
 
@@ -602,17 +569,9 @@ void MidiClip::cloneSteps()
 
 void MidiClip::removeSteps()
 {
-	int n = TimePos::stepsPerBar();
-	if( n < m_steps )
-	{
-		for( int i = m_steps - n; i < m_steps; ++i )
-		{
-			setStep( i, false );
-		}
-		m_steps -= n;
-		updateLength();
-		emit dataChanged();
-	}
+	const int steps = TimePos::stepsPerBar(); if (steps >= m_steps) { return; }
+	StepResizeResult result; QString error;
+	if (!resizeSteps(m_steps - steps, result, error)) { qWarning("Native step removal refused: %s", qPrintable(error)); }
 }
 
 

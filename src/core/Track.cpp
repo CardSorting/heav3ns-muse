@@ -28,15 +28,27 @@
 
 
 #include "Track.h"
+#include "NativeTrackSaveSnapshot.h"
 
 #include <QDomElement>
+#include <QCoreApplication>
+#include <QThread>
+#include <QPointer>
+#include <QScopeGuard>
 #include <QVariant>
+#include <algorithm>
+#include <memory>
+#include <stdexcept>
 
+#include "AudioEngine.h"
 #include "AutomationClip.h"
 #include "AutomationTrack.h"
 #include "ConfigManager.h"
+#include "DataFile.h"
 #include "Engine.h"
+#include "FileResourceIO.h"
 #include "InstrumentTrack.h"
+#include "NativeLinkedControls.h"
 #include "PatternStore.h"
 #include "PatternTrack.h"
 #include "SampleTrack.h"
@@ -54,7 +66,8 @@ Track::Track(Type type, TrackContainer* tc)
 	, m_mutedModel(false, this, tr("Mute"))
 	, m_soloModel(false, this, tr("Solo"))
 	, m_clips()
-{	
+{
+	connect(&m_soloModel, &BoolModel::dataChanged, this, &Track::toggleSolo, Qt::DirectConnection);
 	m_trackContainer->addTrack( this );
 	m_height = -1;
 }
@@ -76,38 +89,63 @@ Track::~Track()
 	unlock();
 }
 
+bool Track::isRenderExcluded() const
+{
+	return m_renderExcluded.load(std::memory_order_acquire) && Engine::getSong() && Engine::getSong()->isExporting();
+}
+
+bool Track::isMuted() const { return isMutedByModel() || isRenderExcluded(); }
+
+bool Track::isRenderSelected() const
+{
+	return m_renderSelected.load(std::memory_order_acquire) && Engine::getSong() && Engine::getSong()->isExporting();
+}
+
 
 
 
 Track * Track::create( Type tt, TrackContainer * tc )
 {
-	Engine::audioEngine()->requestChangeInModel();
+	if (!tc || tc->thread() != QThread::currentThread()) { throw std::logic_error("Native tracks require a live container on its owner thread"); }
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	const QPointer<TrackContainer> owner(tc);
 
-	Track * t = nullptr;
+	Track* created = nullptr;
 
 	switch( tt )
 	{
-		case Type::Instrument: t = new class InstrumentTrack( tc ); break;
-		case Type::Pattern: t = new class PatternTrack( tc ); break;
-		case Type::Sample: t = new class SampleTrack( tc ); break;
+		case Type::Instrument: created = new class InstrumentTrack(tc); break;
+		case Type::Pattern: created = new class PatternTrack(tc); break;
+		case Type::Sample: created = new class SampleTrack(tc); break;
 //		case Type::Event:
 //		case Type::Video:
-		case Type::Automation: t = new class AutomationTrack( tc ); break;
+		case Type::Automation: created = new class AutomationTrack(tc); break;
 		case Type::HiddenAutomation:
-						t = new class AutomationTrack( tc, true ); break;
+						created = new class AutomationTrack(tc, true); break;
 		default: break;
 	}
+	if (!created) { return nullptr; }
+	const QPointer<Track> target(created);
+	bool adopted = false;
+	const auto cleanup = qScopeGuard([&] { if (!adopted && target && target->trackContainer() == owner.data()) { delete target.data(); } });
+	const auto ready = [&] {
+		if (!owner || !target || target->trackContainer() != owner.data()
+			|| (tt != Type::HiddenAutomation && std::find(owner->tracks().begin(), owner->tracks().end(), target.data()) == owner->tracks().end()))
+		{ throw std::runtime_error("Native track retired or detached during creation"); }
+	};
+	ready();
 
-	if (tc == Engine::patternStore() && t)
+	if (tc == Engine::patternStore())
 	{
-		t->createClipsForPattern(Engine::patternStore()->numOfPatterns() - 1);
+		target->createClipsForPattern(Engine::patternStore()->numOfPatterns() - 1);
+		ready();
 	}
 
 	tc->updateAfterTrackAdd();
+	ready();
 
-	Engine::audioEngine()->doneChangeInModel();
-
-	return t;
+	adopted = true; return target.data();
 }
 
 
@@ -115,47 +153,192 @@ Track * Track::create( Type tt, TrackContainer * tc )
 
 Track * Track::create( const QDomElement & element, TrackContainer * tc )
 {
-	Engine::audioEngine()->requestChangeInModel();
-
-	Track * t = create(
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	const QPointer<TrackContainer> owner(tc);
+	const QPointer<Track> target(create(
 		static_cast<Type>( element.attribute( "type" ).toInt() ),
-									tc );
-	if( t != nullptr )
+										tc ));
+	bool adopted = false;
+	const auto cleanup = qScopeGuard([&] { if (!adopted && target && target->trackContainer() == owner.data()) { delete target.data(); } });
+	if (target)
 	{
-		t->restoreState( element );
+		target->restoreState(element);
+		if (!owner || !target || target->trackContainer() != owner.data()
+			|| (target->type() != Type::HiddenAutomation && std::find(owner->tracks().begin(), owner->tracks().end(), target.data()) == owner->tracks().end()))
+		{ throw std::runtime_error("Native track retired or detached during restoration"); }
 	}
 
-	Engine::audioEngine()->doneChangeInModel();
-
-	return t;
+	adopted = true; return target.data();
 }
 
 
 
+
+void Track::requireIdleForRemoval()
+{
+	if (!Engine::audioEngine() || !Engine::getSong()) { throw std::invalid_argument("Native engine is not initialized"); }
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	if (isNoteRecording()) { throw std::invalid_argument("Complete native note recording before removing its track"); }
+	for (auto clip : m_clips)
+	{
+		if (!clip || clip->getTrack() != this) { throw std::invalid_argument("Cannot remove an incomplete native clip list"); }
+		clip->requireIdleForCopy();
+	}
+	if (const auto pattern = dynamic_cast<PatternTrack*>(this))
+	{
+		const int column = pattern->patternIndex();
+		const auto store = Engine::patternStore();
+		if (!store || trackContainer() != Engine::getSong() || column < 0
+			|| PatternTrack::findPatternTrack(column) != pattern)
+		{ throw std::invalid_argument("Cannot remove an inconsistent native pattern owner"); }
+		for (auto row : store->tracks())
+		{
+			if (row->isNoteRecording()) { throw std::invalid_argument("Complete native pattern note recording before removing a column"); }
+			if (row->numOfClips() != store->numOfPatterns())
+			{ throw std::invalid_argument("Cannot remove an inconsistent native pattern column"); }
+			// Removing one column also repositions the surviving cells.
+			for (auto clip : row->getClips())
+			{
+				if (!clip || clip->getTrack() != row) { throw std::invalid_argument("Cannot remove an incomplete native pattern row"); }
+				clip->requireIdleForCopy();
+			}
+		}
+	}
+}
 
 Track* Track::clone()
 {
-	// Save track to temporary XML and load it to create a new identical track
-	QDomDocument doc;
-	QDomElement parent = doc.createElement("clonedtrack");
-	saveState(doc, parent);
-	Track* t = create(parent.firstChild().toElement(), m_trackContainer);
-
-	AutomationClip::resolveAllIDs();
-	return t;
+	if (!QCoreApplication::instance() || QThread::currentThread() != thread()
+		|| QThread::currentThread() != QCoreApplication::instance()->thread()) { return nullptr; }
+	const FileResourceIO::EventSuspension events;
+	const auto guard = Engine::audioEngine()->requestChangesGuard();
+	const QPointer<TrackContainer> owner(m_trackContainer);
+	const int selected = Engine::patternStore()->currentPattern();
+	const auto previousErrors = Engine::getSong()->errorSummary();
+	const auto previousFatal = Engine::getSong()->fatalErrorGeneration();
+	try
+	{
+		const auto checkpoint = [] {
+			QString error;
+			if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); }
+		};
+		checkpoint();
+		const auto pattern = dynamic_cast<PatternTrack*>(this);
+		const bool patternRow = m_trackContainer == Engine::patternStore();
+		const int patterns = Engine::patternStore()->numOfPatterns();
+		if (isNoteRecording()) { throw std::invalid_argument("Complete native note recording before cloning its track"); }
+		for (auto clip : m_clips)
+		{
+			if (!clip) { throw std::invalid_argument("Cannot clone an incomplete native clip list"); }
+			clip->requireIdleForCopy();
+			clip->captureCopyControls();
+		}
+		if (patternRow && numOfClips() != patterns) { throw std::invalid_argument("Cannot clone an inconsistent pattern row"); }
+		if (pattern)
+		{
+			for (auto row : Engine::patternStore()->tracks())
+			{
+				if (row->numOfClips() != patterns) { throw std::invalid_argument("Cannot clone an inconsistent pattern column"); }
+				if (row->isNoteRecording()) { throw std::invalid_argument("Complete pattern note recording before adding a column"); }
+				for (auto clip : row->getClips())
+				{
+					if (!clip) { throw std::invalid_argument("Cannot clone an incomplete pattern column"); }
+					clip->requireIdleForCopy();
+					clip->captureCopyControls();
+				}
+			}
+		}
+		// Track/plugin settings use their native serializers, while clip state
+		// is copied directly so resident audio and object bindings are retained.
+		DataFile doc(DataFile::Type::JournalData);
+		auto parent = doc.createElement("clonedtrack"); doc.content().appendChild(parent); auto state = doc.createElement("track"); parent.appendChild(state);
+		{
+			NativeLinkedControls::SaveScope links(doc, NativeLinkedControls::trackModels(this));
+			DataFile::ResourceSourceScope resources(doc, true, true);
+			saveTrack(doc, state, false, false);
+			if (hook()) { hook()->saveSettings(doc, state); }
+			QString linkedError; if (!links.finish(parent, linkedError)) { DataFile::recordSerializationError(doc, linkedError); }
+		}
+		const auto error = DataFile::serializationError(doc);
+		if (!error.isEmpty()) { throw std::runtime_error(error.toStdString()); }
+		if (Engine::getSong()->errorSummary() != previousErrors) { throw std::runtime_error("Native track settings could not be serialized completely"); }
+		checkpoint();
+		if (pattern) { state.firstChildElement(nodeName()).removeAttribute("sourcepattern"); }
+		auto copy = std::unique_ptr<Track>(create(type(), m_trackContainer));
+		if (!copy) { throw std::runtime_error("Native track type could not be created"); }
+		{
+			JournallingObject::KeepIdentityScope identity;
+			NativeLinkedControls::RestoreScope links(doc);
+			DataFile::ResourceReadScope resources(doc);
+			copy->loadTrack(state, true);
+			if (copy->hook()) { copy->hook()->loadSettings(state); }
+			QString linkedError; if (!links.finish(parent, linkedError)) { throw std::runtime_error(linkedError.toStdString()); }
+		}
+		if (Engine::getSong()->fatalErrorGeneration() != previousFatal) { throw std::runtime_error("Native track settings could not be restored completely"); }
+		copy->m_height = m_height;
+		for (int i = 0; i < numOfClips(); ++i)
+		{
+			checkpoint();
+			m_clips[i]->copyTo(copy.get(), patternRow ? copy->getClips().at(i) : nullptr);
+		}
+		if (pattern)
+		{
+			const int source = pattern->patternIndex(); const int destination = static_cast<PatternTrack*>(copy.get())->patternIndex();
+			for (auto row : Engine::patternStore()->tracks())
+			{
+				checkpoint();
+				row->getClips().at(source)->copyTo(row, row->getClips().at(destination));
+			}
+			copy->setName(tr("Clone of %1").arg(name()));
+		}
+		checkpoint();
+		const QPointer<Track> completed(copy.release());
+		auto discard = qScopeGuard([&] { if (completed) { delete completed.data(); } });
+		const auto registered = [&] {
+			if (!owner || !completed || completed->trackContainer() != owner.data()
+				|| std::find(owner->tracks().begin(), owner->tracks().end(), completed.data()) == owner->tracks().end())
+			{ throw std::runtime_error("Native cloned track retired or detached during completion"); }
+		};
+		registered();
+		if (completed->isSolo()) { completed->toggleSolo(); }
+		registered();
+		Engine::getSong()->setModified();
+		registered();
+		discard.dismiss(); return completed.data();
+	}
+	catch (const std::exception& exception)
+	{
+		Engine::getSong()->collectError(tr("Native track cloning failed: %1").arg(QString::fromUtf8(exception.what())));
+	}
+	catch (...) { Engine::getSong()->collectError(tr("Native track cloning failed with a nonstandard exception")); }
+	Engine::patternStore()->setCurrentPattern(selected);
+	return nullptr;
 }
 
 
-void Track::saveTrack(QDomDocument& doc, QDomElement& element, bool presetMode)
+void Track::saveTrack(QDomDocument& doc, QDomElement& element, bool presetMode, bool includeClips, const NativeTrackSaveSnapshot* source)
 {
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events;
+	if (m_loadingTrackState || m_loadingPresetState || (!source && m_savingTrackState) || !canSaveTrackState())
+	{ throw std::logic_error("Native track serialization cannot reenter an active track transition"); }
+	const QPointer<Track> receiver(this); const bool previous = m_savingTrackState; m_savingTrackState = true;
+	const auto finish = qScopeGuard([&] { if (receiver) { receiver->m_savingTrackState = previous; } });
+	std::unique_ptr<NativeTrackSaveSnapshot> captured;
+	if (!source) { captured = std::make_unique<NativeTrackSaveSnapshot>(this, !presetMode && includeClips); source = captured.get(); }
+	const auto check = [&] { source->validate(false); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } source->validate(false); };
+	check();
 	if (!presetMode)
 	{
 		element.setTagName( "track" );
 	}
 	element.setAttribute( "type", static_cast<int>(type()) );
 	element.setAttribute( "name", name() );
+	check();
 	m_mutedModel.saveSettings( doc, element, "muted" );
+	check();
 	m_soloModel.saveSettings( doc, element, "solo" );
+	check();
 	// Save the mutedBeforeSolo value so we can recover the muted state if any solo was active (issue 5562)
 	element.setAttribute( "mutedBeforeSolo", int(m_mutedBeforeSolo) );
 
@@ -163,32 +346,55 @@ void Track::saveTrack(QDomDocument& doc, QDomElement& element, bool presetMode)
 	{
 		element.setAttribute( "trackheight", m_height );
 	}
-	
+
 	if (m_color.has_value())
 	{
 		element.setAttribute("color", m_color->name());
 	}
-	
+
 	QDomElement tsDe = doc.createElement( nodeName() );
+	check();
 	// let actual track (InstrumentTrack, PatternTrack, SampleTrack etc.) save its settings
 	element.appendChild( tsDe );
 	saveTrackSpecificSettings(doc, tsDe, presetMode);
+	check(); source->validate();
 
-	if (presetMode)
+	if (presetMode || !includeClips)
 	{
 		return;
 	}
 
 	// now save settings of all Clip's
-	for (const auto& clip : m_clips)
+	std::vector<QPointer<Clip>> clips; for (auto clip : m_clips) { clips.emplace_back(clip); }
+	for (const auto& clip : clips)
 	{
+		check(); if (!clip) { throw std::runtime_error("Native clip retired during track serialization"); }
 		clip->saveState(doc, element);
+		check();
 	}
+	source->validate();
 }
 
 
 void Track::loadTrack(const QDomElement& element, bool presetMode)
 {
+	const auto changes = Engine::audioEngine()->requestChangesGuard(); FileResourceIO::EventSuspension events;
+	if (m_loadingTrackState || m_savingTrackState || (!presetMode && m_loadingPresetState) || !canLoadTrackState())
+	{ throw std::logic_error("Native track state restoration cannot reenter an active transition"); }
+	const QPointer<Track> receiver(this); const bool loading = m_loadingTrackState; m_loadingTrackState = true;
+	const QPointer<TrackContainer> owner(trackContainer());
+	const auto restore = qScopeGuard([&] { if (receiver) { receiver->m_loadingTrackState = loading; } });
+	const auto ready = [&] {
+		if (!receiver || !owner || receiver->trackContainer() != owner.data()) { throw std::runtime_error("Native track retired during state restoration"); }
+	};
+	const auto check = [&] { ready(); QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready(); };
+	const auto specific = [&](const QDomElement& node) {
+		const bool previous = receiver->m_dispatchingTrackSpecificState; receiver->m_dispatchingTrackSpecificState = true;
+		const auto finish = qScopeGuard([&] { if (receiver) { receiver->m_dispatchingTrackSpecificState = previous; } });
+		receiver->loadTrackSpecificSettings(node);
+		if (receiver) { receiver->m_dispatchingTrackSpecificState = previous; } check();
+	};
+	check();
 	if( static_cast<Type>(element.attribute( "type" ).toInt()) != type() )
 	{
 		qWarning( "Current track-type does not match track-type of "
@@ -197,9 +403,12 @@ void Track::loadTrack(const QDomElement& element, bool presetMode)
 
 	setName( element.hasAttribute( "name" ) ? element.attribute( "name" ) :
 			element.firstChild().toElement().attribute( "name" ) );
+	check();
 
 	m_mutedModel.loadSettings( element, "muted" );
+	check();
 	m_soloModel.loadSettings( element, "solo" );
+	check();
 	// Get the mutedBeforeSolo value so we can recover the muted state if any solo was active.
 	// Older project files that didn't have this attribute will set the value to false (issue 5562)
 	m_mutedBeforeSolo = QVariant( element.attribute( "mutedBeforeSolo", "0" ) ).toBool();
@@ -207,6 +416,7 @@ void Track::loadTrack(const QDomElement& element, bool presetMode)
 	if (element.hasAttribute("color"))
 	{
 		setColor(QColor{element.attribute("color")});
+		check();
 	}
 
 	if (presetMode)
@@ -216,7 +426,7 @@ void Track::loadTrack(const QDomElement& element, bool presetMode)
 		{
 			if( node.isElement() && node.nodeName() == nodeName() )
 			{
-				loadTrackSpecificSettings( node.toElement() );
+				specific(node.toElement());
 				break;
 			}
 			node = node.nextSibling();
@@ -229,6 +439,7 @@ void Track::loadTrack(const QDomElement& element, bool presetMode)
 		auto guard = Engine::audioEngine()->requestChangesGuard();
 		deleteClips();
 	}
+	check();
 
 	QDomNode node = element.firstChild();
 	while( !node.isNull() )
@@ -237,15 +448,16 @@ void Track::loadTrack(const QDomElement& element, bool presetMode)
 		{
 			if( node.nodeName() == nodeName() )
 			{
-				loadTrackSpecificSettings( node.toElement() );
+				specific(node.toElement());
 			}
 			else if( node.nodeName() != "muted"
 			&& node.nodeName() != "solo"
 			&& !node.toElement().attribute( "metadata" ).toInt() )
 			{
-				Clip * clip = createClip(
-								TimePos( 0 ) );
+				const QPointer<Clip> clip(createClip(TimePos(0))); check();
+				if (!clip) { throw std::runtime_error("Native restored clip retired during construction"); }
 				clip->restoreState( node.toElement() );
+				check(); if (!clip) { throw std::runtime_error("Native restored clip retired during settings restoration"); }
 			}
 		}
 		node = node.nextSibling();
@@ -260,12 +472,47 @@ void Track::loadTrack(const QDomElement& element, bool presetMode)
 
 void Track::savePreset(QDomDocument & doc, QDomElement & element)
 {
-	saveTrack(doc, element, true);
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	if (m_savingTrackState || m_loadingTrackState || m_loadingPresetState || !canSaveTrackState()) { throw std::logic_error("Native preset serialization cannot reenter an active transition"); }
+	const QPointer<Track> receiver(this); m_savingTrackState = true;
+	const auto finish = qScopeGuard([&] { if (receiver) { receiver->m_savingTrackState = false; } });
+	NativeTrackSaveSnapshot source(this, false);
+	NativeLinkedControls::SaveScope links(doc, NativeLinkedControls::trackModels(this));
+	saveTrack(doc, element, true, false, &source); source.validate();
+	// Portable presets do not carry the track's live mute/solo state. Apply this
+	// to reference-bearing model nodes as well as the legacy scalar attributes.
+	for (const auto key : {"muted", "solo"})
+	{ element.setAttribute(key, 0); auto node = element.firstChildElement(key); if (!node.isNull()) { node.setAttribute("value", 0); } }
+	element.setAttribute("mutedBeforeSolo", 0);
+	QString linkedError; if (!links.finish(element, linkedError)) { DataFile::recordSerializationError(doc, linkedError); }
+	source.validate();
 }
 
 void Track::loadPreset(const QDomElement & element)
 {
-	loadTrack(element, true);
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	FileResourceIO::EventSuspension events;
+	if (m_loadingPresetState || m_loadingTrackState || m_savingTrackState || !canLoadTrackState()) { throw std::logic_error("Native preset restoration cannot reenter an active track transition"); }
+	const QPointer<Track> receiver(this); const QPointer<Song> song(Engine::getSong()); m_loadingPresetState = true;
+	const auto restore = qScopeGuard([&] { if (receiver) { receiver->m_loadingPresetState = false; } });
+	const auto ready = [&] { if (!receiver || !song || Engine::getSong() != song.data()) { throw std::runtime_error("Native preset owner retired during restoration"); } };
+	QString error; if (!FileResourceIO::check(error)) { throw std::runtime_error(error.toStdString()); } ready();
+	const auto document = element.ownerDocument();
+	if (NativeLinkedControls::isRestoring(document)) { loadTrack(element, true); return; }
+	const bool solo = isSolo(), beforeSolo = m_mutedBeforeSolo;
+	{
+		JournallingObject::KeepIdentityScope identity; NativeLinkedControls::RestoreScope links(document);
+		if (!element.firstChildElement("nativeLinkedControls").isNull()) { NativeLinkedControls::unlinkInternalGroups(NativeLinkedControls::trackModels(this)); }
+		loadTrack(element, true);
+		ready(); QString linkedError; if (!links.finish(element, linkedError)) { ready(); song->collectError("Native preset links did not restore: " + linkedError); } ready();
+	}
+	if (receiver && receiver->isSolo() != solo)
+	{
+		const bool loadedBefore = receiver->m_mutedBeforeSolo;
+		if (solo) { receiver->m_mutedBeforeSolo = beforeSolo; }
+		receiver->toggleSolo(); ready(); receiver->m_mutedBeforeSolo = loadedBefore;
+	}
 }
 
 void Track::saveSettings(QDomDocument& doc, QDomElement& element)
@@ -276,7 +523,7 @@ void Track::saveSettings(QDomDocument& doc, QDomElement& element)
 
 void Track::loadSettings(const QDomElement& element)
 {
-	// Assume that everything should be loaded if we are called through SerializingObject::loadSettings 
+	// Assume that everything should be loaded if we are called through SerializingObject::loadSettings
 	loadTrack(element, false);
 }
 
@@ -312,9 +559,10 @@ void Track::removeClip( Clip * clip )
 
 void Track::deleteClips()
 {
-	while (!m_clips.empty())
+	const QPointer<Track> receiver(this);
+	while (receiver && !receiver->m_clips.empty())
 	{
-		delete m_clips.front();
+		delete receiver->m_clips.front();
 	}
 }
 
@@ -460,57 +708,49 @@ bar_t Track::length() const
 
 void Track::toggleSolo()
 {
-	const TrackContainer::TrackList & tl = m_trackContainer->tracks();
-
-	bool soloBefore = false;
-	for (const auto& track : tl)
+	// Serialized masks and their pre-solo caches are authoritative. In particular,
+	// linked restoration may publish model notifications after loadTrack returns.
+	if (m_loadingTrackState || NativeLinkedControls::isRestoring() || !Engine::audioEngine()
+		|| !Engine::getSong() || Engine::getSong()->isLoadingProject()) { return; }
+	const auto changes = Engine::audioEngine()->requestChangesGuard();
+	const QPointer<Track> receiver(this);
+	const QPointer<TrackContainer> owner(m_trackContainer);
+	if (!owner || owner->m_updatingTrackSolo) { return; }
+	const auto attached = [&](const QPointer<Track>& track) {
+		return owner && track && track->trackContainer() == owner.data()
+			&& std::find(owner->tracks().begin(), owner->tracks().end(), track.data()) != owner->tracks().end();
+	};
+	if (!attached(receiver)) { return; }
+	struct State { QPointer<Track> track; bool muted, solo; };
+	std::vector<State> peers;
+	peers.reserve(owner->tracks().size());
+	for (auto track : owner->tracks()) { peers.push_back({track, track->isMutedByModel(), track->isSolo()}); }
+	const bool solo = isSolo();
+	const bool soloBefore = std::any_of(peers.begin(), peers.end(), [&](const State& entry) {
+		return entry.track != receiver && entry.solo;
+	});
+	const bool legacy = ConfigManager::inst()->value("app", "sololegacybehavior", "0").toInt();
+	owner->m_updatingTrackSolo = true;
+	const auto restore = qScopeGuard([&] { if (owner) { owner->m_updatingTrackSolo = false; } });
+	// Snapshot all pre-solo values before notifications or linked writes can
+	// change a later peer. Internal solo clears do not start nested transitions.
+	if (solo && !soloBefore)
 	{
-		if (track != this)
-		{
-			if (track->m_soloModel.value())
-			{
-				soloBefore = true;
-				break;
-			}
-		}
+		for (const auto& entry : peers) { if (attached(entry.track)) { entry.track->m_mutedBeforeSolo = entry.muted; } }
 	}
-
-	const bool solo = m_soloModel.value();
-	// Should we use the new behavior of solo or the older/legacy one?
-	const bool soloLegacyBehavior = ConfigManager::inst()->value("app", "sololegacybehavior", "0").toInt();
-
-	for (const auto& track : tl)
+	for (const auto& entry : peers)
 	{
+		if (!attached(receiver)) { return; }
+		const auto track = entry.track;
+		if (!attached(track)) { continue; }
 		if (solo)
 		{
-			// save mute-state in case no track was solo before
-			if (!soloBefore)
-			{
-				track->m_mutedBeforeSolo = track->isMuted();
-			}
-			// Don't mute AutomationTracks (keep their original state) unless we are on the sololegacybehavior mode
-			if (track == this)
-			{
-				track->setMuted(false);
-			}
-			else if (soloLegacyBehavior || track->type() != Type::Automation)
-			{
-				track->setMuted(true);
-			}
-			if (track != this)
-			{
-				track->m_soloModel.setValue(false);
-			}
+			if (track == receiver) { track->setMuted(false); }
+			else if (legacy || track->type() != Type::Automation) { track->setMuted(true); }
+			if (!attached(receiver)) { return; }
+			if (attached(track) && track != receiver) { track->m_soloModel.setValue(false); }
 		}
-		else if (!soloBefore)
-		{
-			// Unless we are on the sololegacybehavior mode, only restores the
-			// mute state if the track isn't an Automation Track
-			if (soloLegacyBehavior || track->type() != Type::Automation)
-			{
-				track->setMuted(track->m_mutedBeforeSolo);
-			}
-		}
+		else if (!soloBefore && (legacy || track->type() != Type::Automation)) { track->setMuted(track->m_mutedBeforeSolo); }
 	}
 }
 
@@ -529,14 +769,15 @@ void Track::setName(const QString& newName)
 {
 	if (m_name != newName)
 	{
+		const QPointer<Track> receiver(this);
 		m_name = newName;
 
 		if (auto song = Engine::getSong())
 		{
 			song->setModified();
 		}
-		
-		emit nameChanged();
+
+		if (receiver) { emit receiver->nameChanged(); }
 	}
 }
 

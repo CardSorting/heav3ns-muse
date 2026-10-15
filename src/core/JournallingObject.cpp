@@ -32,6 +32,17 @@
 namespace lmms
 {
 
+thread_local bool JournallingObject::s_keepIdentity = false;
+
+JournallingObject::KeepIdentityScope::KeepIdentityScope() : m_previous(s_keepIdentity)
+{
+	s_keepIdentity = true;
+}
+
+JournallingObject::KeepIdentityScope::~KeepIdentityScope()
+{
+	s_keepIdentity = m_previous;
+}
 
 JournallingObject::JournallingObject() :
 	SerializingObject(),
@@ -61,6 +72,16 @@ void JournallingObject::addJournalCheckPoint()
 	{
 		Engine::projectJournal()->addJournalCheckPoint( this );
 	}
+}
+
+QDomElement JournallingObject::saveJournalState(QDomDocument& document, QDomElement& parent)
+{
+	return saveState(document, parent);
+}
+
+bool JournallingObject::restoreJournalState(const QDomElement& state, QString&)
+{
+	restoreState(state); return true;
 }
 
 
@@ -116,6 +137,7 @@ void JournallingObject::restoreState( const QDomElement & _this )
 
 void JournallingObject::changeID( jo_id_t _id )
 {
+	if (s_keepIdentity) { return; }
 	if( id() != _id )
 	{
 		JournallingObject * jo = Engine::projectJournal()->

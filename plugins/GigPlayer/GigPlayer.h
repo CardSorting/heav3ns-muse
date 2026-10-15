@@ -30,11 +30,13 @@
 #include <QList>
 #include <QMutex>
 #include <QMutexLocker>
+#include <utility>
 #include <samplerate.h>
 
 #include "AudioEngine.h"
 #include "AudioResampler.h"
 #include "Instrument.h"
+#include "FileResourceSnapshot.h"
 #include "PixmapButton.h"
 #include "InstrumentView.h"
 #include "Knob.h"
@@ -73,12 +75,28 @@ struct GIGPluginData
 class GigInstance
 {
 public:
-	GigInstance( QString filename ) :
-		riff( filename.toUtf8().constData() ),
+	GigInstance(std::shared_ptr<FileResourceSnapshot> accepted) :
+		resource(std::move(accepted)),
+		riff(resource->path().toUtf8().constData()),
 		gig( &riff )
 	{}
+	const std::shared_ptr<FileResourceSnapshot>& snapshot() const { return resource; }
+	gig::buffer_t* decompressionBuffer() { return &decompression.value; }
 
 private:
+	struct Decompression
+	{
+		gig::buffer_t value = gig::Sample::CreateDecompressionBuffer(DEFAULT_BUFFER_SIZE);
+		~Decompression() { gig::Sample::DestroyDecompressionBuffer(value); }
+		Decompression() = default;
+		Decompression(const Decompression&) = delete;
+		Decompression& operator=(const Decompression&) = delete;
+	};
+	// gig/RIFF destruction closes every lazy reader before the directory owner.
+	std::shared_ptr<FileResourceSnapshot> resource;
+	// Different GigPlayers can stream on different engine workers. Their native
+	// reads must not share libgig's default internal decompression buffer.
+	Decompression decompression;
 	RIFF::File riff;
 
 public:
@@ -254,6 +272,11 @@ public:
 	void loadSettings( const QDomElement & _this ) override;
 
 	void loadFile( const QString & _file ) override;
+	std::vector<FileResource> fileResources() const override;
+	bool setFileResource(const QString& key, const QString& path, QString& error) override;
+	const std::vector<Program>& programs() const override { return m_programs; }
+	bool selectProgram(int bank, int program, QString& error) override;
+	std::vector<Program> programSnapshot();
 
 	auto midiPatch() const -> std::optional<MidiPatch> override;
 	AutomatableModel* childModel(std::string_view modelName) override;
@@ -281,6 +304,8 @@ private:
 
 	// Part of the UI
 	QString m_filename;
+	bool m_unresolvedBank = false;
+	std::vector<Program> m_programs;
 
 	gui::LcdSpinBoxModel m_bankNum;
 	gui::LcdSpinBoxModel m_patchNum;
@@ -299,11 +324,16 @@ private:
 	float m_currentKeyDimension;
 
 private:
+	class ResourceGuard;
+	enum class BankLoad { File, Settings, Unresolved };
+	bool m_changingResources = false;
 	// Delete the current GIG instance if one is open
 	void freeInstance();
+	bool loadBank(const QString& path, bool selectFirst, QString& error, ResourceGuard& work, BankLoad mode = BankLoad::File);
+	void updateProgramLabels(ResourceGuard& work);
 
 	// Open the instrument in the currently-open GIG file
-	void getInstrument();
+	void getInstrument(int bank, int program);
 
 	// Create "dimension" to select desired samples from GIG file based on
 	// parameters such as velocity
@@ -319,6 +349,8 @@ private:
 	void addSamples( GigNote & gignote, bool wantReleaseSample );
 
 	friend class gui::GigInstrumentView;
+	friend class GigResourceTestAccess;
+	friend class GigPatchDialogTestAccess;
 
 signals:
 	void fileLoading();

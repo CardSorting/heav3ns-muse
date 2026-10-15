@@ -27,10 +27,12 @@
 #define LMMS_GUI_INSTRUMENT_MIDI_IO_VIEW_H
 
 #include <QWidget>
+#include <QMetaObject>
 
 #include "ModelView.h"
 
 class QToolButton;
+class QComboBox;
 
 namespace lmms
 {
@@ -67,6 +69,9 @@ private:
 	LcdSpinBox * m_outputProgramSpinBox;
 	LcdSpinBox * m_fixedOutputNoteSpinBox;
 	QToolButton * m_wpBtn;
+	QComboBox* m_outputSourceComboBox;
+	QMetaObject::Connection m_outputSourceConnection;
+	QMetaObject::Connection m_portVisibilityConnection;
 
 	LcdSpinBox* m_baseVelocitySpinBox;
 

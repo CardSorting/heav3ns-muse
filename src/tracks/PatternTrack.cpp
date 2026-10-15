@@ -24,6 +24,9 @@
 #include "PatternTrack.h"
 
 #include <QDomElement>
+#include <utility>
+#include <vector>
+#include <limits>
 
 #include "AudioEngine.h"
 #include "Engine.h"
@@ -43,16 +46,35 @@ PatternTrack::infoMap PatternTrack::s_infoMap;
 PatternTrack::PatternTrack(TrackContainer* tc) :
 	Track(Track::Type::Pattern, tc)
 {
-	int patternNum = s_infoMap.size();
-	s_infoMap[this] = patternNum;
-
-	setName(tr("Pattern %1").arg(patternNum));
-	Engine::patternStore()->createClipsForPattern(patternNum);
-	Engine::patternStore()->setCurrentPattern(patternNum);
-	Engine::patternStore()->updateComboBox();
-
-	connect( this, SIGNAL(nameChanged()),
-		Engine::patternStore(), SLOT(updateComboBox()));
+	auto store = Engine::patternStore();
+	const int selected = store->currentPattern();
+	const int patternNum = s_infoMap.size();
+	std::vector<std::pair<Track*, int>> previousColumns;
+	previousColumns.reserve(store->tracks().size());
+	for (auto row : store->tracks()) { previousColumns.emplace_back(row, row->numOfClips()); }
+	try
+	{
+		s_infoMap[this] = patternNum;
+		setName(tr("Pattern %1").arg(patternNum));
+		store->createClipsForPattern(patternNum);
+		store->setCurrentPattern(patternNum);
+		store->updateComboBox();
+		connect(this, &Track::nameChanged, store, &PatternStore::updateComboBox);
+	}
+	catch (...)
+	{
+		// A failed derived constructor will run only Track's destructor. Undo
+		// its pattern registration and every appended cell before that happens.
+		for (const auto& [row, count] : previousColumns)
+		{
+			while (row->numOfClips() > count) { delete row->getClips().back(); }
+		}
+		s_infoMap.remove(this);
+		trackContainer()->removeTrack(this);
+		store->updateComboBox();
+		store->setCurrentPattern(selected);
+		throw;
+	}
 }
 
 
@@ -109,26 +131,28 @@ bool PatternTrack::play( const TimePos & _start, const f_cnt_t _frames,
 
 	TimePos lastPosition;
 	TimePos lastLength;
-	tick_t lastOffset = 0;
+	qint64 lastOffset = 0;
+	qint64 lastPatternLength = 0;
 	for (const auto& clip : clips)
 	{
 		if (!clip->isMuted() && clip->startPosition() >= lastPosition)
 		{
 			lastPosition = clip->startPosition();
 			lastLength = clip->length();
-			tick_t patternLength = Engine::patternStore()->lengthOfPattern(static_cast<PatternClip*>(clip)->patternIndex())
-					* TimePos::ticksPerBar();
-			lastOffset = patternLength - (clip->startTimeOffset() % patternLength);
-			if (lastOffset == patternLength)
-			{
-				lastOffset = 0;
-			}
+			lastPatternLength = static_cast<qint64>(Engine::patternStore()->lengthOfPattern(static_cast<PatternClip*>(clip)->patternIndex()))
+				* TimePos::ticksPerBar();
+			if (lastPatternLength <= 0 || lastPatternLength > std::numeric_limits<tick_t>::max()) { return false; }
+			lastOffset = lastPatternLength - clip->startTimeOffset().getTicks() % lastPatternLength;
+			if (lastOffset == lastPatternLength) { lastOffset = 0; }
 		}
 	}
 
-	if( _start - lastPosition < lastLength )
+	if (lastPatternLength > 0 && _start - lastPosition < lastLength)
 	{
-		return Engine::patternStore()->play(_start - lastPosition + lastOffset, _frames, _offset, s_infoMap[this]);
+		const auto sourceTime = static_cast<qint64>(_start.getTicks()) - lastPosition.getTicks() + lastOffset;
+		// Keep native signed pre-roll semantics, narrowing only after wrapping.
+		const auto wrapped = static_cast<tick_t>(sourceTime % lastPatternLength);
+		return Engine::patternStore()->play(wrapped, _frames, _offset, s_infoMap[this]);
 	}
 	return false;
 }

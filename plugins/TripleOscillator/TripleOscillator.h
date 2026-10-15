@@ -59,7 +59,12 @@ class OscillatorObject : public Model
 	Q_OBJECT
 public:
 	OscillatorObject( Model * _parent, int _idx );
+	bool setUserWave(const QString& path, QString& error);
+	QString userWaveFile() const { return m_unresolvedWave.isEmpty() ? m_sampleBuffer->audioFile() : m_unresolvedWave; }
+	bool userWaveUnresolved() const { return !m_unresolvedWave.isEmpty(); }
+	std::shared_ptr<const SampleBuffer> userWaveBuffer() const { return m_sampleBuffer; }
 private:
+	QString m_unresolvedWave;
 	FloatModel m_volumeModel;
 	FloatModel m_panModel;
 	FloatModel m_coarseModel;
@@ -117,6 +122,8 @@ public:
 
 	void saveSettings( QDomDocument & _doc, QDomElement & _parent ) override;
 	void loadSettings( const QDomElement & _this ) override;
+	std::vector<FileResource> fileResources() const override;
+	bool setFileResource(const QString& key, const QString& path, QString& error) override;
 
 	QString nodeName() const override;
 
@@ -133,6 +140,9 @@ protected slots:
 
 
 private:
+	class ResourceGuard;
+	bool setUserWaveImpl(OscillatorObject* oscillator, const QString& path, QString& error, ResourceGuard& work);
+	bool m_changingResources = false;
 	OscillatorObject * m_osc[NUM_OF_OSCILLATORS];
 
 	struct oscPtr
@@ -143,6 +153,7 @@ private:
 
 
 	friend class gui::TripleOscillatorView;
+	friend class OscillatorObject;
 
 } ;
 

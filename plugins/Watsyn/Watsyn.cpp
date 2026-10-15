@@ -551,19 +551,10 @@ void WatsynInstrument::loadSettings( const QDomElement & _this )
 	b2_rtune.loadSettings( _this, "b2_rtune" );
 
 	// load graphs
-	int size = 0;
-	char * dst = 0;
-
-	base64::decode( _this.attribute( "a1_wave"), &dst, &size );
-	a1_graph.setSamples( (float*) dst );
-	base64::decode( _this.attribute( "a2_wave"), &dst, &size );
-	a2_graph.setSamples( (float*) dst );
-	base64::decode( _this.attribute( "b1_wave"), &dst, &size );
-	b1_graph.setSamples( (float*) dst );
-	base64::decode( _this.attribute( "b2_wave"), &dst, &size );
-	b2_graph.setSamples( (float*) dst );
-
-	delete[] dst;
+	a1_graph.loadSampleAttribute(_this, "a1_wave");
+	a2_graph.loadSampleAttribute(_this, "a2_wave");
+	b1_graph.loadSampleAttribute(_this, "b1_wave");
+	b2_graph.loadSampleAttribute(_this, "b2_wave");
 
 	m_abmix.loadSettings( _this, "abmix" );
 
@@ -1198,19 +1189,19 @@ void WatsynView::loadClicked()
 	switch( m_selectedGraphGroup->model()->value() )
 	{
 		case A1_OSC:
-			a1_graph->model()->setWaveToUser();
+			Graph::loadUserWaveform(a1_graph->model());
 			Engine::getSong()->setModified();
 			break;
 		case A2_OSC:
-			a2_graph->model()->setWaveToUser();
+			Graph::loadUserWaveform(a2_graph->model());
 			Engine::getSong()->setModified();
 			break;
 		case B1_OSC:
-			b1_graph->model()->setWaveToUser();
+			Graph::loadUserWaveform(b1_graph->model());
 			Engine::getSong()->setModified();
 			break;
 		case B2_OSC:
-			b2_graph->model()->setWaveToUser();
+			Graph::loadUserWaveform(b2_graph->model());
 			Engine::getSong()->setModified();
 			break;
 	}

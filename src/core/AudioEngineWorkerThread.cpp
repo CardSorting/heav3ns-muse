@@ -24,9 +24,10 @@
 
 #include "AudioEngineWorkerThread.h"
 
-#include <QDebug>
 #include <QMutex>
+#include <QMutexLocker>
 #include <QWaitCondition>
+#include <stdexcept>
 
 #include "AudioEngine.h"
 #include "Hardware.h"
@@ -37,14 +38,27 @@ namespace lmms
 {
 
 AudioEngineWorkerThread::JobQueue AudioEngineWorkerThread::globalJobQueue;
-QWaitCondition * AudioEngineWorkerThread::queueReadyWaitCond = nullptr;
 QList<AudioEngineWorkerThread *> AudioEngineWorkerThread::workerThreads;
+
+namespace
+{
+struct Scheduler
+{
+	QMutex mutex;
+	QWaitCondition workReady;
+	QWaitCondition scansFinished;
+	std::size_t pendingWorkers = 0;
+	bool batchActive = false;
+};
+Scheduler& scheduler() { static Scheduler value; return value; }
+}
 
 // implementation of internal JobQueue
 void AudioEngineWorkerThread::JobQueue::reset( OperationMode _opMode )
 {
 	m_writeIndex = 0;
 	m_itemsDone = 0;
+	m_failure = Failure::None;
 	m_opMode = _opMode;
 }
 
@@ -62,7 +76,8 @@ void AudioEngineWorkerThread::JobQueue::addJob( ThreadableJob * _job )
 		if (index < JOB_QUEUE_SIZE) {
 			m_items[index] = _job;
 		} else {
-			qWarning() << "Job queue is full!";
+			_job->done();
+			fail(Failure::QueueOverflow);
 			++m_itemsDone;
 		}
 	}
@@ -81,7 +96,15 @@ void AudioEngineWorkerThread::JobQueue::run()
 			ThreadableJob * job = m_items[i].exchange(nullptr);
 			if( job )
 			{
-				job->process();
+				if (failure() != Failure::None) { job->done(); }
+				else
+				{
+					try { job->process(); }
+					catch (...)
+					{
+						job->done(); fail(Failure::ProcessingException);
+					}
+				}
 				processedJob = true;
 				++m_itemsDone;
 			}
@@ -105,69 +128,108 @@ void AudioEngineWorkerThread::JobQueue::wait()
 
 // implementation of worker threads
 
-AudioEngineWorkerThread::AudioEngineWorkerThread( AudioEngine* audioEngine ) :
-	QThread( audioEngine ),
-	m_quit( false )
+AudioEngineWorkerThread::AudioEngineWorkerThread(AudioEngine* audioEngine)
+	: QThread(audioEngine)
 {
-	// initialize global static data
-	if( queueReadyWaitCond == nullptr )
-	{
-		queueReadyWaitCond = new QWaitCondition;
-	}
-
-	// keep track of all instantiated worker threads - this is used for
-	// processing the last worker thread "inline", see comments in
-	// AudioEngineWorkerThread::startAndWaitForJobs() for details
+	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	if (state.batchActive) { throw std::logic_error("Cannot construct an audio worker during dispatch"); }
+	if (workerThreads.isEmpty()) { globalJobQueue.reset(JobQueue::OperationMode::Static); }
 	workerThreads << this;
-
-	resetJobQueue();
 }
-
-
-
 
 AudioEngineWorkerThread::~AudioEngineWorkerThread()
 {
-	workerThreads.removeAll( this );
+	quit();
+	// Never destroy a QThread whose native processor is still using this pool.
+	// A hung processor can still block shutdown; safe hard interruption needs
+	// process supervision rather than deleting a live worker after a timeout.
+	Q_ASSERT(QThread::currentThread() != this);
+	wait();
+	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	workerThreads.removeAll(this);
 }
 
-
-
+void AudioEngineWorkerThread::resetJobQueue(JobQueue::OperationMode mode)
+{
+	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	if (state.batchActive || state.pendingWorkers) { throw std::logic_error("Cannot reset an active native audio job queue"); }
+	globalJobQueue.reset(mode);
+}
 
 void AudioEngineWorkerThread::quit()
 {
+	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
 	m_quit = true;
-	resetJobQueue();
+	if (m_workPending)
+	{
+		m_workPending = false;
+		Q_ASSERT(state.pendingWorkers > 0);
+		--state.pendingWorkers; state.scansFinished.wakeAll();
+	}
+	state.workReady.wakeAll();
 }
-
-
-
 
 void AudioEngineWorkerThread::startAndWaitForJobs()
 {
-	queueReadyWaitCond->wakeAll();
-	// The last worker-thread is never started. Instead it's processed "inline"
-	// i.e. within the global AudioEngine thread. This way we can reduce latencies
-	// that otherwise would be caused by synchronizing with another thread.
+	auto& state = scheduler();
+	{
+		QMutexLocker guard(&state.mutex);
+		if (state.batchActive) { throw std::logic_error("Native audio dispatch cannot overlap or reenter itself"); }
+		state.batchActive = true;
+		for (const auto worker : workerThreads)
+		{
+			if (worker->m_ready && !worker->m_quit)
+			{
+				Q_ASSERT(!worker->m_workPending && !worker->m_workActive);
+				worker->m_workPending = true; ++state.pendingWorkers;
+			}
+		}
+		state.workReady.wakeAll();
+	}
+	// The coordinating thread also consumes jobs. Not-yet-ready workers need
+	// not participate: the coordinator can complete the queue on its own.
 	globalJobQueue.run();
 	globalJobQueue.wait();
+	QMutexLocker guard(&state.mutex);
+	while (state.pendingWorkers) { state.scansFinished.wait(&state.mutex); }
+	// Job completion alone did not prove worker scans had returned. This barrier
+	// now makes the following reset safe for mode, counters and queue slots.
+	state.batchActive = false;
 }
 
-
-
+AudioEngineWorkerThread::SchedulerStatus AudioEngineWorkerThread::schedulerStatus()
+{
+	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	SchedulerStatus result;
+	result.registered = static_cast<int>(workerThreads.size());
+	result.batchActive = state.batchActive;
+	for (const auto worker : workerThreads)
+	{
+		result.ready += worker->m_ready && !worker->m_quit;
+		result.queued += worker->m_workPending;
+		result.scanning += worker->m_workActive;
+	}
+	return result;
+}
 
 void AudioEngineWorkerThread::run()
 {
 	disableDenormals();
-
-	QMutex m;
-	while( m_quit == false )
+	auto& state = scheduler(); QMutexLocker guard(&state.mutex);
+	m_ready = true;
+	for (;;)
 	{
-		m.lock();
-		queueReadyWaitCond->wait( &m );
+		while (!m_quit && !m_workPending) { state.workReady.wait(&state.mutex); }
+		if (m_quit) { break; }
+		m_workPending = false; m_workActive = true;
+		guard.unlock();
 		globalJobQueue.run();
-		m.unlock();
+		guard.relock();
+		m_workActive = false;
+		Q_ASSERT(state.pendingWorkers > 0);
+		--state.pendingWorkers; state.scansFinished.wakeAll();
 	}
+	m_ready = false; state.scansFinished.wakeAll();
 }
 
 } // namespace lmms

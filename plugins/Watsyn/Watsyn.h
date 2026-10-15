@@ -122,6 +122,16 @@ class WatsynInstrument : public Instrument
 {
 	Q_OBJECT
 public:
+	std::vector<GraphResource> graphResources() override
+	{
+		return {
+			{"a1", tr("A1 waveform"), "amplitude", &a1_graph},
+			{"a2", tr("A2 waveform"), "amplitude", &a2_graph},
+			{"b1", tr("B1 waveform"), "amplitude", &b1_graph},
+			{"b2", tr("B2 waveform"), "amplitude", &b2_graph}
+		};
+	}
+
 	WatsynInstrument( InstrumentTrack * _instrument_track );
 	~WatsynInstrument() override = default;
 

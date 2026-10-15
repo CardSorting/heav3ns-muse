@@ -3,7 +3,7 @@
  *
  * Copyright (c) 2008 Paul Giblock <drfaygo/at/gmail/dot/com>
  * Copyright (c) 2009-2014 Tobias Doerffel <tobydox/at/users.sourceforge.net>
- * 
+ *
  * This file is part of LMMS - https://lmms.io
  *
  * This program is free software; you can redistribute it and/or
@@ -28,8 +28,12 @@
 #define SF2_PLAYER_H
 
 #include <array>
+#include <cstdint>
+#include <memory>
+#include <vector>
 #include <fluidsynth/types.h>
 #include <QMutex>
+#include <QRecursiveMutex>
 #include <samplerate.h>
 
 #include "AudioEngine.h"
@@ -38,6 +42,7 @@
 #include "InstrumentView.h"
 #include "LcdSpinBox.h"
 #include "SampleFrame.h"
+#include "Sf2BankSnapshot.h"
 
 class QLabel;
 
@@ -78,6 +83,17 @@ public:
 	void loadSettings( const QDomElement & _this ) override;
 
 	void loadFile( const QString & _file ) override;
+	std::vector<FileResource> fileResources() const override;
+	bool setFileResource(const QString& key, const QString& path, QString& error) override;
+	const std::vector<Program>& programs() const override { return m_programs; }
+	bool selectProgram(int bank, int program, QString& error) override;
+	bool previewProgram(int bank, int program, QString& error);
+	struct ProgramPreview;
+	using ProgramPreviewToken = std::shared_ptr<const ProgramPreview>;
+	bool previewProgram(int bank, int program, QString& error, ProgramPreviewToken& token);
+	bool restoreProgramPreview(const ProgramPreviewToken& token, QString& error);
+	std::vector<Program> programSnapshot();
+	MidiPatch currentProgramModels();
 
 	auto midiPatch() const -> std::optional<MidiPatch> override;
 	AutomatableModel* childModel(std::string_view modelName) override;
@@ -85,7 +101,7 @@ public:
 	QString nodeName() const override;
 
 	gui::PluginView* instantiateView( QWidget * _parent ) override;
-	
+
 	QString getCurrentPatchName();
 
 
@@ -96,7 +112,7 @@ public slots:
 	void openFile( const QString & _sf2File, bool updateTrackName = true );
 	void updatePatch();
 	void reloadSynth();
-	
+
 	// We can't really support sample-exact with the way IPH and FS work.
 	// So, sig/slots work just fine for the synth settings right now.
 	void updateReverbOn();
@@ -118,16 +134,25 @@ private:
 
 	int m_fontId;
 	QString m_filename;
+	bool m_unresolvedBank = false;
+	std::vector<Program> m_programs;
+	ProgramPreviewToken m_programPreview;
+	std::shared_ptr<Sf2BankSnapshot> m_bankSnapshot;
+	struct RetiredBankSnapshot
+	{
+		int fontId;
+		std::shared_ptr<Sf2BankSnapshot> snapshot;
+	};
+	std::vector<RetiredBankSnapshot> m_retiredBankSnapshots;
 
-	// Protect the array of active notes
-	QMutex m_notesRunningMutex;
-
-	// Protect synth when we are re-creating it.
-	QMutex m_synthMutex;
+	// Serialize synth lifetime, low-level voices, counters and queued note events.
+	QRecursiveMutex m_synthMutex;
 	QMutex m_loadMutex;
+	std::uint64_t m_synthGeneration = 1;
+	std::vector<fluid_voice_t*> m_voiceScratch;
 
 	std::array<int, 128> m_notesRunning = {};
-	sample_rate_t m_internalSampleRate;
+	sample_rate_t m_internalSampleRate = 44100;
 	int m_lastMidiPitch;
 	int m_lastMidiPitchRange;
 	int m_channel;
@@ -150,15 +175,29 @@ private:
 	FloatModel m_chorusDepth;
 
 	QVector<NotePlayHandle *> m_playingNotes;
-	QMutex m_playingNotesMutex;
 
 private:
+	class ResourceGuard;
+	enum class BankLoad { File, Settings, Unresolved };
+	bool m_changingResources = false;
 	void freeFont();
+	bool loadSoundFont(const QString& path, bool selectFirst, QString& error, ResourceGuard& work, BankLoad mode = BankLoad::File);
+	bool previewProgramImpl(int bank, int program, QString& error, ResourceGuard& work);
+	void updateProgramLabels(ResourceGuard& work);
+	bool reloadSynthImpl(ResourceGuard& work);
+	bool restoreProgramPreviewImpl(const ProgramPreviewToken& token, QString& error, ResourceGuard& work);
 	void noteOn( Sf2PluginData * n );
 	void noteOff( Sf2PluginData * n );
+	void updateVoices(Sf2PluginData* n);
+	void updateResampling();
+	void pruneRetiredBankSnapshots();
 	void renderFrames( f_cnt_t frames, SampleFrame* buf );
 
 	friend class gui::Sf2InstrumentView;
+	friend class Sf2ResourceTestAccess;
+	friend class Sf2PatchDialogTestAccess;
+	friend class Sf2RenderAuditionTestAccess;
+	friend class Sf2RateFallbackTestAccess;
 
 signals:
 	void fileLoading();

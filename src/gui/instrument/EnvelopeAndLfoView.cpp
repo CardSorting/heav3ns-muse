@@ -28,6 +28,10 @@
 #include <string_view>
 
 #include <QSizePolicy>
+#include <QPointer>
+#include <exception>
+#include "Engine.h"
+#include "Song.h"
 #include <QVBoxLayout>
 
 #include "EnvelopeGraph.h"
@@ -235,41 +239,34 @@ void EnvelopeAndLfoView::dragEnterEvent( QDragEnterEvent * _dee )
 
 
 
-void EnvelopeAndLfoView::dropEvent( QDropEvent * _de )
+void EnvelopeAndLfoView::dropEvent(QDropEvent* event)
 {
-	QString type = StringPairDrag::decodeKey( _de );
-	QString value = StringPairDrag::decodeValue( _de );
-	if( type == "samplefile" )
+	const QPointer<EnvelopeAndLfoView> owner(this); const QPointer<EnvelopeAndLfoParameters> parameters(dynamic_cast<EnvelopeAndLfoParameters*>(model()));
+	const QPointer<Song> song(Engine::getSong()); const auto generation = song ? song->replacementGeneration() : 0;
+	const QString type = StringPairDrag::decodeKey(event), value = StringPairDrag::decodeValue(event); QString path;
+	if (type == "samplefile") { path = value; }
+	else if (type == QString("clip_%1").arg(static_cast<int>(Track::Type::Sample)))
+	{ DataFile file(value.toUtf8()); path = file.content().firstChildElement().firstChildElement().firstChildElement().attribute("src"); }
+	else { return; }
+	if (path.isEmpty() || !parameters) { return; }
+	try
 	{
-		m_params->m_userWave = SampleBuffer::fromFile(value);
-		m_userLfoBtn->model()->setValue( true );
-		m_params->m_lfoWaveModel.setValue(static_cast<int>(EnvelopeAndLfoParameters::LfoShape::UserDefinedWave));
-		_de->accept();
-		update();
+		QString error; if (!parameters->setLfoUserWave(path, error, true)) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError(error); } return; }
+		if (!owner || !parameters || owner->model() != parameters.data()) { return; }
+		event->accept(); owner->update();
 	}
-	else if( type == QString( "clip_%1" ).arg( static_cast<int>(Track::Type::Sample) ) )
-	{
-		DataFile dataFile( value.toUtf8() );
-		auto file = dataFile.content().
-					firstChildElement().firstChildElement().
-					firstChildElement().attribute("src");
-		m_params->m_userWave = SampleBuffer::fromFile(file);
-		m_userLfoBtn->model()->setValue( true );
-		m_params->m_lfoWaveModel.setValue(static_cast<int>(EnvelopeAndLfoParameters::LfoShape::UserDefinedWave));
-		_de->accept();
-		update();
-	}
+	catch (const std::exception& error) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError(QString::fromUtf8(error.what())); } }
+	catch (...) { if (song && Engine::getSong() == song.data() && song->replacementGeneration() == generation) { song->collectError("Native envelope/LFO waveform loading failed"); } }
 }
-
-
 
 
 void EnvelopeAndLfoView::lfoUserWaveChanged()
 {
-	if( static_cast<EnvelopeAndLfoParameters::LfoShape>(m_params->m_lfoWaveModel.value()) ==
+	const QPointer<EnvelopeAndLfoParameters> parameters(dynamic_cast<EnvelopeAndLfoParameters*>(model())); if (!parameters) { return; }
+	if( static_cast<EnvelopeAndLfoParameters::LfoShape>(parameters->getLfoWaveModel().value()) ==
 				EnvelopeAndLfoParameters::LfoShape::UserDefinedWave )
 	{
-		if (m_params->m_userWave->size() <= 1)
+		if (parameters->getLfoUserWave()->size() <= 1)
 		{
 			TextFloat::displayMessage( tr( "Hint" ),
 				tr( "Drag and drop a sample into this window." ),

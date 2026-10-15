@@ -26,6 +26,8 @@
 
 #include <vector>
 #include <cmath>
+#include <QPointer>
+#include <cstdint>
 
 #include "Engine.h"
 #include "Keymap.h"
@@ -37,12 +39,12 @@ namespace lmms
 {
 
 
-Microtuner::Microtuner() :
-	Model(nullptr, tr("Microtuner")),
+Microtuner::Microtuner(Model* parent) :
+	Model(parent, tr("Microtuner")),
 	m_enabledModel(false, this, tr("Microtuner on / off")),
 	m_scaleModel(this, tr("Selected scale")),
 	m_keymapModel(this, tr("Selected keyboard mapping")),
-	m_keyRangeImportModel(true)
+	m_keyRangeImportModel(true, this, tr("Import key range"))
 {
 	for (unsigned int i = 0; i < MaxScaleCount; i++)
 	{
@@ -55,53 +57,50 @@ Microtuner::Microtuner() :
 	}
 	connect(Engine::getSong(), SIGNAL(scaleListChanged(int)), this, SLOT(updateScaleList(int)));
 	connect(Engine::getSong(), SIGNAL(keymapListChanged(int)), this, SLOT(updateKeymapList(int)));
+	connect(&m_enabledModel, &AutomatableModel::dataChanged, this, &Microtuner::tuningChanged);
+	connect(&m_scaleModel, &AutomatableModel::dataChanged, this, &Microtuner::tuningChanged);
+	connect(&m_keymapModel, &AutomatableModel::dataChanged, this, &Microtuner::tuningChanged);
+	connect(&m_keyRangeImportModel, &AutomatableModel::dataChanged, this, &Microtuner::tuningChanged);
 }
 
 
 float Microtuner::keyToFreq(int key, int userBaseNote) const
 {
-	if (key < 0 || key >= NumKeys) {return 0;}
-	Song *song = Engine::getSong();
-	if (!song) {return 0;}
-
-	// Get keymap and scale selected at this moment
-	std::shared_ptr<const Keymap> keymap = song->getKeymap(m_keymapModel.value());
-	std::shared_ptr<const Scale> scale = song->getScale(m_scaleModel.value());
-	const std::vector<Interval> &intervals = scale->getIntervals();
-
-	// Convert MIDI key to scale degree + octave offset.
-	// The octaves are primarily driven by the keymap wraparound: octave count is increased or decreased if the key
-	// goes over or under keymap range. In case the keymap refers to a degree that does not exist in the scale, it is
-	// assumed the keymap is non-repeating or just really big, so the octaves are also driven by the scale wraparound.
-	const int keymapDegree = keymap->getDegree(key);		// which interval should be used according to the keymap
-	if (keymapDegree == -1) {return 0;}						// key is not mapped, abort
-	const int keymapOctave = keymap->getOctave(key);		// how many times did the keymap repeat
-	const int octaveDegree = intervals.size() - 1;			// index of the interval with octave ratio
-	if (octaveDegree == 0) {								// octave interval is 1/1, i.e. constant base frequency
-		return keymap->getBaseFreq();						// → return the baseFreq directly
+	if (key < 0 || key >= NumKeys) { return 0; }
+	const auto song = Engine::getSong();
+	if (!song) { return 0; }
+	const auto keymap = song->getKeymap(m_keymapModel.value());
+	const auto scale = song->getScale(m_scaleModel.value());
+	const auto& intervals = scale->getIntervals();
+	const auto baseNote = m_keyRangeImportModel.value() ? keymap->getBaseKey() : userBaseNote;
+	if (intervals.empty() || !keymap->isMapped(key) || !keymap->isMapped(baseNote)) { return 0; }
+	const int scalePeriod = static_cast<int>(intervals.size()) - 1;
+	if (scalePeriod == 0)
+	{
+		const auto frequency = keymap->getBaseFreq();
+		return std::isfinite(frequency) && frequency > 0 ? frequency : 0;
 	}
-	const int scaleOctave = keymapDegree / octaveDegree;
-
-	// which interval should be used according to the scale and keymap together
-	const int degree_rem = keymapDegree % octaveDegree;
-	const int scaleDegree = degree_rem >= 0 ? degree_rem : degree_rem + octaveDegree;	// get true modulo
-
-	// Compute base note (the "A4 reference") degree and octave
-	const int baseNote = m_keyRangeImportModel.value() ? keymap->getBaseKey() : userBaseNote;
-	const int baseKeymapDegree = keymap->getDegree(baseNote);
-	if (baseKeymapDegree == -1) {return 0;}					// base key is not mapped, umm...
-	const int baseKeymapOctave = keymap->getOctave(baseNote);
-	const int baseScaleOctave = baseKeymapDegree / octaveDegree;
-
-	const int baseDegree_rem = baseKeymapDegree % octaveDegree;
-	const int baseScaleDegree = baseDegree_rem >= 0 ? baseDegree_rem : baseDegree_rem + octaveDegree;
-
-	// Compute frequency of the middle note and return the final frequency
-	const double octaveRatio = intervals[octaveDegree].getRatio();
-	const float middleFreq = (keymap->getBaseFreq() / std::pow(octaveRatio, baseScaleOctave + baseKeymapOctave))
-		/ intervals[baseScaleDegree].getRatio();
-
-	return middleFreq * intervals[scaleDegree].getRatio() * std::pow(octaveRatio, keymapOctave + scaleOctave);
+	// The keyboard pattern's formal octave is a scale degree, not necessarily
+	// the scale's last degree. Zero keeps legacy last-degree behavior.
+	const int mappingPeriod = keymap->octaveDegree() == 0 ? scalePeriod : keymap->octaveDegree();
+	const auto totalDegree = [&](int midiKey) {
+		return static_cast<int64_t>(keymap->getDegree(midiKey))
+			+ static_cast<int64_t>(keymap->getOctave(midiKey)) * mappingPeriod;
+	};
+	const auto floorDivide = [scalePeriod](int64_t degree) {
+		return degree / scalePeriod - (degree % scalePeriod < 0 ? 1 : 0);
+	};
+	const auto degree = totalDegree(key);
+	const auto referenceDegree = totalDegree(baseNote);
+	const auto octave = floorDivide(degree);
+	const auto referenceOctave = floorDivide(referenceDegree);
+	const auto interval = degree - octave * scalePeriod;
+	const auto referenceInterval = referenceDegree - referenceOctave * scalePeriod;
+	const double frequency = keymap->getBaseFreq() * static_cast<double>(intervals[interval].getRatio())
+		/ intervals[referenceInterval].getRatio()
+		* std::pow(static_cast<double>(intervals.back().getRatio()), octave - referenceOctave);
+	const auto result = static_cast<float>(frequency);
+	return std::isfinite(result) && result > 0 ? result : 0;
 }
 
 int Microtuner::octaveSize() const
@@ -113,7 +112,9 @@ int Microtuner::octaveSize() const
 	}
 
 	// Determine octave size from the scale if the keymap isn't in use.
-	return Engine::getSong()->getScale(currentScale())->getIntervals().size() - 1;
+	const auto degrees = Engine::getSong()->getScale(currentScale())->getIntervals().size() - 1;
+	// A zero-degree Scala scale is constant pitch; editing still needs a nonzero key stride.
+	return degrees > 0 ? static_cast<int>(degrees) : 1;
 }
 
 
@@ -132,6 +133,7 @@ void Microtuner::updateScaleList(int index)
 				QString::number(i) + ": " + Engine::getSong()->getScale(i)->getDescription());
 		}
 	}
+	if (index < 0 || index == currentScale()) { emit tuningChanged(); }
 }
 
 
@@ -150,6 +152,7 @@ void Microtuner::updateKeymapList(int index)
 				QString::number(i) + ": " + Engine::getSong()->getKeymap(i)->getDescription());
 		}
 	}
+	if (index < 0 || index == currentKeymap()) { emit tuningChanged(); }
 }
 
 
@@ -164,9 +167,13 @@ void Microtuner::saveSettings(QDomDocument &document, QDomElement &element)
 
 void Microtuner::loadSettings(const QDomElement &element)
 {
+	const QPointer<Microtuner> owner(this);
 	m_enabledModel.loadSettings(element, "enabled");
+	if (!owner) { return; }
 	m_scaleModel.loadSettings(element, "scale");
+	if (!owner) { return; }
 	m_keymapModel.loadSettings(element, "keymap");
+	if (!owner) { return; }
 	m_keyRangeImportModel.loadSettings(element, "range_import");
 }
 

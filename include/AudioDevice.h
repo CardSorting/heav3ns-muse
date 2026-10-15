@@ -26,6 +26,12 @@
 #define LMMS_AUDIO_DEVICE_H
 
 #include <QMutex>
+#include <QString>
+#include <atomic>
+#include <bit>
+#include <cstdint>
+#include <functional>
+#include <vector>
 #include <samplerate.h>
 
 #include "LmmsTypes.h"
@@ -43,13 +49,53 @@ class SampleFrame;
 class AudioDevice
 {
 public:
+	struct BackendGraph
+	{
+		struct Channel { unsigned int index; QString localPort, startupPeer; bool startupPeerTruncated = false; };
+		struct Endpoint { QString name; std::vector<unsigned int> connectedChannels; };
+		bool supported = false, observed = false;
+		std::vector<Channel> channels;
+		std::vector<Endpoint> endpoints;
+		int nativeErrorCode = 0;
+	};
+	struct BackendRoute
+	{
+		QString localPort, remotePort;
+		bool connected = false, changed = false, processingInterrupted = false;
+	};
+	// Live native master input/output graph, independent of project mixer routes.
+	virtual BackendGraph inspectBackendGraph(bool) { return {}; }
+	virtual BackendRoute setBackendRoute(bool input, unsigned int channel, const QString& remote, bool enabled,
+		const std::function<bool()>& cancelled = {});
+	struct BusGraph
+	{
+		BackendGraph graph;
+		QString id, label, error;
+		bool enabled = false, published = false, pending = false, labelTruncated = false;
+		int nativeErrorCode = 0;
+	};
+	virtual BusGraph inspectBusGraph(AudioBusHandle*) { return {}; }
+	virtual void configureBusOutput(AudioBusHandle*, bool enabled, const std::function<bool()>& cancelled = {});
+	virtual BackendRoute setBusRoute(AudioBusHandle*, unsigned int channel, const QString& remote, bool enabled,
+		const std::function<bool()>& cancelled = {});
+	enum class ProcessingFailure : std::uint32_t
+	{
+		None, Start, Stop, Disconnected, InvalidCallback, Exception
+	};
+	struct ProcessingStatus
+	{
+		bool running;
+		ProcessingFailure failure;
+		std::int32_t nativeError;
+	};
 	AudioDevice( const ch_cnt_t _channels, AudioEngine* audioEngine );
 	virtual ~AudioDevice();
 
 	// if audio-driver supports ports, classes inheriting AudioBusHandle
 	// (e.g. channel-tracks) can register themselves for making
 	// audio-driver able to collect their individual output and provide
-	// them at a specific port - currently only supported by JACK
+	// them at a specific port. JACK stages these hooks without native calls;
+	// native port publication/retirement happens outside the model lock.
 	virtual void registerPort(AudioBusHandle* port);
 	virtual void unregisterPort(AudioBusHandle* port);
 	virtual void renamePort(AudioBusHandle* port);
@@ -68,7 +114,17 @@ public:
 
 	void stopProcessing();
 
-	bool isRunning() const { return m_running.test(std::memory_order_acquire); }
+	ProcessingStatus processingStatus() const
+	{
+		const auto status = m_processingStatus.load(std::memory_order_acquire);
+		return {static_cast<bool>(status & RunningFlag), static_cast<ProcessingFailure>((status >> 32) & 0x7fffffff),
+			std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(status))};
+	}
+	bool isRunning() const { return processingStatus().running; }
+	static const char* processingFailureName(ProcessingFailure failure);
+	// Backends publish numeric failure state without allocating or entering Qt.
+	// Control-thread start/stop calls must remain serialized by their owner.
+	void reportProcessingFailure(ProcessingFailure failure, std::int32_t nativeError = 0) noexcept;
 
 protected:
 	// convert a given audio-buffer to a buffer in signed 16-bit samples
@@ -97,7 +153,8 @@ private:
 	sample_rate_t m_sampleRate;
 	ch_cnt_t m_channels;
 	AudioEngine* m_audioEngine = nullptr;
-	std::atomic_flag m_running = ATOMIC_FLAG_INIT;
+	static constexpr std::uint64_t RunningFlag = std::uint64_t{1} << 63;
+	std::atomic<std::uint64_t> m_processingStatus{0};
 };
 
 } // namespace lmms

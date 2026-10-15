@@ -4,6 +4,20 @@ IF(LMMS_BUILD_WIN32)
         INSTALL(FILES $<TARGET_FILE:Qt${QT_VERSION_MAJOR}::QSvgIconPlugin> DESTINATION iconengines)
         INSTALL(FILES $<TARGET_FILE:Qt${QT_VERSION_MAJOR}::QSvgPlugin> DESTINATION imageformats)
         INSTALL(FILES $<TARGET_FILE:Qt${QT_VERSION_MAJOR}::Svg> DESTINATION .)
+	# Qt 6 loads TLS backends as plugins. The existing executable dependency
+	# scan cannot discover dynamically loaded backend DLLs.
+	if(QT_VERSION_MAJOR EQUAL 6)
+		set(LMMS_TLS_BACKENDS "")
+		foreach(backend QTlsBackendSchannelPlugin QTlsBackendOpenSSLPlugin)
+			if(TARGET Qt6::${backend})
+				get_target_property(backend_type Qt6::${backend} TYPE)
+				if(NOT backend_type STREQUAL "STATIC_LIBRARY")
+					install(FILES $<TARGET_FILE:Qt6::${backend}> DESTINATION tls)
+					list(APPEND LMMS_TLS_BACKENDS Qt6::${backend})
+				endif()
+			endif()
+		endforeach()
+	endif()
 ENDIF()
 
 IF(LMMS_BUILD_WIN32 OR LMMS_INSTALL_DEPENDENCIES)
@@ -37,6 +51,14 @@ IF(LMMS_BUILD_WIN32 OR LMMS_INSTALL_DEPENDENCIES)
 			LIB_DIRS ${LIB_DIRS} "${PLUGIN_DIR}" "${PLUGIN_DIR}/optional"
 			SEARCH_PATHS "${PLUGIN_DIR}" "${PLUGIN_DIR}/optional"
 	)
+	if(LMMS_TLS_BACKENDS)
+		INSTALL_TARGET_DEPENDENCIES(
+				NAME "tls_backends"
+				TARGETS ${LMMS_TLS_BACKENDS}
+				DESTINATION "${LMMS_DEP_DESTINATION}"
+				LIB_DIRS ${LIB_DIRS}
+		)
+	endif()
 ENDIF()
 
 # Install STK rawwaves
