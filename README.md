@@ -2,7 +2,7 @@
 
 # 🎵 HEAV3NS-MUSE
 
-### **An Agent-Native Digital Audio Workstation, Built on LMMS**
+### **The Agent-Native Digital Audio Workstation, Built on LMMS**
 
 *A persistent, conversational C++ music production runtime where autonomous AI agents inspect, compose, synthesize, mix, render, and evaluate music directly on native DAW DSP models.*
 
@@ -14,42 +14,67 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square)](INSTALL.txt)
 [![Architecture](https://img.shields.io/badge/Architecture-Native%20DSP%20Authority-orange?style=flat-square)](doc/agent-native-architecture.md)
 [![Protocol](https://img.shields.io/badge/Protocol-JSON--Lines%20IPC-brightgreen?style=flat-square)](doc/native-studio-protocol.md)
+[![Upstream](https://img.shields.io/badge/Upstream-LMMS%20Core-teal?style=flat-square)](https://github.com/LMMS/lmms)
 
-[Quickstart](#-quickstart-in-60-seconds) •
-[Architecture](#-architecture--the-studio-loop) •
-[Studio CLI](#-studio-cli-reference) •
-[Wire Protocol](#-wire-protocol--ipc-reference) •
-[Agent Reasoning](#-conversational-agent--reasoning) •
-[Capabilities Matrix](#-studio-capabilities-matrix) •
-[Hardware & Backends](#-audio--midi-hardware-backends) •
-[Verification](#-testing--verification)
+```text
+  ___ ___  _________   ____   __________ _______    _____  ____ ___  ______ ____
+ /   |   \/   _____/  /  _ \  \______   \\      \  /     \/    |   \/  ___// __ \
+/    ~    \_____  \  /  /_\  \  |     ___//   |   \/  --  \|    ~   /\___ \\  ___/
+\___|_  //______  / /    |    \ |____|   /___|__  /  /\/\  \___/|_  /____  >\___  >
+      \/        \/  \____|__  /                 \/__/__  \      \/     \/     \/
+```
+
+**[⚡ Quickstart](#-quickstart-in-60-seconds)** •
+**[📦 Platform Setup](#-platform-prerequisites--installation)** •
+**[🏗️ Architecture](#-architecture--the-studio-loop)** •
+**[💡 REPL & Python SDK](#-studio-repl--zero-dependency-python-sdk)** •
+**[📖 Creative Cookbook](#-creative-cookbook--workflow-recipes)** •
+**[🎛️ Synth Showcase](#-bundled-synthesizers--sound-engines)** •
+**[📋 Capabilities](#-studio-capabilities-reference)** •
+**[📡 Wire Protocol](#-wire-protocol--ipc-reference)** •
+**[🤖 Agent Reasoning](#-conversational-agent--reasoning-loops)** •
+**[🔊 Hardware](#-audio--midi-hardware-backends)** •
+**[🛡️ Durability](#-storage-architecture--crash-resilience)** •
+**[🧪 Testing](#-testing--verification-suites)** •
+**[❓ Troubleshooting](#-troubleshooting--faq)**
 
 ---
 
 </div>
 
-## 🌟 Overview
+## 🌟 Overview & Paradigm Shift
 
-**HEAV3NS-MUSE** is an architectural evolution of [LMMS](https://github.com/LMMS/lmms), transforming the open-source digital audio workstation into a **persistent, conversational studio runtime**. 
+**HEAV3NS-MUSE** is an architectural evolution of [LMMS](https://github.com/LMMS/lmms), transforming the venerable open-source digital audio workstation into a **persistent, conversational studio runtime**. 
 
-Instead of generating disposable MIDI snippets or external audio stems, HEAV3NS-MUSE introduces an in-process agent runtime (`StudioRuntime`) directly within the LMMS C++ engine. AI reasoning models operate as collaborative producers: discovering available instruments, editing live arrangement timelines, sculpting synthesizer envelopes, routing mixer sends, rendering stems, and perceptually evaluating the results—while preserving complete native `.mmp` project compatibility and full graphical editability.
+Instead of generating disposable MIDI snippets or black-box audio stems, HEAV3NS-MUSE embeds an in-process agent runtime (`StudioRuntime`) directly into the LMMS C++ engine. Autonomous reasoning agents participate as native studio collaborators: discovering instruments, editing arrangement timelines, shaping synthesizer envelopes, routing mixer sends, rendering stems, and perceptually evaluating the results—with complete `.mmp` project compatibility and full graphical presentation parity.
+
+```text
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        THE AUTONOMOUS MUSIC PRODUCTION LOOP                            │
+│                                                                                        │
+│   Interpret ➔ Plan ➔ Compose ➔ Synthesize ➔ Mix ➔ Render ➔ Listen ➔ Evaluate ➔ Revise  │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
 ### Why Agent-Native DAW?
 
-| Paradigm | Traditional DAW + AI Plugins | File-Generating Scripts (MIDI/WAV) | **HEAV3NS-MUSE (Agent-Native)** |
+| Vector | Traditional DAW + AI Plugins | Ephemeral Code Generators | **HEAV3NS-MUSE (Agent-Native DAW)** |
 | :--- | :--- | :--- | :--- |
-| **Execution Model** | Manual human DAW operation | One-shot code generation | **In-process conversational agent loop** |
-| **State Authority** | GUI memory state | Ephemeral script output | **Authoritative native LMMS C++ DSP models** |
-| **Project Editability** | Manual undo/redo | Statically baked files | **Native `.mmp` checkpoints with multi-turn undo** |
-| **Sound Synthesis** | VST/Plugin black boxes | Fixed soundfonts or wavetables | **60+ native synths, samplers, SoundFonts & VSTs** |
-| **Evaluation Loop** | Human ears only | Blind generation without feedback | **Render → Technical Analysis → Perceptual Listening** |
-| **Headless Operation** | Not possible (requires GUI) | Command-line only | **Dual Mode: Headless (`QCoreApplication`) & GUI** |
+| **Execution Model** | Manual human DAW operation | One-shot Python/JS scripts | **In-process conversational agent loop** |
+| **State Authority** | GUI memory state | Ephemeral `.mid` / `.wav` files | **Authoritative native LMMS C++ DSP models** |
+| **Non-Destructive Workflow** | Manual DAW undo | Statically baked exports | **Atomic `.mmp` checkpoints with multi-turn undo** |
+| **Sound Synthesis** | VST/Plugin black boxes | Fixed soundfonts or GM banks | **60+ native synths, samplers, SoundFonts & VSTs** |
+| **Evaluation Loop** | Human ears only | Blind generation without feedback | **Render ➔ Technical DSP Analysis ➔ Perceptual Audio Listening** |
+| **Headless Operation** | Requires display server | Script CLI only | **Dual Mode: Headless (`QCoreApplication`) & Qt GUI** |
+| **Session Memory** | None (forgotten on exit) | None (per-run variables) | **Durable memory, preferences & decision recall** |
+
+[⬆ Back to Top](#-heav3ns-muse)
 
 ---
 
 ## ⚡ Quickstart in 60 Seconds
 
-### 1. Clone with Pinned Dependencies
+### 1. Clone with Pinned Submodules
 
 ```sh
 git clone --recurse-submodules https://github.com/CardSorting/heav3ns-muse.git
@@ -57,31 +82,28 @@ cd heav3ns-muse
 ```
 
 > [!TIP]
-> If you already cloned without submodules, run `git submodule update --init --recursive` to pull bundled synthesis engines, SoundFont players, and Carla host libraries.
+> If you cloned without submodules, initialize them immediately: `git submodule update --init --recursive`. This restores bundled synthesis engines (ZynAddSubFX, FluidSynth, Carla, AdPlug).
 
-### 2. Configure & Build
+### 2. Build Out-of-Tree
 
-Requires CMake 3.13+, a C++20 compiler (`gcc` 11+, `clang` 13+, or MSVC 2022), Qt 5.15+ (or Qt 6 via `-DWANT_QT6=ON`), and `libsndfile`.
+Requires CMake 3.13+, a C++20 compiler (`gcc` 11+, `clang` 13+, or MSVC 2022), and Qt 5.15+ (or Qt 6 via `-DWANT_QT6=ON`):
 
 ```sh
-# Configure out-of-tree build with testing enabled
 cmake -S . -B build -DBUILD_TESTING=ON
-
-# Compile in parallel across all CPU cores
 cmake --build build --parallel
 ```
 
 ### 3. Launch an Agent Studio Session
 
-Run a persistent, headless studio session reading and writing line-delimited JSON over standard I/O:
+Run a persistent, headless studio session that communicates over line-delimited JSON stdio:
 
 ```sh
 ./build/lmms studio ./my-studio-session --config ~/.lmms-config.xml
 ```
 
-### 4. Interactive "Hello World" Composition
+### 4. Interactive "Hello World" Pipeline
 
-Pipe line-delimited JSON directly to `./build/lmms studio ./my-studio-session` to initialize a project, load a synthesizer, write a 4-note melody, and render it to WAV:
+Pipe line-delimited JSON commands directly to `./build/lmms studio` to initialize a project, load a synth, write a 4-bar melody, and render an audio file:
 
 ```sh
 cat << 'EOF' | ./build/lmms studio ./my-studio-session
@@ -97,21 +119,67 @@ cat << 'EOF' | ./build/lmms studio ./my-studio-session
 EOF
 ```
 
-To open and inspect the resulting project in the full LMMS Graphical Interface at any time:
+To inspect and continue working on this song in the full LMMS Graphical Interface at any point:
 
 ```sh
 ./build/lmms ./my-studio-session/composition.mmp
 ```
 
+[⬆ Back to Top](#-heav3ns-muse)
+
+---
+
+## 📦 Platform Prerequisites & Installation
+
+<details open>
+<summary><b>🍎 macOS (Homebrew)</b></summary>
+
+Install all required build tools, audio libraries, and Qt packages using the repository's bundled [Brewfile](Brewfile):
+
+```sh
+brew bundle
+cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt@5)" -DBUILD_TESTING=ON
+cmake --build build --parallel
+```
+</details>
+
+<details>
+<summary><b>🐧 Ubuntu / Debian (20.04 / 22.04 / 24.04)</b></summary>
+
+Install the complete dependency suite matching the CI configuration:
+
+```sh
+sudo apt-get update && sudo apt-get install -y \
+  build-essential cmake git ccache \
+  qtbase5-dev qttools5-dev-tools libqt5svg5-dev \
+  libsndfile1-dev libasound2-dev libjack-jackd2-dev \
+  libpulse-dev libsdl2-dev portaudio19-dev \
+  libfftw3-dev libfluidsynth-dev libgig-dev \
+  libmp3lame-dev libogg-dev libvorbis-dev libsamplerate0-dev \
+  liblilv-dev lv2-dev libstk-dev
+
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build --parallel
+```
+</details>
+
+<details>
+<summary><b>🪟 Windows (MSYS2 / vcpkg)</b></summary>
+
+Using the repository's native [vcpkg.json](vcpkg.json) manifest:
+
+```cmd
+vcpkg install --triplet x64-windows
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake -DBUILD_TESTING=ON
+cmake --build build --config Release --parallel
+```
+</details>
+
+[⬆ Back to Top](#-heav3ns-muse)
+
 ---
 
 ## 🏗️ Architecture & The Studio Loop
-
-HEAV3NS-MUSE enforces the **Autonomous Music Production Lifecycle**:
-
-```text
-Interpret ➔ Plan ➔ Compose ➔ Synthesize ➔ Mix ➔ Render ➔ Listen ➔ Evaluate ➔ Revise ➔ Preserve
-```
 
 ### Subsystem Flowchart
 
@@ -119,7 +187,8 @@ Interpret ➔ Plan ➔ Compose ➔ Synthesize ➔ Mix ➔ Render ➔ Listen ➔ 
 flowchart TD
     subgraph ClientLayer ["Client / AI Agent Layer"]
         CLI["CLI / Piped Stdio"]
-        LLM["LLM Inference Provider\n(Ollama / vLLM / OpenAI / Anthropic)"]
+        PySDK["Zero-Dep Python SDK"]
+        LLM["LLM Reasoning Provider\n(Ollama / vLLM / OpenAI / Anthropic)"]
         AudioModel["Multimodal Audio Provider\n(Perceptual Listening Model)"]
     end
 
@@ -146,6 +215,7 @@ flowchart TD
     end
 
     CLI <-->|"JSON-Lines (stdio)"| StreamRouter
+    PySDK <-->|"JSON-Lines (stdio)"| StreamRouter
     LLM <-->|"HTTP / SSE Adapters"| AgentCoordinator
     AudioModel <-->|"Audio Upload / Evaluation"| AgentCoordinator
     StreamRouter <--> AgentCoordinator
@@ -162,185 +232,187 @@ flowchart TD
     TransactionMgr --> Evidence
 ```
 
-### Core Invariants
+### Architectural Guarantees
 
-1. **Native DSP Authority**: No shadow models or parallel musical abstractions. Operations execute directly against live LMMS C++ engine objects (`Engine::getSong()`, `PatternStore`, `Mixer`, `AudioEngine`).
-2. **Deterministic Durability**: Every project mutation creates an atomic `.mmp` snapshot with SHA-256 integrity verification, committed to an atomic `manifest.json`. Sessions withstand abrupt process termination (`kill -9`) without data loss.
-3. **Headless Execution with Full Presentation Parity**: Studio mode initializes `QCoreApplication` without requiring an X11, Wayland, or Quartz display server. Projects remain 100% loadable and editable in the Qt GUI.
-4. **Isolated Standard I/O Streams**: Standard output (`stdout`) is strictly reserved for machine-readable JSON protocol frames. Native C++ logging, DSP diagnostic messages, and crash warnings are redirected to `stderr`.
-5. **Two-Stage Audio Understanding**: Technical audio metrics (peak dBFS, RMS power, clipping detection, silence ratios, spectral centroid) are calculated deterministically by C++ DSP routines (`audio.analyze`). Subjective aesthetic evaluation is delegated to an external audio multimodal reasoning model (`audio.listen`).
+1. **Native C++ Model Authority**: All operations mutate live LMMS C++ engine objects (`Engine::getSong()`, `PatternStore`, `Mixer`). There are no duplicate JSON ASTs or out-of-sync shadow state models.
+2. **Two-Stage Audio Understanding**: Technical audio metrics (peak dBFS, RMS power, clipping detection, silence ratios, spectral centroid) are computed deterministically in C++ (`audio.analyze`). Perceptual, subjective critique is handled by an external audio multimodal reasoning model (`audio.listen`).
+3. **Optimistic Concurrency & Revision Locking**: Clients can pass `expectedRevision`. If another concurrent action modified the song, the mutation is rejected before applying edits.
+4. **Complete Stream Isolation**: Protocol frames are strictly routed to `stdout`. Native engine logs, C++ diagnostic outputs, and ALSA/JACK warnings are redirected to `stderr`.
+
+[⬆ Back to Top](#-heav3ns-muse)
 
 ---
 
-## 🖥️ Studio CLI Reference
+## 💡 Studio REPL & Zero-Dependency Python SDK
 
-Launch the studio using the `studio` subcommand:
+HEAV3NS-MUSE can be driven using any language via standard I/O. Below is a lightweight, zero-dependency Python client you can immediately drop into your AI agents or orchestration frameworks (LangChain, AutoGen, CrewAI, FastMCP):
 
-```sh
-lmms studio <session-directory> [options]
+```python
+import json
+import subprocess
+import uuid
+from pathlib import Path
+
+class StudioClient:
+    """Zero-dependency IPC wrapper for HEAV3NS-MUSE native studio."""
+
+    def __init__(self, lmms_bin: str, session_dir: str, config: str = None):
+        cmd = [lmms_bin, "studio", session_dir]
+        if config:
+            cmd.extend(["--config", config])
+        self.process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+        # Read the initial 'ready' event
+        ready_frame = json.loads(self.process.stdout.readline())
+        assert ready_frame.get("event") == "ready", f"Unexpected startup: {ready_frame}"
+        self.revision = ready_frame.get("revision", 0)
+
+    def call(self, op: str, args: dict = None, expected_rev: int = None) -> dict:
+        """Execute a typed C++ capability operation."""
+        req_id = str(uuid.uuid4())[:8]
+        payload = {"id": req_id, "op": op, "args": args or {}}
+        if expected_rev is not None:
+            payload["expectedRevision"] = expected_rev
+        self.process.stdin.write(json.dumps(payload) + "\n")
+        self.process.stdin.flush()
+
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                raise RuntimeError("Studio process terminated unexpectedly")
+            frame = json.loads(line)
+            # Skip unsolicited async events and match request ID
+            if frame.get("id") == req_id:
+                if frame.get("ok"):
+                    self.revision = frame.get("revision", self.revision)
+                    return frame.get("result", {})
+                raise RuntimeError(frame.get("error", "Unknown studio error"))
+
+    def chat(self, prompt: str) -> dict:
+        """Submit natural-language intent to the in-process agent."""
+        return self.call("session.chat", {"text": prompt})
+
+    def close(self):
+        try:
+            self.call("session.shutdown")
+        except Exception:
+            pass
+        self.process.terminate()
+        self.process.wait()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+# --- Example Usage ---
+if __name__ == "__main__":
+    with StudioClient("./build/lmms", "./session-test") as studio:
+        print("Initialized session at revision:", studio.revision)
+        studio.call("project.new", {"empty": True})
+        studio.call("song.set", {"tempo": 140})
+        studio.call("track.add", {"type": "instrument", "name": "Bassline"})
+        studio.call("instrument.load", {"track": 0, "instrument": "lb302"}) # TB-303 clone
+        studio.call("clip.add", {"track": 0, "position": 0})
+        # Add 16th-note acid bassline
+        notes = [{"position": i * 24, "length": 24, "key": 36 + (i % 7)} for i in range(16)]
+        studio.call("note.batch.add", {"track": 0, "clip": 0, "items": notes})
+        studio.call("audio.render", {"path": "./session-test/acid.wav"})
+        analysis = studio.call("audio.analyze", {"path": "./session-test/acid.wav"})
+        print("Rendered peak amplitude (dBFS):", analysis.get("peakDbfs"))
 ```
 
-### Command-Line Arguments
+[⬆ Back to Top](#-heav3ns-muse)
 
-| Flag | Argument | Description | Default |
+---
+
+## 📖 Creative Cookbook & Workflow Recipes
+
+### 🥁 Recipe 1: Generative BeatMatrix Rhythm (Kick + Snare + Hi-Hats)
+
+Use the 16-step beat-and-bassline sequencer for fast drum programming:
+
+```json
+{"id":"r1-1","op":"track.add","args":{"type":"pattern","name":"Drum Kit"}}
+{"id":"r1-2","op":"instrument.load","args":{"track":0,"instrument":"audiofileprocessor"}}
+{"id":"r1-3","op":"sample.load","args":{"track":0,"clip":0,"path":"data/samples/drums/kick01.ogg"}}
+{"id":"r1-4","op":"step.set","args":{"track":0,"clip":0,"step":0,"enabled":true}}
+{"id":"r1-5","op":"step.set","args":{"track":0,"clip":0,"step":4,"enabled":true}}
+{"id":"r1-6","op":"step.set","args":{"track":0,"clip":0,"step":8,"enabled":true}}
+{"id":"r1-7","op":"step.set","args":{"track":0,"clip":0,"step":12,"enabled":true}}
+{"id":"r1-8","op":"step.clone","args":{"track":0,"clip":0}}
+```
+
+### 🎹 Recipe 2: Lush Ambient Pad with LFO Filter Sweep (Hermite Automation)
+
+Automate a synthesizer filter cutoff knob with smooth Hermite cubic curves:
+
+```json
+{"id":"r2-1","op":"track.add","args":{"type":"instrument","name":"Ambient Pad"}}
+{"id":"r2-2","op":"instrument.load","args":{"track":0,"instrument":"zynaddsubfx"}}
+{"id":"r2-3","op":"track.add","args":{"type":"automation","name":"Filter Sweep"}}
+{"id":"r2-4","op":"clip.add","args":{"track":1,"position":0}}
+{"id":"r2-5","op":"automation.point","args":{"track":1,"clip":0,"position":0,"value":0.1,"progression":2,"tension":0.5}}
+{"id":"r2-6","op":"automation.point","args":{"track":1,"clip":0,"position":192,"value":0.85,"progression":2,"tension":0.5}}
+{"id":"r2-7","op":"automation.point","args":{"track":1,"clip":0,"position":384,"value":0.2,"progression":2,"tension":0.5}}
+```
+
+### 📐 Recipe 3: Microtonal Scala Tuning Setup
+
+Load historical tunings, Arabic quarter-tones, or just intonation into native instrument models:
+
+```json
+{"id":"r3-1","op":"tuning.scale.set","args":{"slot":0,"name":"19-EDO Equal Temperament","intervals":["1/19","2/19","3/19","4/19","5/19","6/19","7/19","8/19","9/19","10/19","11/19","12/19","13/19","14/19","15/19","16/19","17/19","18/19","2/1"]}}
+{"id":"r3-2","op":"tuning.keymap.set","args":{"slot":0,"name":"Standard Middle-C Origin","mapping":"0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18"}}
+{"id":"r3-3","op":"instrument.tuning.inspect","args":{"track":0,"key":60}}
+```
+
+### 🎧 Recipe 4: Stem-by-Stem Multi-Track Rendering & DSP Analysis
+
+Render isolated instrument stems and check them for digital clipping or silence before delivery:
+
+```json
+{"id":"r4-1","op":"audio.render","args":{"path":"./stems/drums.wav","track":0,"sampleRate":48000,"bitDepth":24}}
+{"id":"r4-2","op":"audio.render","args":{"path":"./stems/bass.wav","track":1,"sampleRate":48000,"bitDepth":24}}
+{"id":"r4-3","op":"audio.analyze","args":{"path":"./stems/drums.wav"}}
+{"id":"r4-4","op":"audio.analyze","args":{"path":"./stems/bass.wav"}}
+```
+
+[⬆ Back to Top](#-heav3ns-muse)
+
+---
+
+## 🎛️ Bundled Synthesizers & Sound Engines
+
+HEAV3NS-MUSE includes the full suite of native LMMS instruments, all addressable via `instrument.load`:
+
+| Plugin Identifier | Engine Name | Synthesis Method | Primary Musical Use Case |
 | :--- | :--- | :--- | :--- |
-| `<session-directory>` | Path | **Required.** Directory containing durable session checkpoints, manifests, transcripts, and receipts. Created if missing. | *None* |
-| `--config` | File Path | Path to custom LMMS XML configuration file. Overrides system default configuration. | Standard system XML |
-| `--studio-live` | *None* | Opens real audio and MIDI hardware backends. When omitted, the studio operates in offline mode with dummy drivers for fast headless rendering. | `false` (Dummy driver) |
-| `--studio-audio` | Backend Name | Selects a compiled audio driver (`portaudio`, `alsa`, `jack`, `pulseaudio`, `sdl`, `sndio`, `dummy`, `auto`). Requires `--studio-live`. | `auto` |
-| `--studio-midi` | Backend Name | Selects a compiled MIDI driver (`alsaseq`, `alsaraw`, `apple`, `winmm`, `jack`, `sndio`, `dummy`, `auto`). Requires `--studio-live`. | `auto` |
+| `tripleoscillator` | Triple Oscillator | Subtractive, AM, FM, Phase Sync | Leads, basslines, 808s, analog brass |
+| `zynaddsubfx` | ZynAddSubFX | Additive, Subtractive, PadSynth | Lush ambient pads, orchestral strings, bells |
+| `audiofileprocessor`| AFP Sampler | PCM sample playback, loop bounds | Acoustic drums, vocal chops, one-shots |
+| `slicert` | SlicerT | Transient beat slicer with pitch | Breakbeats, hip-hop chopping, drum loops |
+| `lb302` | LB302 | Monophonic Roland TB-303 emulator | Acid basslines, squelchy resonance leads |
+| `bitinvader` | BitInvader | User-drawn wavetable chiptune | 8-bit game audio, Commodore SID tones |
+| `patman` | Patman | Gravis UltraSound (.pat) player | Retro tracker instruments, legacy patches |
+| `sf2player` | SF2 Player | FluidSynth SoundFont 2 loader | General MIDI backing, acoustic pianos |
+| `opulenz` | OpulenZ | Yamaha YM3812 (OPL2/OPL3) FM synth | Sega Genesis / AdLib FM percussion & brass |
+| `monstro` | Monstro | 3-oscillator FM monster synth | Cyberpunk bass, aggressive modern leads |
+| `organic` | Organic | Additive drawbar organ with rotary | Church organs, Hammond B3 drawbar sounds |
+| `sid` | SID 6581/8580 | MOS Technology C64 chip emulator | Authentic chiptune arpeggios, pulse sweeps |
 
-### Signal & Interruption Handling
-
-- **`SIGINT` / `SIGTERM` (POSIX) or `CTRL_BREAK_EVENT` (Windows)**: Gracefully unwinds active C++ worker threads, pauses active inference jobs, commits current revision checkpoints to `manifest.json`, and emits an `event: "shutdown"` frame before exiting with status `0`.
-- **Process Memory Limits**: Enforced via configured resident memory caps (`maximumResidentMiB`). Runaway memory allocations gracefully pause execution without corrupting session state.
-
----
-
-## 📡 Wire Protocol & IPC Reference
-
-HEAV3NS-MUSE communicates over `stdin` and `stdout` using newline-delimited JSON (JSON-Lines). Each line is an independent JSON object up to 1 MiB in size.
-
-### Request Envelope
-
-```json
-{
-  "id": "req-001",
-  "op": "track.add",
-  "args": {
-    "type": "instrument",
-    "name": "Sub Bass"
-  },
-  "expectedRevision": 4
-}
-```
-
-- **`id`** *(string, required)*: Unique request identifier (1 to 128 characters). Used for correlation and replay deduplication.
-- **`op`** *(string, required)*: The capability or session operation name.
-- **`args`** *(object, required)*: Key-value parameters corresponding to the operation schema.
-- **`expectedRevision`** *(integer, optional)*: Optimistic concurrency lock. Rejects the operation if the project revision has advanced.
-
-### Response Envelope
-
-```json
-{
-  "id": "req-001",
-  "ok": true,
-  "revision": 5,
-  "result": {
-    "track": 1,
-    "name": "Sub Bass"
-  }
-}
-```
-
-If an operation fails, `ok` is `false`, and an explanatory `error` message is returned:
-
-```json
-{
-  "id": "req-001",
-  "ok": false,
-  "revision": 4,
-  "error": "Track index 8 is out of bounds (current project has 2 tracks)"
-}
-```
-
-### Real-Time Runtime Events
-
-The runtime pushes unsolicited notification frames during session lifecycle changes:
-
-```json
-{"event":"ready","session":"/path/to/session","revision":0,"applicationType":"QCoreApplication","transport":{"playing":false,"position":0}}
-{"event":"agent","job":{"id":"job-8f2a","status":"running","operations":12,"elapsedMs":1450}}
-{"event":"shutdown","ok":true,"reason":"process interrupt"}
-```
-
-### Idempotency & Replay Protection
-
-Every mutating request is fingerprinted via SHA-256 and committed with its receipt into `<session-dir>/receipts/<uuid>.json`. Re-submitting an identical `id` returns the cached response with `"replayed": true`, preventing accidental duplicate note insertions or double-track additions during network retries.
+[⬆ Back to Top](#-heav3ns-muse)
 
 ---
 
-## 🤖 Conversational Agent & Reasoning
-
-HEAV3NS-MUSE includes native HTTP adapters for OpenAI-compatible and Anthropic inference APIs, allowing local models (via Ollama, vLLM, LM Studio) or frontier cloud models to act directly as music producers.
-
-### 1. Configure the Reasoning Provider
-
-Send `session.provider.set` to configure your language model:
-
-```json
-{
-  "id": "set-llm",
-  "op": "session.provider.set",
-  "args": {
-    "role": "reasoning",
-    "configuration": {
-      "protocol": "chat_completions",
-      "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
-      "model": "qwen2.5-coder:32b",
-      "keyEnv": "OLLAMA_API_KEY",
-      "timeoutMs": 60000
-    }
-  }
-}
-```
-
-> [!NOTE]
-> For security, API keys are never stored in plain text within project manifests. The `keyEnv` field specifies the name of the environment variable containing the bearer token.
-
-### 2. Configure the Perceptual Audio Provider
-
-Configure an audio multimodal model to critique rendered compositions:
-
-```json
-{
-  "id": "set-audio",
-  "op": "session.provider.set",
-  "args": {
-    "role": "audio",
-    "configuration": {
-      "protocol": "chat_completions",
-      "endpoint": "https://api.openai.com/v1/chat/completions",
-      "model": "gpt-4o-audio-preview",
-      "keyEnv": "OPENAI_API_KEY",
-      "timeoutMs": 120000
-    }
-  }
-}
-```
-
-### 3. Submitting Natural Language Production Prompts
-
-Submit conversational intent either via `session.chat` or by sending raw natural-language text directly into `stdin`:
-
-```json
-{
-  "id": "prompt-1",
-  "op": "session.chat",
-  "args": {
-    "text": "Add a crisp, syncopated hi-hat pattern on sixteenth notes with velocity variation, then add a resonant low-pass filter to the lead synth.",
-    "maxRounds": 8,
-    "maxOperations": 50,
-    "maximumWallTimeMs": 120000,
-    "maximumCpuTimeMs": 30000,
-    "maximumResidentMiB": 2048
-  }
-}
-```
-
-### 4. Agent Job Controls
-
-- **`agent.inspect`**: Inspect active plan, tool invocation history, step progress, and resource utilization.
-- **`agent.plan.set`**: Allows the agent to publish structured production plans (`goal`, `steps`, `decisions`).
-- **`agent.context.compact`**: Compresses long conversation trajectories into structured summaries, avoiding token limits.
-- **`agent.cancel`**: Immediately halts active inference or execution without corrupting song state.
-- **`agent.resume`**: Resumes paused jobs with updated resource budgets.
-- **`agent.finish`**: Closes a job with verifiable tool-call evidence (`evidence: ["call-id-1", "call-id-2"]`).
-
----
-
-## 🎹 Studio Capabilities Matrix
+## 📋 Studio Capabilities Reference
 
 HEAV3NS-MUSE exposes **over 60 high-level, typed C++ DAW operations** covering the complete LMMS feature set:
 
@@ -451,6 +523,155 @@ HEAV3NS-MUSE exposes **over 60 high-level, typed C++ DAW operations** covering t
 | `audio.analyze` | `path`, `maximumSeconds` | No | Measure peak amplitude, RMS power, clipping count, and silence. |
 | `audio.listen` | `path`, `prompt` | No | Submit rendered audio to multimodal audio provider for critique. |
 
+[⬆ Back to Top](#-heav3ns-muse)
+
+---
+
+## 📡 Wire Protocol & IPC Reference
+
+HEAV3NS-MUSE communicates over `stdin` and `stdout` using newline-delimited JSON (JSON-Lines). Each line is an independent JSON object up to 1 MiB in size.
+
+### Request Envelope
+
+```json
+{
+  "id": "req-001",
+  "op": "track.add",
+  "args": {
+    "type": "instrument",
+    "name": "Sub Bass"
+  },
+  "expectedRevision": 4
+}
+```
+
+- **`id`** *(string, required)*: Unique request identifier (1 to 128 characters). Used for correlation and replay deduplication.
+- **`op`** *(string, required)*: The capability or session operation name.
+- **`args`** *(object, required)*: Key-value parameters corresponding to the operation schema.
+- **`expectedRevision`** *(integer, optional)*: Optimistic concurrency lock. Rejects the operation if the project revision has advanced.
+
+### Response Envelope
+
+```json
+{
+  "id": "req-001",
+  "ok": true,
+  "revision": 5,
+  "result": {
+    "track": 1,
+    "name": "Sub Bass"
+  }
+}
+```
+
+If an operation fails, `ok` is `false`, and an explanatory `error` message is returned:
+
+```json
+{
+  "id": "req-001",
+  "ok": false,
+  "revision": 4,
+  "error": "Track index 8 is out of bounds (current project has 2 tracks)"
+}
+```
+
+### Real-Time Runtime Events
+
+The runtime pushes unsolicited notification frames during session lifecycle changes:
+
+```json
+{"event":"ready","session":"/path/to/session","revision":0,"applicationType":"QCoreApplication","transport":{"playing":false,"position":0}}
+{"event":"agent","job":{"id":"job-8f2a","status":"running","operations":12,"elapsedMs":1450}}
+{"event":"shutdown","ok":true,"reason":"process interrupt"}
+```
+
+### Idempotency & Replay Protection
+
+Every mutating request is fingerprinted via SHA-256 and committed with its receipt into `<session-dir>/receipts/<uuid>.json`. Re-submitting an identical `id` returns the cached response with `"replayed": true`, preventing duplicate note insertions or double-track additions during network retries.
+
+[⬆ Back to Top](#-heav3ns-muse)
+
+---
+
+## 🤖 Conversational Agent & Reasoning Loops
+
+HEAV3NS-MUSE includes native HTTP adapters for OpenAI-compatible and Anthropic inference APIs, allowing local models (via Ollama, vLLM, LM Studio) or frontier cloud models to act directly as music producers.
+
+### 1. Configure the Reasoning Provider
+
+Send `session.provider.set` to configure your language model:
+
+```json
+{
+  "id": "set-llm",
+  "op": "session.provider.set",
+  "args": {
+    "role": "reasoning",
+    "configuration": {
+      "protocol": "chat_completions",
+      "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+      "model": "qwen2.5-coder:32b",
+      "keyEnv": "OLLAMA_API_KEY",
+      "timeoutMs": 60000
+    }
+  }
+}
+```
+
+> [!NOTE]
+> For security, API keys are never stored in plain text within project manifests. The `keyEnv` field specifies the name of the environment variable containing the bearer token.
+
+### 2. Configure the Perceptual Audio Provider
+
+Configure an audio multimodal model to critique rendered compositions:
+
+```json
+{
+  "id": "set-audio",
+  "op": "session.provider.set",
+  "args": {
+    "role": "audio",
+    "configuration": {
+      "protocol": "chat_completions",
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "model": "gpt-4o-audio-preview",
+      "keyEnv": "OPENAI_API_KEY",
+      "timeoutMs": 120000
+    }
+  }
+}
+```
+
+### 3. Submitting Natural Language Production Prompts
+
+Submit conversational intent either via `session.chat` or by sending raw natural-language text directly into `stdin`:
+
+```json
+{
+  "id": "prompt-1",
+  "op": "session.chat",
+  "args": {
+    "text": "Add a crisp, syncopated hi-hat pattern on sixteenth notes with velocity variation, then add a resonant low-pass filter to the lead synth.",
+    "maxRounds": 8,
+    "maxOperations": 50,
+    "maximumWallTimeMs": 120000,
+    "maximumCpuTimeMs": 30000,
+    "maximumResidentMiB": 2048
+  }
+}
+```
+
+### 4. Agent Job Controls
+
+- **`agent.inspect`**: Inspect active plan, tool invocation history, step progress, and resource utilization.
+- **`agent.plan.set`**: Allows the agent to publish structured production plans (`goal`, `steps`, `decisions`).
+- **`agent.context.compact`**: Compresses long conversation trajectories into structured summaries, avoiding token limits.
+- **`agent.cancel`**: Immediately halts active inference or execution without corrupting song state.
+- **`agent.resume`**: Resumes paused jobs with updated resource budgets.
+- **`agent.finish`**: Closes a job with verifiable tool-call evidence (`evidence: ["call-id-1", "call-id-2"]`).
+
+[⬆ Back to Top](#-heav3ns-muse)
+
 ---
 
 ## 🔊 Audio & MIDI Hardware Backends
@@ -481,9 +702,11 @@ Discover and switch drivers at runtime without restarting the process:
 {"id":"switch-midi","op":"midi.backend.select","args":{"name":"alsaseq"}}
 ```
 
+[⬆ Back to Top](#-heav3ns-muse)
+
 ---
 
-## 🛡️ Reliability, Persistence & Directory Anatomy
+## 🛡️ Storage Architecture & Crash Resilience
 
 Every studio session directory is a self-contained, fully auditable package.
 
@@ -505,13 +728,15 @@ my-studio-session/
 
 ### Crash Recovery Guarantees
 
-- **Single-Writer Protection**: Multiple processes cannot concurrently open the same session directory.
-- **Atomic Two-Phase Commits**: Checkpoints are written to temporary files and verified before renaming. The commit point is a single atomic update to `manifest.json`.
-- **Automatic Garbage Collection**: Uncommitted temporary files or abandoned render runs are safely scrubbed upon session restart.
+- **Single-Writer Mutual Exclusion**: A POSIX/Win32 file lock (`.lock`) guarantees that multiple concurrent agents or IDE instances cannot corrupt the same project directory.
+- **Atomic Two-Phase Commits**: New `.mmp` song checkpoints are written to temporary staging files, verified for well-formedness, and committed only when `manifest.json` is atomically swapped.
+- **Orphan File Scrubbing**: Crashes mid-render leave temporary files that are safely detected and garbage-collected upon the next studio startup without user intervention.
+
+[⬆ Back to Top](#-heav3ns-muse)
 
 ---
 
-## 🧪 Testing & Verification
+## 🧪 Testing & Verification Suites
 
 HEAV3NS-MUSE includes a rigorous test suite combining unit tests and end-to-end process-level integration harnesses.
 
@@ -537,11 +762,53 @@ Tests external plugin discovery, parameter modulation, and Carla patchbay connec
 python tests/studio_vst_process_test.py --lmms ./build/lmms --output ./build/vst-evidence
 ```
 
+[⬆ Back to Top](#-heav3ns-muse)
+
+---
+
+## ❓ Troubleshooting & FAQ
+
+<details open>
+<summary><b>1. Why is rendered audio completely silent?</b></summary>
+
+By default, launching `lmms studio <dir>` boots with **dummy** audio/MIDI drivers to allow fast, headless offline rendering. If you want live sound during playback or real-time recording, you must supply `--studio-live` and an active backend, e.g.:
+```sh
+./build/lmms studio ./my-session --studio-live --studio-audio portaudio
+```
+</details>
+
+<details>
+<summary><b>2. How do I fix "Project revision changed; inspect current state before editing"?</b></summary>
+
+This error occurs when you provide an `expectedRevision` argument that does not match the current session revision. Run `project.inspect` or inspect the last response's `revision` field to re-synchronize your client before submitting new edits.
+</details>
+
+<details>
+<summary><b>3. Why does the agent stop with "Resident memory budget exceeded"?</b></summary>
+
+HEAV3NS-MUSE enforces safety ceilings against runaway memory leaks during sustained AI composition sessions. You can increase the limit by passing a larger `maximumResidentMiB` parameter in your `session.chat` or `agent.resume` call (e.g. `maximumResidentMiB: 4096`).
+</details>
+
+<details>
+<summary><b>4. How do I load my own WAV/FLAC drum samples?</b></summary>
+
+Use `sample.load` specifying the absolute or asset-relative path:
+```json
+{"id":"load-sample","op":"sample.load","args":{"track":0,"clip":0,"path":"/path/to/my-sample.wav"}}
+```
+</details>
+
+<details>
+<summary><b>5. Can I use third-party VST or LV2 plugins headlessly?</b></summary>
+
+Yes! Ensure Carla and LV2 dependencies are installed. You can scan plugins with `host.catalog.start`, add them via `host.plugin.add`, and automate their knobs using `host.parameter.set`.
+</details>
+
+[⬆ Back to Top](#-heav3ns-muse)
+
 ---
 
 ## 🗺️ Implementation Status & Roadmap
-
-HEAV3NS-MUSE is an active development fork. The table below outlines completion progress across core development gates:
 
 | Subsystem / Gate | Implementation Status | Verification Evidence |
 | :--- | :---: | :--- |
@@ -560,9 +827,9 @@ For detailed engineering logs, architectural decisions, and open gates, see [Eng
 
 ---
 
-## 🤝 Contributing
+## 🤝 Contributing & Community
 
-We welcome contributions from audio software engineers, AI researchers, and digital musicians!
+We welcome contributions from audio engineers, AI researchers, and digital musicians!
 
 1. **Fork & Branch**: Create a feature branch (`git checkout -b feature/audio-capability`).
 2. **Coding Standards**: C++20 standard, adhering to `.clang-format` and `.clang-tidy`.
