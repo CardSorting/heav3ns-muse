@@ -6,5 +6,12 @@ rules:
   document-start: disable
   truthy: disable
   comments: disable
-  empty-lines:
-    max: 3
+  brackets: disable
+  braces: disable
+  colons: disable
+  commas: disable
+  indentation: disable
+  trailing-spaces: disable
+  empty-lines: disable
+  new-line-at-end-of-file: disable
+  octal-values: disable

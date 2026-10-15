@@ -186,7 +186,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [ x86_64, arm64 ]
+        arch: [x86_64, arm64]
         include:
           - arch: x86_64
             os: macos-15-intel
