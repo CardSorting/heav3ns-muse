@@ -76,6 +76,7 @@ public:
 	bool hasPluginFailure() const { return m_remotePluginFailed; }
 	bool hasDspFailure() const;
 	bool hasExecutionFailure() const { return m_executionFailed; }
+	bool hasExecutionTimeout() const { return m_executionTimedOut; }
 	bool hasEncodingFailure() const { return m_encodingFailed; }
 	bool wasAborted() const { return m_abort; }
 	void setExecutionTimeout(int timeoutMs) { m_executionTimeout = timeoutMs > 0 ? timeoutMs : 0; }
@@ -113,6 +114,7 @@ private:
 	std::uint64_t m_dspFailureCount;
 	std::atomic_bool m_dspFailed{false};
 	std::atomic_bool m_executionFailed{false};
+	std::atomic_bool m_executionTimedOut{false};
 	std::atomic_bool m_encodingFailed{false};
 	std::atomic<std::uint64_t> m_remoteRenderContext{0};
 	std::atomic_int m_executionTimeout{0};

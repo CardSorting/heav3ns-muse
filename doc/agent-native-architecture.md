@@ -12987,3 +12987,68 @@ bc741e610. These changes add no operations, resource formats or instruments.
 A fresh complete rebuild/run remains required; 180/193 is the latest complete
 result at this observation. Other platforms, hardware, sanitizers, latency and
 real-provider musical acceptance remain outside these observations.
+
+### Scoped macOS startup and integrated verification (2026-10-15)
+
+The next complete Debug rebuild succeeded. Its full 193-test run passed **192
+and failed one in 239.62 seconds**: every native unit executable and the render
+process harness passed, while the complete studio process harness reached a
+10-second fixture inference timeout and paused its job. This failed integration
+observation is retained; it is not classified as successful agent completion.
+An isolated real HTTP exchange succeeded both before and after the subsequent
+startup change, so those observations alone do not establish the timeout's cause.
+
+macOS Core Foundation dispatcher selection is now scoped to QCoreApplication
+construction. The inherited environment selector is restored immediately, keeping
+later Qt workers under their original configuration while the main application
+retains its native run-loop integration. The CoreMIDI fixture uses the same
+startup contract. Both complete CoreMIDI executions passed (2.32 and 1.06 seconds),
+and the complete native studio process harness then passed **two consecutive
+executions in 87.93 and 86.97 seconds**. Combined verification took 178.29 seconds.
+The local HTTP boundary also completed through an actual executable and local
+server after this change. No external reasoning provider or musical judgment
+was validated by these deterministic fixtures.
+
+A separate local application install/bundle and configuration preserved the
+preexisting desktop instance. Its CLI rendered 173312 stereo frames at 44100 Hz,
+16-bit PCM, with peak 0.3989868 and RMS 0.1117510; independent decoding confirmed
+nonzero finite audio and exit zero. Its live PortAudio output ran at 44100 Hz /
+256-frame engine periods with no input channels, advanced 217 native ticks over
+the observed playback window and retained zero DSP failures. Acoustic audibility
+was not independently observed. The updated desktop executable reached its
+application event loop and remains available through that isolated local bundle;
+widget interaction and portable distribution packaging were not certified.
+
+The native capability schema remains byte-identical to the frozen baseline.
+A complete combined rerun is required to replace the 192/193 observation; targeted
+and repeated passes above are not added together to invent a full-suite result.
+
+### Cooperative deadlines and contiguous SoundFont measurement (2026-10-15)
+
+The following complete run passed **191/193 in 197.22 seconds**. The studio
+process harness passed in 109.23 seconds, but two intermittent native failures
+remained: the SoundFont old-note/rebuilt-synth pitch assertion and the remote
+host's cooperative timeout classification. These replace neither earlier
+failures nor their passing targeted repetitions.
+
+The SoundFont fixture manually advances a single-stream synth while the native
+audio device remains active. It previously allowed that background device to
+consume unobserved periods between measured blocks. Its measurement helper now
+holds the existing native model-change guard across the complete contiguous PCM
+window. The strict pitch/energy checks remain; no synthesis or tolerance changed.
+
+The native watcher can observe export-deadline expiry and unwind a blocked host
+during device setup before the outer Qt timer/elapsed check classifies it.
+ProjectRenderer now retains that authoritative context-deadline observation
+before failed setup retires the context. Studio gives that timeout its existing
+cooperative-timeout result instead of the generic remote-plugin failure. The
+context ID and deadline remain read together under their mutex; there is no
+new timed bypass, protocol field or operation. Cancellation and ordinary native
+host failures retain their existing tests and output preservation requirements.
+
+After rebuilding, both complete StudioRuntimeTest and RemotePluginTest passed
+five consecutive executions apiece in a combined 81.41 seconds. This validates
+the changed boundaries with their strict existing assertions; another complete
+combined run remains required. Desktop/render/live-output observations above
+remain dated evidence rather than continuous verification of subsequently built
+binaries. The feature freeze and unchanged native capability schema remain in force.

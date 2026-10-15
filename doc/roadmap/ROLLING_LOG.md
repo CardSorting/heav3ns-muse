@@ -295,3 +295,28 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
 - The [engineering record](../agent-native-architecture.md#remaining-native-io-and-phase-fixes-2026-10-15)
   retains earlier failures and targeted limits. The latest complete result remains
   180/193 pending a fresh complete rebuild/run; no roadmap gate advances.
+
+### 2026-10-15 — Native units pass; integrated startup verification
+
+- The next full rebuild/run passed **192/193 in 239.62 seconds**. Every native
+  unit executable passed; a native process-harness inference timeout remained.
+- Scoped the macOS dispatcher selector to application construction. Both full
+  CoreMIDI repetitions and two complete studio process harness repetitions passed.
+- The separate updated local bundle rendered independently decoded PCM, passed
+  a live PortAudio/clock/DSP check and reached the desktop application event loop.
+- The [engineering record](../agent-native-architecture.md#scoped-macos-startup-and-integrated-verification-2026-10-15)
+  preserves the timeout, successful small HTTP probes and verification limits.
+  A fresh combined result remains required; no capability or roadmap gate changed.
+
+### 2026-10-15 — Remaining timing failures addressed
+
+- A subsequent full run passed **191/193 in 197.22 seconds**; the process harness
+  passed, while native SoundFont sampling and render-timeout reporting exposed
+  intermittent failures.
+- The manual SoundFont PCM window now owns the native engine clock. The renderer
+  retains authoritative deadline expiry through failed setup; strict pitch,
+  cancellation, timeout and destination-preservation assertions remain.
+- Both complete runtime and remote-host suites passed five repetitions each in
+  81.41 seconds. The [engineering record](../agent-native-architecture.md#cooperative-deadlines-and-contiguous-soundfont-measurement-2026-10-15)
+  retains the failed full run and limits. A new complete run remains required;
+  no feature or roadmap gate advanced.

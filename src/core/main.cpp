@@ -397,14 +397,23 @@ int main( int argc, char * * argv )
 #endif
 
 #ifdef LMMS_BUILD_APPLE
-	// CoreMIDI notifications use the creator's CFRunLoop. Keep the headless
-	// QCoreApplication host integrated with that native loop as well.
+	// CoreMIDI notifications use the creator's CFRunLoop. Select the native
+	// loop for this application, retaining normal Qt defaults for later workers.
+	const auto previousCoreDispatcher = qgetenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION");
+	const bool hadCoreDispatcher = qEnvironmentVariableIsSet("QT_EVENT_DISPATCHER_CORE_FOUNDATION");
 	if (coreOnly) { qputenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION", "1"); }
 #endif
 
 	QCoreApplication * app = coreOnly ?
 			new QCoreApplication( argc, argv ) :
 					new gui::MainApplication(argc, argv);
+#ifdef LMMS_BUILD_APPLE
+	if (coreOnly)
+	{
+		if (hadCoreDispatcher) { qputenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION", previousCoreDispatcher); }
+		else { qunsetenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION"); }
+	}
+#endif
 	// Static/plugin teardown can also print diagnostics after main returns.
 	StudioProtocolOutput protocol(false);
 	if (studioActionRequested)

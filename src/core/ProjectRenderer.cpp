@@ -174,11 +174,15 @@ bool ProjectRenderer::startProcessing()
 	{
 		// Signal handlers can fail after the engine has taken ownership.
 		if (Engine::audioEngine()->audioDev() == m_fileDev) { m_unattachedFileDev.release(); }
+		m_executionTimedOut = RemotePlugin::renderContextDeadlineExpired(m_remoteRenderContext);
 		m_executionFailed = true; return false;
 	}
 	m_unattachedFileDev.release();
 	m_encodingFailed = m_encodingFailed || m_fileDev->hasWriteError();
 	if (RemotePlugin::renderContextCancelled(m_remoteRenderContext)) { m_abort = true; }
+	// Capture the authoritative budget after cancellation observes it, before
+	// failed setup retires the context or a Qt timer can lose the reporting race.
+	m_executionTimedOut = RemotePlugin::renderContextDeadlineExpired(m_remoteRenderContext);
 	m_remotePluginFailed = RemotePlugin::failureCount() != m_remotePluginFailureCount;
 	if (m_abort || m_remotePluginFailed || m_encodingFailed) { return false; }
 	m_started = true;
@@ -203,6 +207,7 @@ void ProjectRenderer::run()
 	const auto checkFailures = [&]
 	{
 		if (RemotePlugin::renderContextCancelled(m_remoteRenderContext)) { m_abort = true; }
+		m_executionTimedOut = m_executionTimedOut || RemotePlugin::renderContextDeadlineExpired(m_remoteRenderContext);
 		m_remotePluginFailed = m_remotePluginFailed || RemotePlugin::failureCount() != m_remotePluginFailureCount;
 		const auto dsp = Engine::audioEngine()->dspStatus();
 		m_dspFailed = m_dspFailed || dsp.failure != AudioEngine::DspFailure::None || dsp.failures != m_dspFailureCount;

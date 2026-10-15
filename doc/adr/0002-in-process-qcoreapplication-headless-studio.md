@@ -45,7 +45,9 @@ unchanged.
 
 CoreMIDI setup notifications use the run loop where its process client was
 created. The macOS core-only executable selects Qt's Core Foundation dispatcher
-before application construction. This integrates native setup changes while
+before application construction, then restores the inherited selector before
+creating later Qt workers. The main dispatcher remains integrated with the
+native run loop. This integrates native setup changes while
 retaining the existing Qt owner-thread delivery and coalesced device refresh.
 The native CoreMIDI fixture uses the same startup choice and passed virtual
 source discovery, input delivery, retirement cleanup and backend reconstruction.

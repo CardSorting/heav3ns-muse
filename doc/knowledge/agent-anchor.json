@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-15T23:03:02Z",
+  "compiled_at": "2026-10-15T23:19:58Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
@@ -308,6 +308,7 @@
         "include/Lv2Options.h",
         "tests/CMakeLists.txt",
         "src/core/RemotePlugin.cpp",
+        "include/RemotePlugin.h",
         "tests/src/core/StudioShutdownTest.cpp",
         "tests/src/core/StudioProtocolOutputTest.cpp",
         "tests/src/core/RemotePluginTest.cpp"
@@ -368,6 +369,9 @@
       "sources_patterns": [
         "src/core/StudioAudio.*",
         "include/StudioAudio.h",
+        "src/core/ProjectRenderer.cpp",
+        "include/ProjectRenderer.h",
+        "tests/src/core/StudioRuntimeTest.cpp",
         "plugins/OpulenZ/OpulenZ.cpp",
         "src/core/AudioEngineWorkerThread.cpp",
         "include/AudioEngineWorkerThread.h",

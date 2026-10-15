@@ -283,7 +283,10 @@ private slots:
 int main(int argc, char** argv)
 {
 	// Match the production macOS QCoreApplication startup contract.
-	qputenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION", "1");
-	QCoreApplication application(argc, argv); MidiAppleTest test; return QTest::qExec(&test, argc, argv);
+	const auto previous = qgetenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION");
+	const bool present = qEnvironmentVariableIsSet("QT_EVENT_DISPATCHER_CORE_FOUNDATION");
+	qputenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION", "1"); QCoreApplication application(argc, argv);
+	if (present) { qputenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION", previous); } else { qunsetenv("QT_EVENT_DISPATCHER_CORE_FOUNDATION"); }
+	MidiAppleTest test; return QTest::qExec(&test, argc, argv);
 }
 #include "MidiAppleTest.moc"

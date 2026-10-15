@@ -285,7 +285,7 @@ QJsonObject StudioAudio::render(const QJsonObject& a, const Cancelled& cancelled
 	renderer.wait();
 	if (cancellationFailure) { std::rethrow_exception(cancellationFailure); }
 	ownership.check();
-	if (timedOut || elapsed.elapsed() >= timeout) { throw std::runtime_error("Native render exceeded its cooperative timeout"); }
+	if (timedOut || renderer.hasExecutionTimeout() || elapsed.elapsed() >= timeout) { throw std::runtime_error("Native render exceeded its cooperative timeout"); }
 	if (aborted) { throw std::runtime_error("Native render cancelled"); }
 	checkCancellation(cancelled);
 	ownership.check();

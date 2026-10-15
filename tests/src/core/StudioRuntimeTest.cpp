@@ -285,6 +285,9 @@ class StudioRuntimeTest : public QObject
 
 	std::array<double, 3> measureNativeSoundFont(Instrument* native, std::vector<SampleFrame>& output)
 	{
+		// This fixture advances the synth manually. Keep the native audio device
+		// from consuming unobserved periods between the measured PCM blocks.
+		const auto changes = Engine::audioEngine()->requestChangesGuard();
 		double left = 0, right = 0;
 		std::vector<float> mono;
 		for (int block = 0; block < 16; ++block)
@@ -1329,7 +1332,7 @@ private slots:
 		old.reset();
 		const auto preserved = measureNativeSoundFont(native, output);
 		QVERIFY(std::isfinite(preserved[0]) && preserved[0] > initial[0] / 2);
-		QVERIFY(std::abs(preserved[2] - 440) < 4);
+		QVERIFY2(std::abs(preserved[2] - 440) < 4, qPrintable(QString("Preserved native pitch: %1 Hz").arg(preserved[2], 0, 'g', 9)));
 		native->deleteNotePluginData(&fresh);
 		native->deleteNotePluginData(&fresh);
 		for (int block = 0; block < 24; ++block) { native->play(output.data()); }

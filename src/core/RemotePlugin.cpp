@@ -162,15 +162,21 @@ void RemotePlugin::endRenderContext(std::uint64_t context)
 	}
 }
 
+bool RemotePlugin::renderContextDeadlineExpired(std::uint64_t context)
+{
+	if (!context) { return false; }
+	// Read the ID and deadline together; a retired request cannot borrow a
+	// replacement export's budget.
+	const auto lock = std::lock_guard{renderContextMutex};
+	const auto deadline = renderContextDeadline.load();
+	return context == activeRenderContext.load() && deadline && monotonicMilliseconds() >= deadline;
+}
+
 bool RemotePlugin::renderContextCancelled(std::uint64_t context)
 {
 	if (!context) { return false; }
 	if (context <= cancelledRenderContext.load()) { return true; }
-	// Read the ID and deadline together. A watcher checking an older request
-	// must not combine a retired deadline with a newly started export's ID.
-	const auto lock = std::lock_guard{renderContextMutex};
-	const auto deadline = renderContextDeadline.load();
-	if (context == activeRenderContext.load() && deadline && monotonicMilliseconds() >= deadline)
+	if (renderContextDeadlineExpired(context))
 	{
 		cancelRenderContext(context);
 		return true;

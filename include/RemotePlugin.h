@@ -98,6 +98,7 @@ public:
 	static void finishRenderExecution(std::uint64_t context);
 	static void endRenderContext(std::uint64_t context);
 	static bool renderContextCancelled(std::uint64_t context);
+	static bool renderContextDeadlineExpired(std::uint64_t context);
 	static bool hasActiveRenderContext();
 	static bool hasRunningRenderExecution();
 
