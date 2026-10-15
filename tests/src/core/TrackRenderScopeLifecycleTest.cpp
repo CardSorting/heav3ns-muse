@@ -1,3 +1,4 @@
+#include "NativeSongTestAccess.h"
 /* Native stem admission callback ownership. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QFile>
@@ -84,7 +85,7 @@ class TrackRenderScopeLifecycleTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); Engine::getSong()->setLoadOnLaunch(false); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stopExport(); QVERIFY(Engine::audioEngine()->restoreAudioDevice()); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setProjectFileName(""); Engine::getSong()->setExportLoop(false); Engine::getSong()->setRenderBetweenMarkers(false); Engine::getSong()->setLoopRenderCount(1); QVERIFY(clearFlags()); }
+	void init() { Engine::getSong()->stopExport(); QVERIFY(Engine::audioEngine()->restoreAudioDevice()); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); Engine::getSong()->setExportLoop(false); Engine::getSong()->setRenderBetweenMarkers(false); Engine::getSong()->setLoopRenderCount(1); QVERIFY(clearFlags()); }
 	void cleanup() { Engine::getSong()->stopExport(); QVERIFY(Engine::audioEngine()->restoreAudioDevice()); Engine::getSong()->clearProject(); QVERIFY(clearFlags()); }
 	void nativeSelectionRestoresFlagsWithoutWritingMuteOrSolo_data()
 	{ QTest::addColumn<bool>("pattern"); QTest::addColumn<bool>("instrument"); QTest::newRow("song-sample") << false << false; QTest::newRow("song-instrument") << false << true; QTest::newRow("pattern-sample") << true << false; QTest::newRow("pattern-instrument") << true << true; }
@@ -108,7 +109,7 @@ private slots:
 	void returnedCallbacksCannotPublishChangedNativeMembership()
 	{
 		QFETCH(int, change); auto song = Engine::getSong(); auto chosen = new SampleTrack(song); const QPointer<SampleTrack> other(new SampleTrack(song)); std::uint64_t context = 0; const auto release = qScopeGuard([&] { if (context) { RemotePlugin::endRenderContext(context); } if (other && std::find(song->tracks().begin(), song->tracks().end(), other.data()) == song->tracks().end()) { delete other.data(); } }); bool fired = false;
-		{ FileResourceIO::Scope work([&] { if (!fired) { fired = true; if (change == 0) { song->moveTrack(other.data(), 0); } if (change == 1) { new SampleTrack(song); } if (change == 2) { song->removeTrack(other.data()); } if (change == 3) { song->setProjectFileName("changed-during-stem-admission.mmp"); } if (change == 4) { context = RemotePlugin::beginRenderContext(); } } return false; }); QVERIFY_EXCEPTION_THROWN(TrackRenderScope scope(chosen), std::runtime_error); }
+		{ FileResourceIO::Scope work([&] { if (!fired) { fired = true; if (change == 0) { song->moveTrack(other.data(), 0); } if (change == 1) { new SampleTrack(song); } if (change == 2) { song->removeTrack(other.data()); } if (change == 3) { NativeSongTestAccess::setProjectFileName(song, "changed-during-stem-admission.mmp"); } if (change == 4) { context = RemotePlugin::beginRenderContext(); } } return false; }); QVERIFY_EXCEPTION_THROWN(TrackRenderScope scope(chosen), std::runtime_error); }
 		QVERIFY(fired); QVERIFY(clearFlags()); modelOwnershipReleased();
 	}
 	void periodicPollingNeverResumesABorrowedNativeTrackIterator_data()
@@ -145,7 +146,7 @@ private slots:
 	}
 	void foreignContainerCannotBecomeAStemSelection()
 	{
-		TrackContainer foreign; auto chosen = new SampleTrack(&foreign); new SampleTrack(Engine::getSong()); QVERIFY_EXCEPTION_THROWN(TrackRenderScope scope(chosen), std::invalid_argument); QVERIFY(clearFlags());
+		struct ForeignContainer : TrackContainer { QString nodeName() const override { return classNodeName(); } }; ForeignContainer foreign; auto chosen = new SampleTrack(&foreign); new SampleTrack(Engine::getSong()); QVERIFY_EXCEPTION_THROWN(TrackRenderScope scope(chosen), std::invalid_argument); QVERIFY(clearFlags());
 	}
 	void foreignThreadRefusesBeforeNativeTrackAdmission()
 	{
@@ -170,7 +171,7 @@ private slots:
 	{ QTest::addColumn<int>("change"); QTest::newRow("filename") << 0; QTest::newRow("standard-exception") << 1; QTest::newRow("nonstandard-exception") << 2; }
 	void effectiveMuteGetterChecksReturnedNativeContext()
 	{
-		QFETCH(int, change); auto chosen = new SampleTrack(Engine::getSong()); ReadController controller; chosen->getMutedModel()->setControllerConnection(new ControllerConnection(&controller)); bool fired = false; controller.callback = [&] { fired = true; if (change == 0) { Engine::getSong()->setProjectFileName("effective-getter-changed-project.mmp"); } if (change == 1) { throw std::runtime_error("Stem eligibility getter"); } if (change == 2) { throw 79; } }; const auto disarm = qScopeGuard([&] { controller.callback = {}; }); if (change == 2) { QVERIFY_EXCEPTION_THROWN(TrackRenderScope scope(chosen), int); } else { QVERIFY_EXCEPTION_THROWN(TrackRenderScope scope(chosen), std::runtime_error); } QVERIFY(fired); QVERIFY(clearFlags()); modelOwnershipReleased();
+		QFETCH(int, change); auto chosen = new SampleTrack(Engine::getSong()); ReadController controller; chosen->getMutedModel()->setControllerConnection(new ControllerConnection(&controller)); bool fired = false; controller.callback = [&] { fired = true; if (change == 0) { NativeSongTestAccess::setProjectFileName(Engine::getSong(), "effective-getter-changed-project.mmp"); } if (change == 1) { throw std::runtime_error("Stem eligibility getter"); } if (change == 2) { throw 79; } }; const auto disarm = qScopeGuard([&] { controller.callback = {}; }); if (change == 2) { QVERIFY_EXCEPTION_THROWN(TrackRenderScope scope(chosen), int); } else { QVERIFY_EXCEPTION_THROWN(TrackRenderScope scope(chosen), std::runtime_error); } QVERIFY(fired); QVERIFY(clearFlags()); modelOwnershipReleased();
 	}
 	void nativeRenderRefusesStaleStemAndThenRendersAfterExplicitRepair_data()
 	{ QTest::addColumn<bool>("selected"); QTest::newRow("selected-retired") << true; QTest::newRow("excluded-retired") << false; }

@@ -1,3 +1,4 @@
+#include "NativeSongTestAccess.h"
 /* Native sound-shaping waveform ownership and repair. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QFile>
@@ -85,7 +86,7 @@ class EnvelopeWaveResourceTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
+	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void cleanup() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void nativeGroupsRetainMissingPathsControlsAndMarkers_data()
 	{ QTest::addColumn<QString>("target"); QTest::addColumn<int>("mode"); for (const auto& target : {QString("volume"), QString("cutoff"), QString("resonance")}) { for (int mode = 0; mode < 3; ++mode) { QTest::newRow(qPrintable(target + QString::number(mode))) << target << mode; } } }
@@ -148,7 +149,7 @@ private slots:
 	{ QTest::addColumn<int>("kind"); QTest::newRow("copied-path") << 0; QTest::newRow("control-change") << 1; QTest::newRow("project-path") << 2; QTest::newRow("project-replacement") << 3; }
 	void borrowedInputAndRootChangesAreObserved()
 	{
-		QFETCH(int, kind); QTemporaryDir source; QString path = source.filePath("wave.wav"); QVERIFY(wave(path)); const QPointer<InstrumentTrack> track(new InstrumentTrack(Engine::getSong())); const QPointer<EnvelopeAndLfoParameters> owner(parameters(track.data(), "volume")); auto active = owner.data(); bool changed = false; QString error; { FileResourceIO::Scope work([&] { if (!changed) { changed = true; if (kind == 0) { path = source.filePath("other.wav"); } if (kind == 1) { owner->getLfoAmountModel().setValue(.125f); } if (kind == 2) { Engine::getSong()->setProjectFileName(source.filePath("other.mmp")); } if (kind == 3) { Engine::getSong()->createEmptyProject(); } } return false; }); if (kind == 0) { QVERIFY(active->setLfoUserWave(path, error)); } else { QVERIFY_EXCEPTION_THROWN(active->setLfoUserWave(path, error), std::runtime_error); } } QVERIFY(changed); if (kind == 0) { QCOMPARE(owner->getLfoUserWave()->size(), std::size_t(64)); }
+		QFETCH(int, kind); QTemporaryDir source; QString path = source.filePath("wave.wav"); QVERIFY(wave(path)); const QPointer<InstrumentTrack> track(new InstrumentTrack(Engine::getSong())); const QPointer<EnvelopeAndLfoParameters> owner(parameters(track.data(), "volume")); auto active = owner.data(); bool changed = false; QString error; { FileResourceIO::Scope work([&] { if (!changed) { changed = true; if (kind == 0) { path = source.filePath("other.wav"); } if (kind == 1) { owner->getLfoAmountModel().setValue(.125f); } if (kind == 2) { NativeSongTestAccess::setProjectFileName(Engine::getSong(), source.filePath("other.mmp")); } if (kind == 3) { Engine::getSong()->createEmptyProject(); } } return false; }); if (kind == 0) { QVERIFY(active->setLfoUserWave(path, error)); } else { QVERIFY_EXCEPTION_THROWN(active->setLfoUserWave(path, error), std::runtime_error); } } QVERIFY(changed); if (kind == 0) { QCOMPARE(owner->getLfoUserWave()->size(), std::size_t(64)); }
 	}
 	void cachedNativeModulationUsesPendingAndRepairedContent()
 	{

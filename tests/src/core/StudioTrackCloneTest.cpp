@@ -67,6 +67,7 @@ public:
 class CloneFaultContainer : public TrackContainer
 {
 public:
+	QString nodeName() const override { return classNodeName(); }
 	bool fail = true;
 	void updateAfterTrackAdd() override { if (fail) { throw std::runtime_error("fixture after track construction"); } }
 };

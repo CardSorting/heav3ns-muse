@@ -51,7 +51,7 @@ QByteArray vlq(std::uint32_t value)
 	while ((value >>= 7) != 0) { bytes.prepend(static_cast<char>((value & 0x7f) | 0x80)); }
 	return bytes;
 }
-QByteArray event(std::uint32_t delta, std::initializer_list<int> bytes) { return vlq(delta) + raw(bytes); }
+QByteArray fixtureEvent(std::uint32_t delta, std::initializer_list<int> bytes) { return vlq(delta) + raw(bytes); }
 QByteArray eot() { return raw({0, 0xff, 0x2f, 0}); }
 QByteArray chunk(const char* id, const QByteArray& bytes, bool riff = false)
 { return QByteArray(id, 4) + integer(bytes.size(), 4, riff) + bytes + ((riff && (bytes.size() & 1)) ? QByteArray(1, '\0') : QByteArray{}); }
@@ -68,11 +68,11 @@ QByteArray riff(const QByteArray& midi)
 	return QByteArray("RIFF") + integer(payload.size(), 4, true) + payload;
 }
 QByteArray melody(int key = 60)
-{ return event(0, {0x90, key, 64}) + event(48, {0x80, key, 0}) + eot(); }
+{ return fixtureEvent(0, {0x90, key, 64}) + fixtureEvent(48, {0x80, key, 0}) + eot(); }
 QByteArray dense(int count)
 {
 	QByteArray track;
-	for (int i = 0; i < count; ++i) { track += event(i ? 1 : 0, {0x90, 60, 64}) + event(2, {0x80, 60, 0}); }
+	for (int i = 0; i < count; ++i) { track += fixtureEvent(i ? 1 : 0, {0x90, 60, 64}) + fixtureEvent(2, {0x80, 60, 0}); }
 	return smf({track + eot()});
 }
 bool write(const QString& path, const QByteArray& bytes)
@@ -179,12 +179,12 @@ private slots:
 	{
 		QTest::addColumn<QByteArray>("input"); QTest::addColumn<QByteArray>("expected");
 		const auto plain = smf({melody()}); QTest::newRow("plain") << plain << plain;
-		const auto odd = smf({event(0, {0xff, 3, 1, 'X'}) + melody()});
+		const auto odd = smf({fixtureEvent(0, {0xff, 3, 1, 'X'}) + melody()});
 		QTest::newRow("riff-odd-payload-and-neighbor-chunks") << riff(odd) << odd;
-		const auto running = smf({event(0, {0x90, 60, 64}) + event(0, {64, 80})
-			+ event(48, {0x80, 60, 0}) + event(0, {64, 0}) + eot()});
+		const auto running = smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(0, {64, 80})
+			+ fixtureEvent(48, {0x80, 60, 0}) + fixtureEvent(0, {64, 0}) + eot()});
 		QTest::newRow("running-status") << running << running;
-		const auto sysex = smf({event(0, {0xf0, 2, 0x7e, 0xf7}) + event(0, {0xf7, 1, 0xf8}) + melody()});
+		const auto sysex = smf({fixtureEvent(0, {0xf0, 2, 0x7e, 0xf7}) + fixtureEvent(0, {0xf7, 1, 0xf8}) + melody()});
 		QTest::newRow("sysex-and-escape") << sysex << sysex;
 		auto extended = plain; extended.replace(4, 4, integer(8, 4)); extended.insert(14, "ab"); extended.insert(16, chunk("JUNK", "alien"));
 		QTest::newRow("extended-header-and-unknown-chunk") << extended << extended;
@@ -204,17 +204,17 @@ private slots:
 		wrong = plain; wrong.replace(12, 2, integer(0, 2)); QTest::newRow("zero-division") << wrong;
 		wrong = plain; wrong.replace(12, 2, integer(0x8001, 2)); QTest::newRow("invalid-smpte") << wrong;
 		wrong = plain; wrong.replace(18, 4, integer(0xffffffff, 4)); QTest::newRow("oversized-track") << wrong;
-		QTest::newRow("missing-eot") << smf({event(0, {0x90, 60, 64})});
+		QTest::newRow("missing-eot") << smf({fixtureEvent(0, {0x90, 60, 64})});
 		QTest::newRow("events-after-eot") << smf({eot() + melody()});
 		QTest::newRow("long-vlq") << smf({raw({0x81, 0x80, 0x80, 0x80, 0, 0x90, 60, 64}) + eot()});
 		QTest::newRow("truncated-note") << smf({raw({0, 0x90, 60})});
-		QTest::newRow("status-in-data") << smf({event(0, {0x90, 60, 0x80}) + eot()});
-		QTest::newRow("orphan-running-status") << smf({event(0, {60, 64}) + eot()});
-		QTest::newRow("running-status-after-meta") << smf({event(0, {0x90, 60, 64}) + event(1, {0xff, 1, 0}) + event(1, {60, 0}) + eot()});
-		QTest::newRow("oversized-meta") << smf({event(0, {0xff, 1, 127}) + eot()});
-		QTest::newRow("zero-tempo") << smf({event(0, {0xff, 0x51, 3, 0, 0, 0}) + melody()});
-		QTest::newRow("bad-time-signature") << smf({event(0, {0xff, 0x58, 4, 0, 2, 24, 8}) + melody()});
-		QTest::newRow("unrepresentable-denominator") << smf({event(0, {0xff, 0x58, 4, 4, 255, 24, 8}) + melody()});
+		QTest::newRow("status-in-data") << smf({fixtureEvent(0, {0x90, 60, 0x80}) + eot()});
+		QTest::newRow("orphan-running-status") << smf({fixtureEvent(0, {60, 64}) + eot()});
+		QTest::newRow("running-status-after-meta") << smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(1, {0xff, 1, 0}) + fixtureEvent(1, {60, 0}) + eot()});
+		QTest::newRow("oversized-meta") << smf({fixtureEvent(0, {0xff, 1, 127}) + eot()});
+		QTest::newRow("zero-tempo") << smf({fixtureEvent(0, {0xff, 0x51, 3, 0, 0, 0}) + melody()});
+		QTest::newRow("bad-time-signature") << smf({fixtureEvent(0, {0xff, 0x58, 4, 0, 2, 24, 8}) + melody()});
+		QTest::newRow("unrepresentable-denominator") << smf({fixtureEvent(0, {0xff, 0x58, 4, 4, 255, 24, 8}) + melody()});
 		wrong = riff(plain); wrong.chop(1); QTest::newRow("riff-truncated") << wrong;
 		QTest::newRow("riff-no-data") << (QByteArray("RIFF") + integer(4, 4, true) + "RMID");
 		const auto duplicate = QByteArray("RMID") + chunk("data", plain, true) + chunk("data", plain, true);
@@ -240,8 +240,8 @@ private slots:
 	void plainRiffAndRunningStatusCreateTheSameEditableNotes()
 	{
 		QFETCH(int, kind);
-		const auto track = event(0, {0x90, 60, 64}) + (kind == 2 ? event(0, {64, 80}) : event(0, {0x90, 64, 80}))
-			+ event(48, {0x80, 60, 0}) + (kind == 2 ? event(0, {64, 0}) : event(0, {0x80, 64, 0})) + eot();
+		const auto track = fixtureEvent(0, {0x90, 60, 64}) + (kind == 2 ? fixtureEvent(0, {64, 80}) : fixtureEvent(0, {0x90, 64, 80}))
+			+ fixtureEvent(48, {0x80, 60, 0}) + (kind == 2 ? fixtureEvent(0, {64, 0}) : fixtureEvent(0, {0x80, 64, 0})) + eot();
 		const auto midi = smf({track}); QVERIFY(import(kind == 1 ? riff(midi) : midi)); const auto tracks = instruments();
 		QCOMPARE(tracks.size(), std::size_t(1)); QCOMPARE(tracks[0]->numOfClips(), 1);
 		const auto clip = static_cast<MidiClip*>(tracks[0]->getClips()[0]); QCOMPARE(clip->notes().size(), std::size_t(2));
@@ -256,13 +256,13 @@ private slots:
 		QFETCH(bool, separateTracks); QByteArray midi;
 		if (separateTracks)
 		{
-			midi = smf({event(0, {0x90, 60, 64}) + event(12, {0xb0, 7, 20}) + event(84, {0x80, 60, 0}) + eot(),
-				event(0, {0x90, 64, 64}) + event(12, {0xb0, 7, 100}) + event(84, {0x80, 64, 0}) + eot()});
+			midi = smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(12, {0xb0, 7, 20}) + fixtureEvent(84, {0x80, 60, 0}) + eot(),
+				fixtureEvent(0, {0x90, 64, 64}) + fixtureEvent(12, {0xb0, 7, 100}) + fixtureEvent(84, {0x80, 64, 0}) + eot()});
 		}
 		else
 		{
-			midi = smf({event(0, {0x90, 60, 64}) + event(0, {0x91, 64, 64}) + event(12, {0xb0, 7, 20})
-				+ event(0, {0xb1, 7, 100}) + event(84, {0x80, 60, 0}) + event(0, {0x81, 64, 0}) + eot()});
+			midi = smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(0, {0x91, 64, 64}) + fixtureEvent(12, {0xb0, 7, 20})
+				+ fixtureEvent(0, {0xb1, 7, 100}) + fixtureEvent(84, {0x80, 60, 0}) + fixtureEvent(0, {0x81, 64, 0}) + eot()});
 		}
 		QVERIFY(import(midi)); const auto tracks = instruments(); QCOMPARE(tracks.size(), std::size_t(2));
 		for (auto track : tracks)
@@ -282,8 +282,8 @@ private slots:
 		QSKIP("Requires the native SoundFont instrument");
 #else
 		if (getPluginFactory()->pluginInfo("sf2player").isNull()) { QSKIP("Requires the built sf2player plugin"); }
-		QVERIFY(import(smf({event(0, {0x90, 60, 64}) + event(12, {0xc0, 10}) + event(36, {0x80, 60, 0}) + eot(),
-			event(0, {0x90, 64, 64}) + event(12, {0xc0, 20}) + event(36, {0x80, 64, 0}) + eot()})));
+		QVERIFY(import(smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(12, {0xc0, 10}) + fixtureEvent(36, {0x80, 60, 0}) + eot(),
+			fixtureEvent(0, {0x90, 64, 64}) + fixtureEvent(12, {0xc0, 20}) + fixtureEvent(36, {0x80, 64, 0}) + eot()})));
 		const auto tracks = instruments(); QCOMPARE(tracks.size(), std::size_t(2));
 		for (auto track : tracks)
 		{
@@ -301,8 +301,8 @@ private slots:
 		QSKIP("Requires the native SoundFont instrument");
 #else
 		if (getPluginFactory()->pluginInfo("sf2player").isNull()) { QSKIP("Requires the built sf2player plugin"); }
-		QVERIFY(import(smf({event(0, {0x90, 60, 64}) + event(12, {0xb0, 0, 1}) + event(12, {0xb0, 32, 2})
-			+ event(12, {0xb0, 0, 3}) + event(12, {0x80, 60, 0}) + eot()})));
+		QVERIFY(import(smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(12, {0xb0, 0, 1}) + fixtureEvent(12, {0xb0, 32, 2})
+			+ fixtureEvent(12, {0xb0, 0, 3}) + fixtureEvent(12, {0x80, 60, 0}) + eot()})));
 		const auto tracks = instruments(); QCOMPARE(tracks.size(), std::size_t(1)); QVERIFY(tracks[0]->instrument());
 		auto bank = tracks[0]->instrument()->childModel("bank"); QVERIFY(bank); const auto bound = curves(bank);
 		QCOMPARE(bound.size(), std::size_t(1)); QCOMPARE(bound[0]->valueAt(12), 128.f);
@@ -312,8 +312,8 @@ private slots:
 
 	void pitchBendUsesTheNativeSemitoneRange()
 	{
-		QVERIFY(import(smf({event(0, {0x90, 60, 64}) + event(12, {0xe0, 0, 0})
-			+ event(12, {0xe0, 0, 64}) + event(24, {0x80, 60, 0}) + eot()})));
+		QVERIFY(import(smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(12, {0xe0, 0, 0})
+			+ fixtureEvent(12, {0xe0, 0, 64}) + fixtureEvent(24, {0x80, 60, 0}) + eot()})));
 		const auto tracks = instruments(); QCOMPARE(tracks.size(), std::size_t(1)); QCOMPARE(tracks[0]->pitchRangeModel()->value(), 2);
 		const auto bound = curves(tracks[0]->pitchModel()); QCOMPARE(bound.size(), std::size_t(1));
 		QCOMPARE(bound[0]->valueAt(12), -200.f); QCOMPARE(bound[0]->valueAt(24), 0.f);
@@ -331,7 +331,7 @@ private slots:
 	void eventEndpointsRoundInNativeTicks()
 	{
 		QFETCH(int, division); QFETCH(int, start); QFETCH(int, duration); QFETCH(int, nativeStart); QFETCH(int, nativeDuration);
-		QVERIFY(import(smf({event(start, {0x90, 60, 31}) + event(duration, {0x80, 60, 0}) + eot()}, division)));
+		QVERIFY(import(smf({fixtureEvent(start, {0x90, 60, 31}) + fixtureEvent(duration, {0x80, 60, 0}) + eot()}, division)));
 		const auto tracks = instruments(); QCOMPARE(tracks.size(), std::size_t(1));
 		auto clip = static_cast<MidiClip*>(tracks[0]->getClips()[0]); const auto note = clip->notes()[0];
 		QCOMPARE(clip->startPosition().getTicks() + note->pos().getTicks(), nativeStart);
@@ -342,8 +342,8 @@ private slots:
 	{
 		const auto previous = AutomationClip::quantization(); const auto restore = qScopeGuard([&] { AutomationClip::setQuantization(previous); });
 		AutomationClip::setQuantization(12);
-		QVERIFY(import(smf({event(0, {0xff, 0x51, 3, 7, 0xa1, 0x20}) + event(7, {0xff, 0x51, 3, 9, 0x27, 0xc0})
-			+ event(4, {0xff, 0x58, 4, 3, 2, 24, 8}) + melody()})));
+		QVERIFY(import(smf({fixtureEvent(0, {0xff, 0x51, 3, 7, 0xa1, 0x20}) + fixtureEvent(7, {0xff, 0x51, 3, 9, 0x27, 0xc0})
+			+ fixtureEvent(4, {0xff, 0x58, 4, 3, 2, 24, 8}) + melody()})));
 		const auto tempo = curves(&song()->tempoModel()); QCOMPARE(tempo.size(), std::size_t(1)); QVERIFY(tempo[0]->getTimeMap().contains(7));
 		QVERIFY(std::abs(tempo[0]->valueAt(7) - 100.f) < .001f);
 		const auto numerator = curves(&song()->getTimeSigModel().numeratorModel()); QCOMPARE(numerator.size(), std::size_t(1));
@@ -352,8 +352,8 @@ private slots:
 
 	void sustainedNotesKeepOverlappingMaterialInOneClip()
 	{
-		QVERIFY(import(smf({event(0, {0x90, 60, 64}) + event(96, {0x90, 64, 64}) + event(12, {0x80, 64, 0})
-			+ event(292, {0x90, 67, 64}) + event(12, {0x80, 67, 0}) + event(188, {0x80, 60, 0}) + eot()})));
+		QVERIFY(import(smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(96, {0x90, 64, 64}) + fixtureEvent(12, {0x80, 64, 0})
+			+ fixtureEvent(292, {0x90, 67, 64}) + fixtureEvent(12, {0x80, 67, 0}) + fixtureEvent(188, {0x80, 60, 0}) + eot()})));
 		const auto tracks = instruments(); QCOMPARE(tracks.size(), std::size_t(1)); QCOMPARE(tracks[0]->numOfClips(), 1);
 		auto clip = static_cast<MidiClip*>(tracks[0]->getClips()[0]); QCOMPARE(clip->notes().size(), std::size_t(3));
 		QCOMPARE(clip->notes()[0]->length().getTicks(), 600); QCOMPARE(clip->notes()[2]->pos().getTicks(), 400);
@@ -361,7 +361,7 @@ private slots:
 
 	void unrepresentableTimelineRollsBackOnlyTheImport()
 	{
-		auto prior = existing(); const auto bytes = smf({event(0x0fffffff, {0x90, 60, 64}) + event(1, {0x80, 60, 0}) + eot()}, 1);
+		auto prior = existing(); const auto bytes = smf({fixtureEvent(0x0fffffff, {0x90, 60, 64}) + fixtureEvent(1, {0x80, 60, 0}) + eot()}, 1);
 		QCOMPARE(admitted(bytes), bytes); QVERIFY(!import(bytes)); QCOMPARE(song()->tracks().size(), std::size_t(1)); verifyExisting(prior);
 	}
 
@@ -443,12 +443,12 @@ private slots:
 		const auto priorCells = priorRow ? priorRow->getClips() : Track::clipVector{};
 		const auto priorSongTracks = song()->tracks();
 		const int selected = explicitSelection ? 1 : column; if (columns) { store()->setCurrentPattern(selected); }
-		const auto midi = smf({event(0, {0x90, 60, 64}) + event(24, {0x80, 60, 0}) + event(576, {0x90, 67, 90})
-			+ event(24, {0x80, 67, 0}) + event(276, {0xff, 0x2f, 0}),
-			event(0, {0xb1, 7, 20}) + event(12, {0x91, 64, 80}) + event(5, {0xb1, 7, 90})
-			+ event(19, {0x81, 64, 0}) + event(464, {0xb1, 7, 10}) + eot(),
-			event(0, {0xff, 0x51, 3, 7, 0xa1, 0x20}) + event(400, {0xff, 0x51, 3, 9, 0x27, 0xc0})
-			+ event(20, {0xff, 0x58, 4, 3, 2, 24, 8}) + eot()});
+		const auto midi = smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(24, {0x80, 60, 0}) + fixtureEvent(576, {0x90, 67, 90})
+			+ fixtureEvent(24, {0x80, 67, 0}) + fixtureEvent(276, {0xff, 0x2f, 0}),
+			fixtureEvent(0, {0xb1, 7, 20}) + fixtureEvent(12, {0x91, 64, 80}) + fixtureEvent(5, {0xb1, 7, 90})
+			+ fixtureEvent(19, {0x81, 64, 0}) + fixtureEvent(464, {0xb1, 7, 10}) + eot(),
+			fixtureEvent(0, {0xff, 0x51, 3, 7, 0xa1, 0x20}) + fixtureEvent(400, {0xff, 0x51, 3, 9, 0x27, 0xc0})
+			+ fixtureEvent(20, {0xff, 0x58, 4, 3, 2, 24, 8}) + eot()});
 		QVERIFY(import(midi, store(), explicitSelection ? column : -1)); verifyColumns(); verifyExisting(priorSong);
 		QCOMPARE(store()->numOfPatterns(), std::max(1, columns)); QCOMPARE(store()->currentPattern(), columns ? selected : 0);
 		QCOMPARE(song()->tracks().size(), priorSongTracks.size() + (columns ? 0 : 1));
@@ -512,9 +512,9 @@ private slots:
 		QFETCH(int, kind); auto prior = patternFixture(3); store()->setCurrentPattern(2);
 		if (kind == 2) { prior->getClips()[2]->setAutoResize(false); prior->getClips()[2]->changeLength(1536); }
 		QByteArray content;
-		if (kind == 0) { content = event(600, {0xff, 0x51, 3, 9, 0x27, 0xc0}) + event(168, {0xff, 0x2f, 0}); }
-		else if (kind == 1) { content = event(0, {0xb0, 7, 20}) + event(600, {0xb0, 7, 90}) + event(168, {0xff, 0x2f, 0}); }
-		else { content = event(768, {0xff, 0x2f, 0}); }
+		if (kind == 0) { content = fixtureEvent(600, {0xff, 0x51, 3, 9, 0x27, 0xc0}) + fixtureEvent(168, {0xff, 0x2f, 0}); }
+		else if (kind == 1) { content = fixtureEvent(0, {0xb0, 7, 20}) + fixtureEvent(600, {0xb0, 7, 90}) + fixtureEvent(168, {0xff, 0x2f, 0}); }
+		else { content = fixtureEvent(768, {0xff, 0x2f, 0}); }
 		QVERIFY(import(smf({content}), store())); verifyColumns();
 		const auto rows = instruments(store()); QCOMPARE(rows.size(), std::size_t(2));
 		auto cell = static_cast<MidiClip*>(rows[1]->getClips()[2]); QVERIFY(cell->notes().empty()); QVERIFY(!cell->getAutoResize());
@@ -533,8 +533,8 @@ private slots:
 #else
 		if (getPluginFactory()->pluginInfo("sf2player").isNull()) { QSKIP("Requires the built sf2player plugin"); }
 		patternFixture(3); store()->setCurrentPattern(2);
-		QVERIFY(import(smf({event(0, {0xc0, 10}) + event(0, {0xb0, 0, 1}) + event(0, {0xb0, 32, 2})
-			+ event(500, {0xc0, 20}) + event(0, {0xb0, 32, 3}) + eot()}), store())); verifyColumns();
+		QVERIFY(import(smf({fixtureEvent(0, {0xc0, 10}) + fixtureEvent(0, {0xb0, 0, 1}) + fixtureEvent(0, {0xb0, 32, 2})
+			+ fixtureEvent(500, {0xc0, 20}) + fixtureEvent(0, {0xb0, 32, 3}) + eot()}), store())); verifyColumns();
 		const auto rows = instruments(store()); QCOMPARE(rows.size(), std::size_t(2)); QVERIFY(rows[1]->instrument());
 		auto patch = rows[1]->instrument()->childModel("patch"); auto bank = rows[1]->instrument()->childModel("bank"); QVERIFY(patch); QVERIFY(bank);
 		QCOMPARE(curves(patch, store()).size(), std::size_t(1)); QCOMPARE(curves(bank, store()).size(), std::size_t(1));
@@ -590,8 +590,8 @@ private slots:
 	void importedPatternNotesAndBindingsSurviveNativeProjectReload()
 	{
 		patternFixture(4); store()->setCurrentPattern(1);
-		QVERIFY(import(smf({event(0, {0xb0, 7, 20}) + event(500, {0xb0, 7, 90})
-			+ event(100, {0x90, 60, 64}) + event(24, {0x80, 60, 0}) + event(276, {0xff, 0x2f, 0})}), store(), 3));
+		QVERIFY(import(smf({fixtureEvent(0, {0xb0, 7, 20}) + fixtureEvent(500, {0xb0, 7, 90})
+			+ fixtureEvent(100, {0x90, 60, 64}) + fixtureEvent(24, {0x80, 60, 0}) + fixtureEvent(276, {0xff, 0x2f, 0})}), store(), 3));
 		const auto saved = m_configuration.filePath("imported-pattern.mmp"); QVERIFY(song()->saveProjectFile(saved));
 		QVERIFY(song()->loadProject(saved)); verifyColumns(); QCOMPARE(store()->currentPattern(), 1);
 		const auto rows = instruments(store()); QCOMPARE(rows.size(), std::size_t(2));
@@ -660,8 +660,8 @@ private slots:
 		QFETCH(int, controller); QFETCH(bool, patternDestination);
 		if (patternDestination) { patternFixture(3); store()->setCurrentPattern(2); }
 		auto destination = patternDestination ? static_cast<TrackContainer*>(store()) : song();
-		QVERIFY(import(smf({event(0, {0xb0, controller, 0}) + event(0, {0x90, 60, 64})
-			+ event(17, {0xb0, controller, 100}) + event(79, {0x80, 60, 0}) + eot()}), destination));
+		QVERIFY(import(smf({fixtureEvent(0, {0xb0, controller, 0}) + fixtureEvent(0, {0x90, 60, 64})
+			+ fixtureEvent(17, {0xb0, controller, 100}) + fixtureEvent(79, {0x80, 60, 0}) + eot()}), destination));
 		const auto rows = instruments(destination); auto row = rows.back(); QVERIFY(row->midiCCEnabledModel()->value());
 		QCOMPARE(row->midiCCModel(controller)->value(), 0.f); const auto bound = curves(row->midiCCModel(controller), destination);
 		QCOMPARE(bound.size(), std::size_t(1)); QCOMPARE(bound[0]->valueAt(0), 0.f); QCOMPARE(bound[0]->valueAt(17), 100.f);
@@ -680,7 +680,7 @@ private slots:
 	void nativeControllerDefaultsPrecedeTheFirstImportedChange()
 	{
 		QFETCH(int, controller); QFETCH(float, initial);
-		QVERIFY(import(smf({event(0, {0x90, 60, 64}) + event(12, {0xb0, controller, 20}) + event(84, {0x80, 60, 0}) + eot()})));
+		QVERIFY(import(smf({fixtureEvent(0, {0x90, 60, 64}) + fixtureEvent(12, {0xb0, controller, 20}) + fixtureEvent(84, {0x80, 60, 0}) + eot()})));
 		const auto rows = instruments(); QCOMPARE(rows.size(), std::size_t(1)); auto row = rows[0];
 		QVERIFY(row->midiCCEnabledModel()->value()); QCOMPARE(row->midiCCModel(controller)->value(), initial);
 		const auto bound = curves(row->midiCCModel(controller)); QCOMPARE(bound.size(), std::size_t(1));
@@ -689,9 +689,9 @@ private slots:
 
 	void mappedTrackControlsDoNotActivateTheGenericRack_data()
 	{
-		QTest::addColumn<QByteArray>("updates"); QTest::newRow("volume") << event(0, {0xb0, 7, 100});
-		QTest::newRow("pan") << event(0, {0xb0, 10, 64}); QTest::newRow("bank-msb") << event(0, {0xb0, 0, 0});
-		QTest::newRow("bank-lsb") << event(0, {0xb0, 32, 0}); QTest::newRow("bend") << event(0, {0xe0, 0, 64});
+		QTest::addColumn<QByteArray>("updates"); QTest::newRow("volume") << fixtureEvent(0, {0xb0, 7, 100});
+		QTest::newRow("pan") << fixtureEvent(0, {0xb0, 10, 64}); QTest::newRow("bank-msb") << fixtureEvent(0, {0xb0, 0, 0});
+		QTest::newRow("bank-lsb") << fixtureEvent(0, {0xb0, 32, 0}); QTest::newRow("bend") << fixtureEvent(0, {0xe0, 0, 64});
 		QTest::newRow("notes-only") << QByteArray{};
 	}
 	void mappedTrackControlsDoNotActivateTheGenericRack()
@@ -706,7 +706,7 @@ private slots:
 	{
 		QFETCH(bool, patternDestination); if (patternDestination) { patternFixture(3); store()->setCurrentPattern(2); }
 		auto destination = patternDestination ? static_cast<TrackContainer*>(store()) : song();
-		QVERIFY(import(smf({event(0, {0xb0, 64, 0}) + event(17, {0xb0, 64, 127}) + melody()}), destination));
+		QVERIFY(import(smf({fixtureEvent(0, {0xb0, 64, 0}) + fixtureEvent(17, {0xb0, 64, 127}) + melody()}), destination));
 		const auto saved = m_configuration.filePath("generic-cc.mmp"); QVERIFY(song()->saveProjectFile(saved)); QVERIFY(song()->loadProject(saved));
 		const auto rows = instruments(destination); auto row = rows.back(); QVERIFY(row->midiCCEnabledModel()->value());
 		QCOMPARE(row->midiCCModel(64)->value(), 0.f); QCOMPARE(curves(row->midiCCModel(64), destination).size(), std::size_t(1));

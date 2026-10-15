@@ -362,7 +362,7 @@ private slots:
 			QTRY_VERIFY(!t.allowOutput.load()); QCOMPARE(client->outputBackendStatus().pendingEvents, 1u); QVERIFY(client->outputBackendStatus().active);
 			QVERIFY(client->inputBackendStatus().active); QVERIFY(!client->inputDeliveryStatus(&port).failed);
 			{ const auto lock = std::lock_guard{t.mutex}; QCOMPARE(t.written.size(), fault == 5 ? std::size_t{1} : std::size_t{0}); }
-			port.processOutEvent(MidiEvent(MidiProgramChange, 0, 4)); t.resumeOutput(); QTRY_COMPARE(client->outputBackendStatus().pendingEvents, 0u);
+			port.processOutEvent(MidiEvent(MidiProgramChange, 0, 4, 0)); t.resumeOutput(); QTRY_COMPARE(client->outputBackendStatus().pendingEvents, 0u);
 			const auto lock = std::lock_guard{t.mutex}; QCOMPARE(t.written, (std::vector<unsigned char>{0xb0,7,90,0xc0,4}));
 		}
 		else

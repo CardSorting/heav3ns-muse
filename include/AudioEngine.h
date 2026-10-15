@@ -560,6 +560,7 @@ private:
 	std::atomic<bool> m_sanitizationEnabled = false;
 
 	std::recursive_mutex m_changeMutex;
+	static thread_local bool s_renderingThread;
 
 	friend class Engine;
 	friend class Song;

@@ -12,7 +12,7 @@ using namespace lmms;
 namespace
 {
 bool write(const QString& path) { QFile file(path); return file.open(QIODevice::WriteOnly) && file.write("candidate") == 9; }
-FileSearch::Task task(const QString& path) { FileSearch::Task value; value.paths = {path}; value.extensions = {"*"}; value.includeDirectories = false; return value; }
+FileSearch::Task task(const QString& path) { FileSearch::Task value; value.paths = QStringList{path}; value.extensions = QStringList{"*"}; value.includeDirectories = false; return value; }
 }
 class FileSearchTest : public QObject
 {
@@ -33,7 +33,7 @@ private slots:
 	}
 	void tokenAndSuffixSemanticsRemainNative()
 	{
-		QFETCH(QString, query); QFETCH(QString, extension); QFETCH(bool, directory); QFETCH(bool, expected); QTemporaryDir root; const auto path = root.filePath("Warm Bass.Take.WAV"); if (directory) { QVERIFY(QDir().mkdir(path)); } else { QVERIFY(write(path)); } auto search = task(root.path()); search.filter = query; search.extensions = {extension}; search.includeDirectories = true; QCOMPARE(FileSearch::matches(search, FileSearch::tokens(query), QFileInfo(path)), expected); QVERIFY(!Engine::getSong());
+		QFETCH(QString, query); QFETCH(QString, extension); QFETCH(bool, directory); QFETCH(bool, expected); QTemporaryDir root; const auto path = root.filePath("Warm Bass.Take.WAV"); if (directory) { QVERIFY(QDir().mkdir(path)); } else { QVERIFY(write(path)); } auto search = task(root.path()); search.filter = query; search.extensions = QStringList{extension}; search.includeDirectories = true; QCOMPARE(FileSearch::matches(search, FileSearch::tokens(query), QFileInfo(path)), expected); QVERIFY(!Engine::getSong());
 	}
 	void recursionAndHiddenFlagsFollowNativeMetadata_data()
 	{ QTest::addColumn<bool>("recursive"); QTest::addColumn<bool>("hidden"); QTest::newRow("shallow") << false << false; QTest::newRow("recursive") << true << false; QTest::newRow("shallow-hidden") << false << true; QTest::newRow("recursive-hidden") << true << true; }
@@ -71,7 +71,7 @@ private slots:
 	}
 	void browserWorkerUsesSharedMatchingWithoutAnEngineOrWindow()
 	{
-		QTemporaryDir root; QVERIFY(write(root.filePath("take.one.wav"))); QVERIFY(write(root.filePath("take.two.wav"))); gui::FileSearchJob job; QSignalSpy started(&job, &gui::FileSearchJob::started), finished(&job, &gui::FileSearchJob::finished), found(&job, &gui::FileSearchJob::foundMatch); auto search = task(root.path()); search.filter = "take"; search.extensions = {"*.wav"}; job.search(search); QTRY_COMPARE(finished.count(), 1); QCOMPARE(started.count(), 1); QCOMPARE(found.count(), 2); search.filter = "absent"; job.search(search); QTRY_COMPARE(finished.count(), 2); QCOMPARE(found.count(), 2); QVERIFY(!Engine::getSong());
+		QTemporaryDir root; QVERIFY(write(root.filePath("take.one.wav"))); QVERIFY(write(root.filePath("take.two.wav"))); gui::FileSearchJob job; QSignalSpy started(&job, &gui::FileSearchJob::started), finished(&job, &gui::FileSearchJob::finished), found(&job, &gui::FileSearchJob::foundMatch); auto search = task(root.path()); search.filter = "take"; search.extensions = QStringList{"*.wav"}; job.search(search); QTRY_COMPARE(finished.count(), 1); QCOMPARE(started.count(), 1); QCOMPARE(found.count(), 2); search.filter = "absent"; job.search(search); QTRY_COMPARE(finished.count(), 2); QCOMPARE(found.count(), 2); QVERIFY(!Engine::getSong());
 	}
 	void negativeEntryBudgetsAreRefused()
 	{ auto search = task(QString{}); search.maximumEntries = -1; QVERIFY_EXCEPTION_THROWN(FileSearch::scan(search, {}), std::invalid_argument); }

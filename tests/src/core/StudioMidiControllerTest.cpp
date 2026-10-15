@@ -289,7 +289,7 @@ private slots:
 		auto args = selector(); args.insert("direction", "input"); args.insert("port", "Knobs, A"); args.insert("enabled", true);
 		QVERIFY(call("midi.subscribe", args).value("ok").toBool()); QCOMPARE(port->requestedReadablePorts(), QStringList{"Knobs, A"});
 		QVERIFY(m_named.requested.value("Knobs, A")); m_named.feed(port, "Knobs, A", 127); QCOMPARE(settledValue(), model()->maxValue());
-		m_named.inputs.removeAll("Knobs, A"); port->updateReadablePorts();
+		m_named.inputs.removeAll("Knobs, A"); QVERIFY(QMetaObject::invokeMethod(port, "updateReadablePorts", Qt::DirectConnection));
 		const auto endpoints = call("midi.inspect", selector()).value("result").toObject().value("readablePorts").toArray(); bool found = false;
 		for (const auto& value : endpoints)
 		{

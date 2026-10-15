@@ -390,6 +390,8 @@ protected:
 	friend class StudioMidiLearn;
 	friend class NativeTrackSaveSnapshot;
 	friend class NativeProjectSaveSnapshot;
+	friend class SampleClip;
+	friend class AudioFileProcessor;
 	friend class ModelValueNotificationTestAccess;
 	void notifyValueData(bool changed = true);
 	AutomatableModel(

@@ -224,7 +224,7 @@ private slots:
 	{
 		QFETCH(int, path); Input input; IntModel integer(42, 0, 100); BoolModel flag(false); FloatModel peer(42, 0, 100, 0);
 		if (path == 2) { QVERIFY(integer.linkToModel(&peer)); }
-		const bool boolean = path == 1 || path == 4; AutomatableModel* target = boolean ? static_cast<AutomatableModel*>(&flag) : path == 2 ? &peer : &integer;
+		const bool boolean = path == 1 || path == 4; AutomatableModel* target = boolean ? static_cast<AutomatableModel*>(&flag) : path == 2 ? static_cast<AutomatableModel*>(&peer) : &integer;
 		target->setControllerConnection(new ControllerConnection(&input)); const auto stored = integer.storedValue(), booleanStored = flag.storedValue(), peerStored = peer.storedValue();
 		input.next = invalid(path >= 3 ? 1 : 0); const auto readValue = [&] { return boolean ? int(flag.value()) : integer.value(); };
 		QVERIFY_EXCEPTION_THROWN(readValue(), std::domain_error); QCOMPARE(integer.storedValue(), stored); QCOMPARE(flag.storedValue(), booleanStored); QCOMPARE(peer.storedValue(), peerStored);

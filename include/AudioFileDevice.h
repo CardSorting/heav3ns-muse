@@ -34,7 +34,7 @@
 namespace lmms
 {
 
-class AudioFileDevice : public AudioDevice
+class LMMS_EXPORT AudioFileDevice : public AudioDevice
 {
 public:
 	AudioFileDevice(OutputSettings const & outputSettings,

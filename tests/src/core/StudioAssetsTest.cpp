@@ -45,7 +45,7 @@ class StudioAssetsTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); }
+	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); }
 	void cleanup() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); }
 	void rootsReflectNativeAliasesWithoutCreatingContent()
 	{

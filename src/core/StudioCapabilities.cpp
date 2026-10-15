@@ -19,6 +19,7 @@
 #include <QRegularExpression>
 #include <QPointer>
 #include <QSet>
+#include <QScopeGuard>
 #include <QHash>
 #include <QThread>
 
@@ -1584,7 +1585,7 @@ QString resourcePath(const QJsonObject& args)
 QJsonObject inspectLfoWave(const LfoController* controller)
 {
 	const auto buffer = controller->userWaveBuffer();
-	return {{"path", controller->userWaveFile()}, {"unresolved", controller->userWaveUnresolved()}, {"frames", static_cast<double>(buffer->size())}, {"sampleRate", buffer->sampleRate()}};
+	return {{"path", controller->userWaveFile()}, {"unresolved", controller->userWaveUnresolved()}, {"frames", static_cast<double>(buffer->size())}, {"sampleRate", static_cast<double>(buffer->sampleRate())}};
 }
 
 Controller* controller(const QJsonObject& a)

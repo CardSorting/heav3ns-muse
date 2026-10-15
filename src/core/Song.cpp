@@ -642,7 +642,7 @@ bool Song::processAutomations(const std::vector<QPointer<Track>>& tracklist, Tim
 	for (const auto& p : recordingClips)
 	{
 		if (!p || p->isMuted()) { continue; }
-		TimePos relTime = clipNum >= 0 ? timeStart : timeStart - p->startPosition();
+		TimePos relTime = clipNum >= 0 ? timeStart : TimePos(timeStart - p->startPosition());
 		if (p->isRecording() && relTime >= 0 && relTime < p->length() && !p->objects().empty())
 		{
 			const auto recordedModel = p->objects().front();

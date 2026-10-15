@@ -4279,7 +4279,8 @@ and are neither serialized nor journalled. Solo restoration reads the model's mu
 value so it cannot persist the temporary export filter as a user mute state.
 
 Whole-song stem lengths use the selected source's arranged extent and the native
-remaining automation/pattern extent. Use the same `betweenMarkers` range and render
+remaining automation/pattern extent. An occupied partial bar rounds up to a full
+bar, including sample-only arrangements shorter than one bar. Use the same `betweenMarkers` range and render
 settings when aligned files are needed. Shared/nonlinear mixer or master effects
 can make summed stems differ from the full mix. Stems use the current native render
 graph; they are not pre-effect or pre-master taps.

@@ -67,7 +67,7 @@ private slots:
 	void transientWritesNeverLoseOrRepeatBytes()
 	{
 		QFETCH(int, error); int identity = 1; RawMidiOutput output; output.add(source(identity)); Wire wire;
-		output.enqueue(MidiEvent(MidiProgramChange, 0, 12), source(identity)); wire.remainingCalls = 0; wire.error = error;
+		output.enqueue(MidiEvent(MidiProgramChange, 0, 12, 0), source(identity)); wire.remainingCalls = 0; wire.error = error;
 		QCOMPARE(wire.service(output), 1); QCOMPARE(output.status(true).pendingEvents, 1u); QVERIFY(wire.bytes.empty()); QVERIFY(output.status(true).active);
 		wire.error = 0; wire.remainingCalls = 100; wire.drain(output); QCOMPARE(wire.bytes, (std::vector<std::uint8_t>{0xc0, 12}));
 	}

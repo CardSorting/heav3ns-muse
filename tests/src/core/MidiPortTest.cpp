@@ -337,7 +337,7 @@ private slots:
 		auto port = std::make_unique<MidiPort>("scheduled", &client, &processor); port->subscribeWritablePort("external");
 		port->processOutEvent(MidiEvent(MidiNoteOn, 0, 60, 100), TimePos(20));
 		port->processOutEvent(MidiEvent(MidiNoteOff, 0, 60, 0), TimePos(40));
-		port->processOutEvent(MidiEvent(MidiProgramChange, 0, 7), TimePos(30));
+		port->processOutEvent(MidiEvent(MidiProgramChange, 0, 7, 0), TimePos(30));
 		QCOMPARE(port->trackedOutputNotes(), 0u); QCOMPARE(client.pending.size(), std::size_t(3)); client.actions.clear();
 		if (retirement == "source") { port->setOutputSource(MidiPort::OutputSource::Instrument); }
 		else if (retirement == "disable") { port->setWritable(false); }
@@ -431,7 +431,7 @@ private slots:
 		MidiPortTestAccess::useClient(first->midiPort(), &failed); MidiPortTestAccess::useClient(second->midiPort(), &healthy);
 		for (const auto track : {first.get(), second.get()})
 		{
-			track->midiPort()->setWritable(true); track->midiPort()->processOutEvent(MidiEvent(MidiProgramChange, 0, 7), TimePos(20));
+			track->midiPort()->setWritable(true); track->midiPort()->processOutEvent(MidiEvent(MidiProgramChange, 0, 7, 0), TimePos(20));
 		}
 		song->playSong(); failed.failCancellation = true;
 		const auto restored = qScopeGuard([&] { failed.failCancellation = false; song->stop(); });

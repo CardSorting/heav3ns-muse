@@ -106,7 +106,7 @@ private slots:
 	{
 		QFETCH(int, signalNumber); QString error;
 #ifndef LMMS_BUILD_WIN32
-		struct sigaction original{}, sentinel{}; sentinel.sa_handler = SIG_IGN; ::sigemptyset(&sentinel.sa_mask);
+		struct sigaction original{}, sentinel{}; sentinel.sa_handler = SIG_IGN; sigemptyset(&sentinel.sa_mask);
 		QVERIFY(::sigaction(signalNumber, &sentinel, &original) == 0);
 		const auto restore = qScopeGuard([&] { ::sigaction(signalNumber, &original, nullptr); });
 #else

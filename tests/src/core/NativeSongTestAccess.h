@@ -7,6 +7,7 @@ namespace lmms
 class NativeSongTestAccess
 {
 public:
+	static void setProjectFileName(Song* song, const QString& path) { song->setProjectFileName(path); }
 	static void setModified(Song* song, bool value) { song->setModified(value); }
 	static bool isCreating(const Song* song) { return song->m_creatingProject; }
 	static bool permitsCreationLoad(const Song* song) { return song->m_permitCreationLoad; }

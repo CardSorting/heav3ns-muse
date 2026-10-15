@@ -138,7 +138,7 @@ private slots:
 		QCOMPARE(projected.value("storedResult").toObject().value("bytes"), archive.value("bytes"));
 		QCOMPARE(original.value("response").toObject().value("error").toString(), errorText);
 		QVERIFY(StudioAgent::validToolRecord({{"kind", "tool"}, {"call", command}, {"response", projected}, {"archive", archive}}));
-		for (const auto invalid : {QJsonValue(QString(3 * 1024 * 1024, 'z')), QJsonValue(QString(512, euro.at(0))), QJsonValue(42)})
+		for (const auto invalid : {QJsonValue(QString(3 * 1024 * 1024, 'z')), QJsonValue(QString(512, QChar(0x20ac))), QJsonValue(42)})
 		{
 			auto rejected = projected; rejected.insert("errorPreview", invalid);
 			QVERIFY(!StudioAgent::validToolRecord({{"kind", "tool"}, {"call", command}, {"response", rejected}, {"archive", archive}}));

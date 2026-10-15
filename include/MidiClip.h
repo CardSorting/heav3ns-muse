@@ -123,6 +123,7 @@ public:
 	Note * addStepNote( int step );
 	void setStep( int step, bool enabled );
 	int stepCount() const { return m_steps; }
+	void setType(Type type);
 
 	//! Horizontally flip the positions of the given notes.
 	void reverseNotes(const NoteVector& notes);
@@ -208,7 +209,6 @@ private:
 	friend class NativeNoteTransfer;
 	TimePos beatClipLength() const;
 
-	void setType( Type _new_clip_type );
 	void checkType();
 
 	void resizeToFirstTrack();

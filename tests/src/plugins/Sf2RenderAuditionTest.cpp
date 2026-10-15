@@ -1,3 +1,4 @@
+#include "../core/NativeSongTestAccess.h"
 /* Native SoundFont audition exclusion during offline rendering. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QFile>
@@ -83,7 +84,7 @@ class Sf2RenderAuditionTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); ConfigManager::inst()->setSF2File(""); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); QVERIFY(QFile::exists(bank())); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { QVERIFY(!RemotePlugin::hasActiveRenderContext()); QVERIFY(!TrackRenderScope::hasActiveSelection()); Engine::getSong()->stopExport(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); Engine::getSong()->setExportLoop(false); Engine::getSong()->setRenderBetweenMarkers(false); Engine::getSong()->setLoopRenderCount(1); }
+	void init() { QVERIFY(!RemotePlugin::hasActiveRenderContext()); QVERIFY(!TrackRenderScope::hasActiveSelection()); Engine::getSong()->stopExport(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); Engine::getSong()->setExportLoop(false); Engine::getSong()->setRenderBetweenMarkers(false); Engine::getSong()->setLoopRenderCount(1); }
 	void cleanup() { Engine::getSong()->stopExport(); Engine::audioEngine()->restoreAudioDevice(); Engine::getSong()->clearProject(); QVERIFY(!RemotePlugin::hasActiveRenderContext()); QVERIFY(!Engine::audioEngine()->hasStoredAudioDevice()); }
 	void allNativeRenderAdmissionWindowsRefuseAudition_data()
 	{ QTest::addColumn<int>("state"); QTest::newRow("remote-executing") << 0; QTest::newRow("remote-finished-unreleased") << 1; QTest::newRow("remote-cancelled") << 2; QTest::newRow("device-reserved") << 3; QTest::newRow("stem-selection") << 4; QTest::newRow("song-export") << 5; QTest::newRow("pending-export-cleanup") << 6; }
@@ -99,7 +100,7 @@ private slots:
 	}
 	void aStandaloneFileDeviceAlsoRefusesAudition()
 	{
-		auto object = seed(); QTemporaryDir output; QString error; Sf2Instrument::ProgramPreviewToken token; QVERIFY(object->previewProgram(1024, 7, error, token)); bool good = false; std::unique_ptr<AudioFileDevice> device(AudioFileWave::getInst(output.filePath("direct.wav"), OutputSettings(44100, 160, OutputSettings::BitDepth::Depth16Bit), DEFAULT_CHANNELS, Engine::audioEngine(), good)); QVERIFY(good); auto raw = device.get(); Engine::audioEngine()->setAudioDevice(raw, false); device.release(); const auto restore = qScopeGuard([] { auto fallback = Engine::audioEngine()->createAudioDevice(AudioDummy::name()); if (fallback) { auto raw = fallback.get(); Engine::audioEngine()->setAudioDevice(raw, false); fallback.release(); } }); QVERIFY(!Engine::audioEngine()->hasStoredAudioDevice()); gate(object, token);
+		auto object = seed(); QTemporaryDir output; QString error; Sf2Instrument::ProgramPreviewToken token; QVERIFY(object->previewProgram(1024, 7, error, token)); bool good = false; std::unique_ptr<AudioFileDevice> device(AudioFileWave::getInst(output.filePath("direct.wav"), OutputSettings(44100, 160, OutputSettings::BitDepth::Depth16Bit), DEFAULT_CHANNELS, Engine::audioEngine(), good)); QVERIFY(good); auto raw = device.get(); Engine::audioEngine()->setAudioDevice(raw, false); device.release(); const auto restore = qScopeGuard([] { bool ready = false; auto fallback = std::make_unique<AudioDummy>(ready, Engine::audioEngine()); if (ready) { auto raw = fallback.get(); Engine::audioEngine()->setAudioDevice(raw, false); fallback.release(); } }); QVERIFY(!Engine::audioEngine()->hasStoredAudioDevice()); gate(object, token);
 	}
 	void deviceSetupAndFinalizationKeepAuditionExcluded_data()
 	{ QTest::addColumn<bool>("pattern"); QTest::newRow("song-instrument") << false; QTest::newRow("pattern-instrument") << true; }

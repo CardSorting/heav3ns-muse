@@ -159,8 +159,11 @@ private slots:
 		{
 			const QJsonObject args{{"path", path}, {"sourceSha256", value}}; const int before = fileChecks;
 			if (listen) { QVERIFY_EXCEPTION_THROWN(StudioAudio::excerpt(args), std::invalid_argument); }
-			else { const auto response = StudioCapabilities::execute("audio.analyze", args); QVERIFY(!response.value("ok").toBool()); QVERIFY(response.value("error").toString().contains("sourceSha256")); }
+			else { QVERIFY_EXCEPTION_THROWN(StudioAudio::analyze(args), std::invalid_argument); }
 			QCOMPARE(fileChecks, before);
+			// Dispatch has its own cooperative admission polls. Verify the wire
+			// error separately from the direct decoder's no-I/O validation check.
+			if (!listen) { const auto response = StudioCapabilities::execute("audio.analyze", args); QVERIFY(!response.value("ok").toBool()); QVERIFY(response.value("error").toString().contains("sourceSha256")); }
 		}
 		const QJsonObject mismatch{{"path", path}, {"sourceSha256", QString(64, '0')}};
 		if (listen) { QVERIFY_EXCEPTION_THROWN(StudioAudio::excerpt(mismatch), std::runtime_error); }

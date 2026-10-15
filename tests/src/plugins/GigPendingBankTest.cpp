@@ -1,3 +1,4 @@
+#include "../core/NativeSongTestAccess.h"
 /* Native GIG missing-bank preservation and repair. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QFile>
@@ -68,7 +69,7 @@ class GigPendingBankTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); QVERIFY(banks.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); QString error; QVERIFY2(test::gigNative::create(bank(), false, error), qPrintable(error)); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
+	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void cleanup() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void missingBanksRetainPathAndAllNativeControls_data()
 	{ QTest::addColumn<int>("mode"); QTest::newRow("legacy-missing") << 0; QTest::newRow("marked-missing") << 1; QTest::newRow("marked-appeared") << 2; QTest::newRow("legacy-missing-companion") << 3; }

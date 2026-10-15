@@ -217,7 +217,7 @@ private slots:
 			if (failure == 5) { delete Engine::getSong()->tracks().at(0); }
 			if (failure == 6) { delete target->controllerConnection(); }
 			if (failure == 7) { Engine::getSong()->playSong(); }
-			if (failure == 8) { m_input.inputs.removeAll("Knobs A"); m_input.detector()->midiPort()->updateReadablePorts(); }
+			if (failure == 8) { m_input.inputs.removeAll("Knobs A"); QMetaObject::invokeMethod(m_input.detector()->midiPort(), "updateReadablePorts", Qt::DirectConnection); }
 		}); timer.start(); const auto response = StudioCapabilities::execute("controller.midi.learn", arguments, [&] { return cancel; }); timer.stop();
 		QVERIFY(!response.value("ok").toBool()); QVERIFY(!m_input.detector()); QVERIFY(m_input.ports.empty());
 		if (failure != 5 && failure != 6) { QVERIFY(target); QCOMPARE(target->controllerConnection(), prior.data()); QCOMPARE(target->storedValue(), 42.f); }
@@ -253,7 +253,7 @@ private slots:
 		bool fed = false; QTimer timer; timer.setInterval(1); QObject::connect(&timer, &QTimer::timeout, this, [&] {
 			if (fed || !m_input.detector()) { return; } fed = true;
 			m_input.feed(15, 0, 96, failure == 0 ? QString() : failure == 1 ? QString("Unknown") : QString("Knobs, B"), true, true);
-			if (failure == 2) { m_input.inputs.removeAll("Knobs, B"); m_input.detector()->midiPort()->updateReadablePorts(); }
+			if (failure == 2) { m_input.inputs.removeAll("Knobs, B"); QMetaObject::invokeMethod(m_input.detector()->midiPort(), "updateReadablePorts", Qt::DirectConnection); }
 		}); timer.start(); const auto response = StudioCapabilities::execute("controller.midi.learn", args()); timer.stop();
 		QVERIFY(!response.value("ok").toBool()); QCOMPARE(model()->controllerConnection(), prior.data()); QVERIFY(m_input.ports.empty());
 	}

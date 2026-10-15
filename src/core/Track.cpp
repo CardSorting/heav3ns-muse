@@ -701,7 +701,10 @@ bar_t Track::length() const
 		}
 	}
 
-	return last / TimePos::ticksPerBar();
+	// A clip ending inside a bar still occupies that bar. Truncating here made
+	// short sample-only arrangements appear empty to the native renderer.
+	const auto ticksPerBar = TimePos::ticksPerBar();
+	return last / ticksPerBar + (last % ticksPerBar != 0);
 }
 
 

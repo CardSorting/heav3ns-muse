@@ -96,12 +96,12 @@ struct CarlaPluginHost::Impl
 	LayoutChange layout(int first = -1, int second = -1) const
 	{
 		if (!descriptor || !descriptor->get_parameter_count) { return {}; }
-		const auto slots = descriptor->get_parameter_count(instrument);
-		if (slots > static_cast<uint32_t>(std::numeric_limits<int>::max())) { hostError("Native parameter window is invalid"); }
-		LayoutChange result{true, std::vector<int>(slots, -1)};
+		const auto parameterSlots = descriptor->get_parameter_count(instrument);
+		if (parameterSlots > static_cast<uint32_t>(std::numeric_limits<int>::max())) { hostError("Native parameter window is invalid"); }
+		LayoutChange result{true, std::vector<int>(parameterSlots, -1)};
 		if (first < 0)
 		{
-			for (uint32_t i = 0; i < slots; ++i) { result.oldToNew[i] = static_cast<int>(i); }
+			for (uint32_t i = 0; i < parameterSlots; ++i) { result.oldToNew[i] = static_cast<int>(i); }
 			return result; // Appending preserves every existing native slot.
 		}
 		if (!get_parameter_count) { return {}; }
@@ -123,7 +123,7 @@ struct CarlaPluginHost::Impl
 		}
 		for (int i = 0; i < plugins; ++i)
 		{
-			const auto available = std::min(counts[i], std::max(0, static_cast<int>(slots) - starts[i]));
+			const auto available = std::min(counts[i], std::max(0, static_cast<int>(parameterSlots) - starts[i]));
 			for (int parameter = 0; parameter < available; ++parameter)
 			{
 				result.oldToNew[starts[i] + parameter] = newStarts[i] < 0 ? -1 : newStarts[i] + parameter;

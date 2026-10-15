@@ -136,7 +136,7 @@ QJsonObject StudioAssets::search(const QJsonObject& arguments)
 	FileResourceIO::EventSuspension events; Context context; context.poll(); const auto root = context.resolve(selected); const QFileInfo directory(root.path);
 	if (!directory.isDir() || !directory.isReadable()) { fail("Asset search root is not a readable directory"); }
 	const auto rootObservation = rootObject(root, true);
-	FileSearch::Task task; task.filter = query; task.paths = {root.path}; task.extensions = extensions; task.recursive = recursive; task.followSymlinks = follow; task.includeFiles = kind != "directories"; task.includeDirectories = kind != "files"; task.maximumEntries = maximum; if (hidden) { task.dirFilters |= QDir::Hidden; }
+	FileSearch::Task task; task.filter = query; task.paths = QStringList{root.path}; task.extensions = extensions; task.recursive = recursive; task.followSymlinks = follow; task.includeFiles = kind != "directories"; task.includeDirectories = kind != "files"; task.maximumEntries = maximum; if (hidden) { task.dirFilters |= QDir::Hidden; }
 	static const auto process = QUuid::createUuid().toString(QUuid::WithoutBraces); QCryptographicHash digest(QCryptographicHash::Sha256);
 	hashText(digest, process, context); hashText(digest, selected, context); hashText(digest, root.path, context); hashText(digest, query, context); for (const auto& extension : extensions) { hashText(digest, extension, context); }
 	digest.addData(QJsonDocument(QJsonObject{{"kind", kind}, {"recursive", recursive}, {"followSymlinks", follow}, {"hidden", hidden}, {"maximumEntries", maximum}, {"root", rootObservation}}).toJson(QJsonDocument::Compact));

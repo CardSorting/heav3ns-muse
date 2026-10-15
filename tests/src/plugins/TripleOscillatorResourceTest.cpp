@@ -1,3 +1,4 @@
+#include "../core/NativeSongTestAccess.h"
 /* Native three-oscillator wave preservation and repair. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QFile>
@@ -70,7 +71,7 @@ class TripleOscillatorResourceTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
+	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void cleanup() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void missingWavesRetainPerOscillatorPathsAndControls_data()
 	{ QTest::addColumn<int>("slot"); QTest::addColumn<int>("mode"); for (int slot = 0; slot < 3; ++slot) { for (int mode = 0; mode < 3; ++mode) { QTest::newRow(qPrintable(QString::number(slot) + ":" + QString::number(mode))) << slot << mode; } } }
@@ -116,7 +117,7 @@ private slots:
 	{ QTest::addColumn<int>("kind"); QTest::newRow("instrument") << 0; QTest::newRow("track") << 1; QTest::newRow("oscillator") << 2; QTest::newRow("project-path") << 3; }
 	void decodingCannotResumeOnRetiredOrReplacedNativeActors()
 	{
-		QFETCH(int, kind); QTemporaryDir source; const auto path = source.filePath("repair.wav"); QVERIFY(wave(path)); auto native = seed(); const QPointer<TripleOscillator> owner(native); const QPointer<InstrumentTrack> track(native->instrumentTrack()); bool changed = false; QString error; { FileResourceIO::Scope work([&] { if (!changed) { changed = true; if (kind == 0) { delete owner.data(); } if (kind == 1) { delete track.data(); } if (kind == 2) { delete oscillator(owner.data(), 2); } if (kind == 3) { Engine::getSong()->setProjectFileName(source.filePath("other.mmp")); } } return false; }); QVERIFY_EXCEPTION_THROWN(native->setFileResource("oscillator1", path, error), std::runtime_error); } QVERIFY(changed);
+		QFETCH(int, kind); QTemporaryDir source; const auto path = source.filePath("repair.wav"); QVERIFY(wave(path)); auto native = seed(); const QPointer<TripleOscillator> owner(native); const QPointer<InstrumentTrack> track(native->instrumentTrack()); bool changed = false; QString error; { FileResourceIO::Scope work([&] { if (!changed) { changed = true; if (kind == 0) { delete owner.data(); } if (kind == 1) { delete track.data(); } if (kind == 2) { delete oscillator(owner.data(), 2); } if (kind == 3) { NativeSongTestAccess::setProjectFileName(Engine::getSong(), source.filePath("other.mmp")); } } return false; }); QVERIFY_EXCEPTION_THROWN(native->setFileResource("oscillator1", path, error), std::runtime_error); } QVERIFY(changed);
 	}
 	void settingsAndWaveTransitionsRefuseReentry()
 	{

@@ -89,3 +89,27 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
 - **Gate**: `GATE-001` • **Status**: `completed`
 - **Action**: In-process studio runtime and headless lifecycle verified.
 - **Result**: `QCoreApplication` initialized with dummy drivers and stdio stream isolation.
+
+
+### 2026-10-15 — Feature freeze and first native runtime evidence
+
+- Feature additions are frozen while the existing application is compiled and
+  stabilized; no gate status changes in this entry.
+- The complete configured macOS arm64/Qt 5 Debug build passed. The first native
+  CTest run reported 100 passing and 92 failing test executables, including
+  crashes and a timeout; the broad studio process harness remains failing.
+- A real synthesis-render deadlock and short-arrangement/export-name defects
+  were repaired. The focused synth/save/render/analyze/restart regression passed,
+  with further validation and unresolved regressions documented in the
+  [engineering record](../agent-native-architecture.md#feature-freeze-and-native-stabilization-2026-10-15).
+
+
+### 2026-10-15 — Stabilization regression follow-up
+
+- The complete rebuilt application and test targets passed compilation again.
+- The second full native run reported 108 passing and 85 failing test executables
+  out of 193. The focused render process timed out once during instrument loading
+  in that run; this failure is retained and remains unexplained.
+- Three isolated repeats, a concurrent reproduction and 20 further consecutive
+  load/render/restart repeats passed. No gate status changes follow from these
+  limited results. Broad runtime stabilization remains the active work.

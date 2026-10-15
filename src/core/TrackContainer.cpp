@@ -403,7 +403,7 @@ AutomatedValueMap TrackContainer::automatedValuesFromTracks(const TrackList &tra
 			if (! p->hasAutomation()) {
 				continue;
 			}
-			TimePos relTime = (clipNum >= 0 ? time : time - p->startPosition()) - p->startTimeOffset();
+			TimePos relTime = (clipNum >= 0 ? time : TimePos(time - p->startPosition())) - p->startTimeOffset();
 			if (!p->isInPattern()) {
 				relTime = std::min(static_cast<int>(relTime), p->length() - p->startTimeOffset());
 			}

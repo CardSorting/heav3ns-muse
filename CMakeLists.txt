@@ -305,6 +305,20 @@ ENDIF()
 # Resolve qmake to full path for use in packaging scripts
 get_target_property(QT_QMAKE_EXECUTABLE Qt${QT_VERSION_MAJOR}::qmake IMPORTED_LOCATION)
 
+if(LMMS_BUILD_APPLE)
+	# Homebrew can expose another Qt major under its general include prefix.
+	# Framework search paths alone do not outrank that prefix for <QtCore/...>.
+	execute_process(COMMAND ${QT_QMAKE_EXECUTABLE} -query QT_INSTALL_HEADERS
+		OUTPUT_VARIABLE QT_HEADERS_DIR
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+		RESULT_VARIABLE QT_HEADERS_RESULT
+	)
+	if(NOT QT_HEADERS_RESULT EQUAL 0 OR NOT IS_DIRECTORY "${QT_HEADERS_DIR}")
+		message(FATAL_ERROR "Could not locate headers for the selected Qt installation")
+	endif()
+	include_directories(SYSTEM BEFORE "${QT_HEADERS_DIR}")
+endif()
+
 # Find the location of Qt translation files
 execute_process(COMMAND ${QT_QMAKE_EXECUTABLE} -query QT_INSTALL_TRANSLATIONS
 	OUTPUT_VARIABLE QT_TRANSLATIONS_DIR
@@ -725,7 +739,8 @@ else()
 	set(STRIP_COMMAND "${NOOP_COMMAND}")
 endif()
 
-# Fallback include/lmmsconfig.h delegates to ${CMAKE_BINARY_DIR}/lmmsconfig.h when built
+# Configuration and export headers are generated in the selected build directory.
+# Do not place fallback copies in include/: quoted includes would shadow them.
 
 FILE(GLOB LMMS_INCLUDES "${CMAKE_SOURCE_DIR}/include/*.h")
 LIST(SORT LMMS_INCLUDES)
@@ -826,6 +841,7 @@ include(CompileCache)
 ADD_SUBDIRECTORY(cmake)
 ADD_SUBDIRECTORY(src)
 ADD_SUBDIRECTORY(plugins)
+enable_testing()
 ADD_SUBDIRECTORY(tests)
 ADD_SUBDIRECTORY(data)
 

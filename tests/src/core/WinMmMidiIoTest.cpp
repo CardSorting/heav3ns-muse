@@ -294,11 +294,11 @@ private slots:
 		MidiPort a("a", client.get(), &processor, nullptr, MidiPort::Mode::Output), b("b", client.get(), &processor, nullptr, MidiPort::Mode::Output);
 		a.subscribeWritablePort("Output 0"); b.subscribeWritablePort("Output 1"); a.subscribeWritablePort("missing output");
 		for (auto& output : t.outputs) { output.messages.clear(); }
-		client->processOutEvent(MidiEvent(MidiProgramChange, 0, 37), {}, &a);
+		client->processOutEvent(MidiEvent(MidiProgramChange, 0, 37, 0), {}, &a);
 		QCOMPARE(t.outputs[0].messages.size(), std::size_t{1}); QVERIFY(t.outputs[1].messages.empty());
-		a.subscribeWritablePort("Output 0", false); client->processOutEvent(MidiEvent(MidiProgramChange, 0, 38), {}, &a);
+		a.subscribeWritablePort("Output 0", false); client->processOutEvent(MidiEvent(MidiProgramChange, 0, 38, 0), {}, &a);
 		QCOMPARE(t.outputs[0].messages.size(), std::size_t{1}); QVERIFY(t.outputs[1].messages.empty());
-		client->processOutEvent(MidiEvent(MidiProgramChange, 0, 39), {}, &b); QCOMPARE(t.outputs[1].messages.size(), std::size_t{1});
+		client->processOutEvent(MidiEvent(MidiProgramChange, 0, 39, 0), {}, &b); QCOMPARE(t.outputs[1].messages.size(), std::size_t{1});
 	}
 
 	void fanoutFailureRetainsNotesUntilRetry_data()
@@ -350,13 +350,13 @@ private slots:
 		Transport t; auto client = t.create(); Processor processor;
 		MidiPort a("a", client.get(), &processor, nullptr, MidiPort::Mode::Output), b("b", client.get(), &processor, nullptr, MidiPort::Mode::Output);
 		a.subscribeWritablePort("Output 0"); b.subscribeWritablePort("Output 1"); t.outputs[0].result = MIDIERR_NOTREADY;
-		QVERIFY_EXCEPTION_THROWN(a.processOutEvent(MidiEvent(MidiProgramChange, 0, 37)), std::runtime_error);
-		b.processOutEvent(MidiEvent(MidiProgramChange, 0, 38)); QVERIFY(!client->outputBackendStatus().active); QCOMPARE(client->outputBackendStatus().nativeErrorCode, int(MIDIERR_NOTREADY));
-		t.outputs[1].result = MMSYSERR_INVALHANDLE; QVERIFY_EXCEPTION_THROWN(b.processOutEvent(MidiEvent(MidiProgramChange, 0, 39)), std::runtime_error);
+		QVERIFY_EXCEPTION_THROWN(a.processOutEvent(MidiEvent(MidiProgramChange, 0, 37, 0)), std::runtime_error);
+		b.processOutEvent(MidiEvent(MidiProgramChange, 0, 38, 0)); QVERIFY(!client->outputBackendStatus().active); QCOMPARE(client->outputBackendStatus().nativeErrorCode, int(MIDIERR_NOTREADY));
+		t.outputs[1].result = MMSYSERR_INVALHANDLE; QVERIFY_EXCEPTION_THROWN(b.processOutEvent(MidiEvent(MidiProgramChange, 0, 39, 0)), std::runtime_error);
 		QCOMPARE(client->outputBackendStatus().lastNativeErrorCode, int(MMSYSERR_INVALHANDLE));
-		t.outputs[0].result = MMSYSERR_NOERROR; a.processOutEvent(MidiEvent(MidiProgramChange, 0, 40)); QVERIFY(!client->outputBackendStatus().active);
+		t.outputs[0].result = MMSYSERR_NOERROR; a.processOutEvent(MidiEvent(MidiProgramChange, 0, 40, 0)); QVERIFY(!client->outputBackendStatus().active);
 		QCOMPARE(client->outputBackendStatus().nativeErrorCode, int(MMSYSERR_INVALHANDLE));
-		t.outputs[1].result = MMSYSERR_NOERROR; b.processOutEvent(MidiEvent(MidiProgramChange, 0, 41)); QVERIFY(client->outputBackendStatus().active);
+		t.outputs[1].result = MMSYSERR_NOERROR; b.processOutEvent(MidiEvent(MidiProgramChange, 0, 41, 0)); QVERIFY(client->outputBackendStatus().active);
 		QCOMPARE(client->outputBackendStatus().lastNativeErrorCode, int(MMSYSERR_INVALHANDLE));
 	}
 
@@ -370,7 +370,7 @@ private slots:
 		QFETCH(QString, failure); Transport t; t.outputDevices = failure == "no-outputs" ? 0 : 1; t.startupFault = failure;
 		auto client = t.create(); Processor processor; MidiPort port("duplex", client.get(), &processor, nullptr, MidiPort::Mode::Duplex);
 		port.subscribeReadablePort("Input 0"); port.subscribeWritablePort("Output 0");
-		if (failure == "send") { t.outputs[0].result = MIDIERR_NOTREADY; QVERIFY_EXCEPTION_THROWN(port.processOutEvent(MidiEvent(MidiProgramChange, 0, 37)), std::runtime_error); }
+		if (failure == "send") { t.outputs[0].result = MIDIERR_NOTREADY; QVERIFY_EXCEPTION_THROWN(port.processOutEvent(MidiEvent(MidiProgramChange, 0, 37, 0)), std::runtime_error); }
 		auto input = client->inputBackendStatus(); QVERIFY(input.observed && input.active); QCOMPARE(input.nativeErrorCode, 0); QVERIFY(client->isAvailable());
 		const auto output = client->outputBackendStatus(); QVERIFY(output.observed && !output.active);
 		QCOMPARE(output.nativeErrorCode, failure == "no-outputs" ? 0 : failure == "send" ? int(MIDIERR_NOTREADY) : failure == "output-open" ? int(MMSYSERR_ALLOCATED) : failure == "output-null" ? int(MMSYSERR_INVALHANDLE) : int(MMSYSERR_ERROR));
@@ -502,11 +502,11 @@ private slots:
 		const auto inspection = StudioCapabilities::execute("transport.inspect", {}); QVERIFY(inspection.value("ok").toBool());
 		QCOMPARE(inspection.value("result").toObject().value("midiBackend").toObject().value("outputBackend").toObject().value("cleanupPendingChannels").toInt(), 1);
 		MidiPort other("other", engine->midiClient(), &processor, nullptr, MidiPort::Mode::Output); other.subscribeWritablePort("Output 1");
-		other.processOutEvent(MidiEvent(MidiProgramChange, 0, 37)); QVERIFY(!engine->midiClient()->outputBackendStatus().active);
+		other.processOutEvent(MidiEvent(MidiProgramChange, 0, 37, 0)); QVERIFY(!engine->midiClient()->outputBackendStatus().active);
 		QCOMPARE(engine->midiClient()->outputBackendStatus().cleanupPendingChannels, 1u);
 		t.outputs[0].result = MMSYSERR_NOERROR; t.outputs[0].messages.clear();
 		MidiPort next("next", engine->midiClient(), &processor, nullptr, MidiPort::Mode::Output); next.subscribeWritablePort("Output 0");
-		next.processOutEvent(MidiEvent(MidiProgramChange, 0, 38)); auto expected = cleanupMessages(0); expected.push_back(0x000026c0);
+		next.processOutEvent(MidiEvent(MidiProgramChange, 0, 38, 0)); auto expected = cleanupMessages(0); expected.push_back(0x000026c0);
 		QCOMPARE(t.outputs[0].messages, expected); status = engine->midiClient()->outputBackendStatus();
 		QVERIFY(status.active); QCOMPARE(status.cleanupPendingChannels, 0u); QCOMPARE(status.nativeErrorCode, 0); QCOMPARE(status.lastNativeErrorCode, int(MIDIERR_NOTREADY));
 		QCOMPARE(t.badAccess, 0);
@@ -550,10 +550,10 @@ private slots:
 		t.outputs[0].result = MMSYSERR_NOERROR; t.outputs[0].messages.clear(); const auto cleanup = cleanupMessages(3);
 		t.outputs[0].failMessage = cleanup[index]; t.outputs[0].throwMessage = throwing;
 		Processor processor; MidiPort next("next", client.get(), &processor, nullptr, MidiPort::Mode::Output); next.subscribeWritablePort("Output 0");
-		QVERIFY_EXCEPTION_THROWN(next.processOutEvent(MidiEvent(MidiProgramChange, 0, 37)), std::runtime_error);
+		QVERIFY_EXCEPTION_THROWN(next.processOutEvent(MidiEvent(MidiProgramChange, 0, 37, 0)), std::runtime_error);
 		QCOMPARE(t.outputs[0].messages, cleanup); auto status = client->outputBackendStatus(); QVERIFY(!status.active); QCOMPARE(status.cleanupPendingChannels, 1u);
 		QCOMPARE(status.nativeErrorCode, throwing ? int(MMSYSERR_ERROR) : int(MIDIERR_NOTREADY)); QCOMPARE(status.lastNativeErrorCode, status.nativeErrorCode);
-		t.outputs[0].failMessage = 0; t.outputs[0].messages.clear(); next.processOutEvent(MidiEvent(MidiProgramChange, 0, 38));
+		t.outputs[0].failMessage = 0; t.outputs[0].messages.clear(); next.processOutEvent(MidiEvent(MidiProgramChange, 0, 38, 0));
 		auto expected = cleanup; expected.push_back(0x000026c0); QCOMPARE(t.outputs[0].messages, expected);
 		QVERIFY(client->outputBackendStatus().active); QCOMPARE(client->outputBackendStatus().cleanupPendingChannels, 0u); QCOMPARE(t.badAccess, 0);
 	}
@@ -752,7 +752,7 @@ private slots:
 	{
 		QFETCH(bool, reactivated); Transport t; auto client = t.create(); retireNote(t, client.get()); t.outputs[0].result = MMSYSERR_NOERROR; Processor processor;
 		MidiPort survivor("new", client.get(), &processor, nullptr, MidiPort::Mode::Output); survivor.setOutputChannel(0); survivor.subscribeWritablePort("Output 0");
-		survivor.processOutEvent(MidiEvent(MidiProgramChange, 0, 37)); QCOMPARE(client->outputBackendStatus().cleanupPendingChannels, 0u);
+		survivor.processOutEvent(MidiEvent(MidiProgramChange, 0, 37, 0)); QCOMPARE(client->outputBackendStatus().cleanupPendingChannels, 0u);
 		if (reactivated) { survivor.processOutEvent(MidiEvent(MidiNoteOn, 7, 64, 100)); }
 		t.outputs[0].messages.clear(); client.reset();
 		QCOMPARE(t.outputs[0].messages, reactivated ? cleanupMessages(7) : std::vector<DWORD>{}); QCOMPARE(t.outputs[0].closes, 1); QCOMPARE(t.badAccess, 0);
@@ -787,13 +787,13 @@ private slots:
 		const auto before = settings(survivor); const auto oldToken = t.inputs[0].token; t.outputs[0].messages.clear(); WinMmMidiIoTestAccess::close(*client);
 		QVERIFY(!client->isAvailable()); QVERIFY(!client->inputBackendStatus().active); QVERIFY(!client->outputBackendStatus().active);
 		QCOMPARE(client->inputDeliveryStatus(&survivor).pendingEvents, 0u); QVERIFY(client->inputDeliveryStatus(&survivor).failed);
-		QVERIFY_EXCEPTION_THROWN(survivor.processOutEvent(MidiEvent(MidiProgramChange, 0, 37)), std::runtime_error);
+		QVERIFY_EXCEPTION_THROWN(survivor.processOutEvent(MidiEvent(MidiProgramChange, 0, 37, 0)), std::runtime_error);
 		QCOMPARE(t.outputs[0].messages, cleanupMessages(0)); t.feed(); pump(); QVERIFY(processor.events.empty());
 		WinMmMidiIoTestAccess::refresh(*client); QVERIFY(client->isAvailable()); QVERIFY(client->inputBackendStatus().active); QVERIFY(client->outputBackendStatus().active);
 		QVERIFY(t.inputs[0].token != oldToken); QCOMPARE(t.outputs[0].opens, 2); QCOMPARE(t.outputs[0].closes, 1); QCOMPARE(settings(survivor), before);
 		QString error; bool changed = false; QVERIFY2(survivor.resetInputDelivery(error, changed), qPrintable(error)); QVERIFY(changed);
 		t.feed(); pump(); QCOMPARE(processor.events.size(), std::size_t{1}); QCOMPARE(processor.events.front().type(), MidiNoteOn);
-		t.outputs[0].messages.clear(); survivor.processOutEvent(MidiEvent(MidiProgramChange, 0, 38)); QCOMPARE(t.outputs[0].messages, (std::vector<DWORD>{0x000026c0}));
+		t.outputs[0].messages.clear(); survivor.processOutEvent(MidiEvent(MidiProgramChange, 0, 38, 0)); QCOMPARE(t.outputs[0].messages, (std::vector<DWORD>{0x000026c0}));
 		client.reset(); QCOMPARE(t.outputs[0].messagesAtClose, std::size_t{1}); QCOMPARE(t.outputs[0].closes, 2); QCOMPARE(t.badAccess, 0);
 	}
 

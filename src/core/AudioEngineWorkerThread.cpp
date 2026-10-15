@@ -26,6 +26,7 @@
 
 #include <QMutex>
 #include <QMutexLocker>
+#include <QScopedValueRollback>
 #include <QWaitCondition>
 #include <stdexcept>
 
@@ -223,7 +224,13 @@ void AudioEngineWorkerThread::run()
 		if (m_quit) { break; }
 		m_workPending = false; m_workActive = true;
 		guard.unlock();
-		globalJobQueue.run();
+		{
+			// The coordinator retains model ownership until every worker returns.
+			// Note/MIDI jobs share that render admission instead of trying to lock
+			// the coordinator's mutex from another thread.
+			QScopedValueRollback<bool> rendering(AudioEngine::s_renderingThread, true);
+			globalJobQueue.run();
+		}
 		guard.relock();
 		m_workActive = false;
 		Q_ASSERT(state.pendingWorkers > 0);

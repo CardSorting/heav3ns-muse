@@ -1,3 +1,4 @@
+#include "../core/NativeSongTestAccess.h"
 /* Native SoundFont file/settings callback lifetimes. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QFile>
@@ -67,7 +68,7 @@ class Sf2ResourceLifecycleTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); ConfigManager::inst()->setSF2File(""); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); QVERIFY(QFile::exists(bank())); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); }
+	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); }
 	void cleanup() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); }
 	void nativeControlsProgramsAndAcceptedSnapshotRoundTrip()
 	{
@@ -123,7 +124,7 @@ private slots:
 	{ QTest::addColumn<int>("kind"); QTest::newRow("borrowed-input") << 0; QTest::newRow("control-mutation") << 1; QTest::newRow("project-path") << 2; }
 	void copiedInputsAndNativeControlRootChangesAreChecked()
 	{
-		QFETCH(int, kind); auto native = seed(); QString path = bank(), key = "soundfont", error; bool changed = false; { FileResourceIO::Scope work([&] { if (!changed) { changed = true; if (kind == 0) { path = configuration.filePath("absent.sf2"); key = "changed"; } if (kind == 1) { native->childModel("bank")->setValue(99); } if (kind == 2) { Engine::getSong()->setProjectFileName(configuration.filePath("other.mmp")); } } return false; }); if (kind == 0) { QVERIFY(native->setFileResource(key, path, error)); } else { QVERIFY_EXCEPTION_THROWN(native->setFileResource(key, path, error), std::runtime_error); } } QVERIFY(changed); QCOMPARE(native->programSnapshot().size(), kind == 0 ? std::size_t(2) : std::size_t(0));
+		QFETCH(int, kind); auto native = seed(); QString path = bank(), key = "soundfont", error; bool changed = false; { FileResourceIO::Scope work([&] { if (!changed) { changed = true; if (kind == 0) { path = configuration.filePath("absent.sf2"); key = "changed"; } if (kind == 1) { native->childModel("bank")->setValue(99); } if (kind == 2) { NativeSongTestAccess::setProjectFileName(Engine::getSong(), configuration.filePath("other.mmp")); } } return false; }); if (kind == 0) { QVERIFY(native->setFileResource(key, path, error)); } else { QVERIFY_EXCEPTION_THROWN(native->setFileResource(key, path, error), std::runtime_error); } } QVERIFY(changed); QCOMPARE(native->programSnapshot().size(), kind == 0 ? std::size_t(2) : std::size_t(0));
 	}
 	void missingCorruptAndEmptyFilesKeepNativeReplacementSemantics()
 	{

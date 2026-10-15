@@ -197,11 +197,11 @@ protected:
 	Clip* cloneNative() const;
 	void saveControlSettings(QDomDocument& document, QDomElement& element, const QString& muteKey = "muted");
 	void loadControlSettings(const QDomElement& element, const QString& muteKey = "muted");
+	void requireIdleForCopy() const;
 
 private:
 	void saveCopyControlSettings(QDomDocument& document, QDomElement& element, const QString& muteKey = "muted");
 	void loadCopyControlSettings(const QDomElement& element, const QString& muteKey = "muted");
-	void requireIdleForCopy() const;
 	QDomDocument captureCopyControls() const;
 	Clip* copyToImpl(Track* destination, Clip* replacement, bool legacyClone) const;
 	std::unique_ptr<Clip> constructCopy(Track* destination) const;

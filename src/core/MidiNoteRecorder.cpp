@@ -30,7 +30,7 @@ TimePos MidiNoteRecorder::positionInClip(const Note& note, const MidiClip& clip,
 {
 	// The onset snapshot survives a queued GUI/model-thread delivery. Song clips
 	// use the same placement/trim offset as InstrumentTrack::play.
-	return songPosition ? note.pos() - clip.startPosition() - clip.startTimeOffset() : note.pos();
+	return songPosition ? TimePos(note.pos() - clip.startPosition() - clip.startTimeOffset()) : note.pos();
 }
 
 bool MidiNoteRecorder::startNote(const Note& note, TimePos position)

@@ -46,7 +46,7 @@ protected:
 	Instrument* createInstrument(const QString&, const Plugin::Descriptor::SubPluginFeatures::Key*, bool) override
 	{ return new EventInstrument(this, receiver); }
 };
-MidiEvent event(int type, int first, int second, int channel)
+MidiEvent fixtureEvent(int type, int first, int second, int channel)
 {
 	MidiEvent result(static_cast<MidiEventTypes>(type), channel, first, second);
 	if (result.type() == MidiMetaEvent) { result.setMetaEvent(MidiNotePanning); }
@@ -109,7 +109,7 @@ private slots:
 		connect(track, &InstrumentTrack::midiNoteOff, &lifetime, [&](const Note& note) { releases.push_back(note); }, Qt::DirectConnection);
 		track->processInEvent(MidiEvent(MidiNoteOn, 0, 60, 100)); QCOMPARE(onsets.size(), std::size_t(1));
 		const auto pitch = track->pitchModel()->value(); const auto deliveries = track->receiver->events.size();
-		track->processInEvent(event(type, first, second, channel), TimePos(17), 5);
+		track->processInEvent(fixtureEvent(type, first, second, channel), TimePos(17), 5);
 		QCOMPARE(onsets.size(), std::size_t(1)); QVERIFY(releases.empty()); QCOMPARE(track->pitchModel()->value(), pitch);
 		QCOMPARE(track->receiver->events.size(), deliveries); QVERIFY(!track->isSustainPedalPressed());
 		track->processInEvent(MidiEvent(MidiNoteOff, 0, 60, 0)); QCOMPARE(releases.size(), std::size_t(1));
@@ -122,7 +122,7 @@ private slots:
 		QFETCH(int, type); QFETCH(int, first); QFETCH(int, second); QFETCH(int, channel); auto track = fixture();
 		track->processOutEvent(MidiEvent(MidiNoteOn, 0, 60, 100)); QVERIFY(track->pianoModel()->isKeyPressed(60));
 		const auto deliveries = track->receiver->events.size(); QSignalSpy on(track, &InstrumentTrack::newNote), off(track, &InstrumentTrack::endNote);
-		track->processOutEvent(event(type, first, second, channel), TimePos(17), 5);
+		track->processOutEvent(fixtureEvent(type, first, second, channel), TimePos(17), 5);
 		QCOMPARE(track->receiver->events.size(), deliveries); QCOMPARE(on.size(), 0); QCOMPARE(off.size(), 0); QVERIFY(track->pianoModel()->isKeyPressed(60));
 		track->processOutEvent(MidiEvent(MidiNoteOff, 0, 60, 0)); QCOMPARE(off.size(), 1); QVERIFY(!track->pianoModel()->isKeyPressed(60));
 	}
@@ -141,7 +141,7 @@ private slots:
 		QFETCH(int, type); QFETCH(bool, maximum); auto track = fixture(); track->midiPort()->setOutputChannel(0);
 		const bool pair = type == MidiNoteOn || type == MidiNoteOff || type == MidiKeyPressure || type == MidiControlChange;
 		const int first = maximum ? (type == MidiPitchBend ? MidiMaxPitchBend : 127) : 0, second = maximum && pair ? 127 : 0;
-		track->processOutEvent(event(type, first, second, 15), TimePos(17), 5); QCOMPARE(track->receiver->events.size(), std::size_t(1));
+		track->processOutEvent(fixtureEvent(type, first, second, 15), TimePos(17), 5); QCOMPARE(track->receiver->events.size(), std::size_t(1));
 		const auto& delivered = track->receiver->events[0];
 		const auto expected = type == MidiNoteOn && second == 0 ? MidiNoteOff : static_cast<MidiEventTypes>(type);
 		QCOMPARE(delivered.type, expected); QCOMPARE(delivered.first, first); QCOMPARE(delivered.second, expected == MidiNoteOff ? 0 : second);
@@ -156,10 +156,10 @@ private slots:
 		track->processInEvent(MidiEvent(MidiKeyPressure, -1, 60, 64)); QVERIFY(!track->receiver->events.empty());
 		QCOMPARE(track->receiver->events.back().type, MidiKeyPressure); QCOMPARE(track->receiver->events.back().first, 60);
 		QCOMPARE(track->receiver->events.back().channel, track->midiPort()->realOutputChannel());
-		track->processInEvent(event(MidiMetaEvent, 60, MidiMinPanning, -1));
+		track->processInEvent(fixtureEvent(MidiMetaEvent, 60, MidiMinPanning, -1));
 		track->pianoModel()->handleKeyRelease(60); QCOMPARE(releases.size(), std::size_t(1));
 		QCOMPARE(releases[0].getPanning(), panning_t(PanningLeft)); track->pianoModel()->handleKeyPress(60, 100);
-		track->processInEvent(event(MidiMetaEvent, 60, MidiMaxPanning, -1)); track->pianoModel()->handleKeyRelease(60);
+		track->processInEvent(fixtureEvent(MidiMetaEvent, 60, MidiMaxPanning, -1)); track->pianoModel()->handleKeyRelease(60);
 		QCOMPARE(releases.size(), std::size_t(2)); QCOMPARE(releases[1].key(), 60); QCOMPARE(releases[1].getPanning(), panning_t(PanningRight));
 		QVERIFY(!track->pianoModel()->isKeyPressed(60));
 	}
@@ -202,7 +202,7 @@ private slots:
 	void receiverExceptionsLeaveNativeCleanupAndFurtherOutputUsable()
 	{
 		QFETCH(int, type); auto track = fixture(); if (type != MidiNoteOn) { track->processOutEvent(MidiEvent(MidiNoteOn, 0, 60, 100)); }
-		track->receiver->failure = type; QVERIFY_EXCEPTION_THROWN(track->processOutEvent(event(type, 60, 100, 0)), std::runtime_error);
+		track->receiver->failure = type; QVERIFY_EXCEPTION_THROWN(track->processOutEvent(fixtureEvent(type, 60, 100, 0)), std::runtime_error);
 		// Cleanup enters the same native note mutex; an unbalanced exception would
 		// hang this test and be bounded by its CTest process timeout.
 		track->processInEvent(MidiEvent(MidiControlChange, 0, MidiControllerAllNotesOff, 0)); track->receiver->events.clear();

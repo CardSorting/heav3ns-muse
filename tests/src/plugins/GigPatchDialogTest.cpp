@@ -1,3 +1,4 @@
+#include "../core/NativeSongTestAccess.h"
 /* Native GIG patch dialog ownership and modal invalidation. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QApplication>
 #include <QtTest>
@@ -73,7 +74,7 @@ class GigPatchDialogTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); QVERIFY(media.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); QString error; QVERIFY2(test::gigNative::create(bank(), true, error, 16, 1, true), qPrintable(error)); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
+	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void cleanup() { for (auto track : Engine::getSong()->tracks()) { if (auto instrument = dynamic_cast<InstrumentTrack*>(track)) { if (auto native = dynamic_cast<ObservedGig*>(instrument->instrument())) { native->inspect = {}; native->changeResult = {}; } } } Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void setupUsesTheCurrentNativeSelection_data()
 	{ QTest::addColumn<bool>("alternate"); QTest::newRow("first-bank") << false; QTest::newRow("alternate-bank") << true; }
@@ -103,7 +104,7 @@ private slots:
 	{ QTest::addColumn<int>("change"); QTest::newRow("owner") << 0; QTest::newRow("track") << 1; QTest::newRow("project") << 2; QTest::newRow("clear-bank") << 3; QTest::newRow("replace-bank") << 4; QTest::newRow("project-filename") << 5; }
 	void modalLoopRejectsRetiredOrReplacedNativeContext()
 	{
-		QFETCH(int, change); const QPointer<ObservedGig> native(seed()); const QPointer<InstrumentTrack> track(native->instrumentTrack()); PatchesDialog dialog; QVERIFY(dialog.setup(native.data(), "Modal")); QVERIFY(choose(&dialog, 4, 11)); bool called = false; QTimer::singleShot(0, &dialog, [&] { called = true; QString error; if (change == 0) { delete native.data(); } if (change == 1) { delete track.data(); } if (change == 2) { Engine::getSong()->clearProject(); } if (change == 3) { QVERIFY(native->setFileResource("bank", {}, error)); } if (change == 4) { QVERIFY(native->setFileResource("bank", bank(), error)); } if (change == 5) { Engine::getSong()->setProjectFileName(media.filePath("changed.mmp")); } }); const auto result = dialog.exec(); QVERIFY(called); QCOMPARE(result, int(QDialog::Rejected)); QVERIFY(accept(&dialog)); if (native) { QVERIFY(native->getBank() != 4 || native->getPatch() != 11); }
+		QFETCH(int, change); const QPointer<ObservedGig> native(seed()); const QPointer<InstrumentTrack> track(native->instrumentTrack()); PatchesDialog dialog; QVERIFY(dialog.setup(native.data(), "Modal")); QVERIFY(choose(&dialog, 4, 11)); bool called = false; QTimer::singleShot(0, &dialog, [&] { called = true; QString error; if (change == 0) { delete native.data(); } if (change == 1) { delete track.data(); } if (change == 2) { Engine::getSong()->clearProject(); } if (change == 3) { QVERIFY(native->setFileResource("bank", {}, error)); } if (change == 4) { QVERIFY(native->setFileResource("bank", bank(), error)); } if (change == 5) { NativeSongTestAccess::setProjectFileName(Engine::getSong(), media.filePath("changed.mmp")); } }); const auto result = dialog.exec(); QVERIFY(called); QCOMPARE(result, int(QDialog::Rejected)); QVERIFY(accept(&dialog)); if (native) { QVERIFY(native->getBank() != 4 || native->getPatch() != 11); }
 	}
 	void externalControlEditsInvalidateTheCandidate_data()
 	{ QTest::addColumn<bool>("patch"); QTest::newRow("bank") << false; QTest::newRow("program") << true; }
@@ -141,7 +142,7 @@ private slots:
 	{ QTest::addColumn<int>("change"); QTest::newRow("routing-generation") << 0; QTest::newRow("filename") << 1; QTest::newRow("rate-notification") << 2; }
 	void rootChangesAndRateNotificationRejectBeforeCommit()
 	{
-		QFETCH(int, change); auto native = seed(); PatchesDialog dialog; QVERIFY(dialog.setup(native, "Root changes")); QVERIFY(choose(&dialog, 4, 11)); if (change == 0) { Engine::mixer()->clear(); } if (change == 1) { Engine::getSong()->setProjectFileName(media.filePath("changed.mmp")); } if (change == 2) { QVERIFY(QMetaObject::invokeMethod(Engine::audioEngine(), "sampleRateChanged", Qt::DirectConnection)); } QVERIFY(accept(&dialog)); QCOMPARE(dialog.result(), int(QDialog::Rejected)); QCOMPARE(native->getBank(), 2); QCOMPARE(native->getPatch(), 7);
+		QFETCH(int, change); auto native = seed(); PatchesDialog dialog; QVERIFY(dialog.setup(native, "Root changes")); QVERIFY(choose(&dialog, 4, 11)); if (change == 0) { Engine::mixer()->clear(); } if (change == 1) { NativeSongTestAccess::setProjectFileName(Engine::getSong(), media.filePath("changed.mmp")); } if (change == 2) { QVERIFY(QMetaObject::invokeMethod(Engine::audioEngine(), "sampleRateChanged", Qt::DirectConnection)); } QVERIFY(accept(&dialog)); QCOMPARE(dialog.result(), int(QDialog::Rejected)); QCOMPARE(native->getBank(), 2); QCOMPARE(native->getPatch(), 7);
 	}
 	void getterExceptionsStayInsideTheDialog_data()
 	{ QTest::addColumn<bool>("setup"); QTest::addColumn<bool>("standard"); QTest::newRow("setup-standard") << true << true; QTest::newRow("setup-nonstandard") << true << false; QTest::newRow("commit-standard") << false << true; QTest::newRow("commit-nonstandard") << false << false; }

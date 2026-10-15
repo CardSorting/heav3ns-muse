@@ -62,7 +62,7 @@ class TrackContainerView;
 const int MINIMAL_TRACK_HEIGHT = 32;
 const int DEFAULT_TRACK_HEIGHT = 32;
 
-char const *const FILENAME_FILTER = "[\\0000-\x1f\"*/:<>?\\\\|\x7f]";
+char const *const FILENAME_FILTER = "[\\x{0000}-\\x{001f}\"*/:<>?\\\\|\\x{007f}]";
 
 
 //! Base-class for all tracks
@@ -285,6 +285,7 @@ public:
 	}
 	
 	BoolModel* getMutedModel();
+	BoolModel* getSoloModel() { return &m_soloModel; }
 
 public slots:
 	virtual void setName(const QString& newName);

@@ -1,3 +1,4 @@
+#include "../core/NativeInstrumentTestAccess.h"
 /* Native Carla host contract tests. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QApplication>
@@ -346,8 +347,7 @@ void process(NativePluginHandle, float**, float** output, uint32_t frames, const
 }
 const NativePluginDescriptor descriptor = []
 {
-	NativePluginDescriptor result{};
-	result.midiIns = 1; result.midiOuts = 1;
+	NativePluginDescriptor result{.midiIns = 1, .midiOuts = 1};
 	result.instantiate = instantiate; result.cleanup = cleanup;
 	result.get_parameter_count = parameterCount; result.get_parameter_info = parameterInfo;
 	result.get_parameter_value = parameterValue; result.set_parameter_value = setParameter;
@@ -1579,10 +1579,10 @@ private slots:
 		{
 			// Project metadata cannot turn a native output into an input control.
 			QDomDocument saved; auto root = saved.createElement("carlahosttest"); saved.appendChild(root);
-			track->instrument()->saveSettings(saved, root);
+			NativeInstrumentTestAccess::save(track->instrument(), saved, root);
 			auto metadata = saved.createElement("PARAM_KNOB_0"); metadata.setAttribute("output", 0);
 			metadata.setAttribute("value", before); metadata.setAttribute("id", id); root.appendChild(metadata);
-			track->instrument()->loadSettings(root);
+			NativeInstrumentTestAccess::load(track->instrument(), root);
 			QVERIFY(!model->isWritable()); QCOMPARE(native.parameterWrites, 0);
 		}
 	}
@@ -1651,9 +1651,9 @@ private slots:
 		QCOMPARE(native.parameterWrites, 0);
 		native.values[0] = 63.f;
 		QDomDocument saved; auto root = saved.createElement("carlahosttest"); saved.appendChild(root);
-		track->instrument()->saveSettings(saved, root);
+		NativeInstrumentTestAccess::save(track->instrument(), saved, root);
 		QVERIFY(DataFile::serializationError(saved).isEmpty()); QCOMPARE(model->storedValue(), 63.f);
-		native.values[0] = 1.f; track->instrument()->loadSettings(root);
+		native.values[0] = 1.f; NativeInstrumentTestAccess::load(track->instrument(), root);
 		QCOMPARE(native.values[0], 63.f); QCOMPARE(model->storedValue(), 63.f);
 		QVERIFY(StudioCapabilities::execute("controller.add", {{"type", "lfo"}}).value("ok").toBool());
 		QVERIFY(StudioCapabilities::execute("controller.connect", {{"controller", 0}, {"parameter", id}}).value("ok").toBool());
@@ -1661,7 +1661,7 @@ private slots:
 		QVERIFY(StudioCapabilities::execute("parameter.inspect", {{"parameter", id}}).value("ok").toBool());
 		QCOMPARE(model->storedValue(), 63.f); QCOMPARE(native.parameterWrites, writes);
 		QDomDocument controlled; auto controls = controlled.createElement("carlahosttest"); controlled.appendChild(controls);
-		track->instrument()->saveSettings(controlled, controls);
+		NativeInstrumentTestAccess::save(track->instrument(), controlled, controls);
 		QVERIFY(DataFile::serializationError(controlled).isEmpty()); QCOMPARE(model->storedValue(), 63.f);
 		QCOMPARE(native.parameterWrites, writes);
 	}

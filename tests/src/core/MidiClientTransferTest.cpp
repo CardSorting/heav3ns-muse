@@ -435,7 +435,7 @@ private slots:
 	{
 		auto source = std::make_unique<TransferClient>(); TransferClient target; target.inputs.clear(); target.outputs.clear(); TransferProcessor processor;
 		MidiPort port("refresh", source.get(), &processor); configure(port); MidiClientTransferTestAccess::transfer(*source, target); source.reset();
-		QVERIFY(port.readablePorts().empty()); target.inputs = {"keyboard", "absent input"}; target.outputs = {"speaker", "absent output"}; target.refresh();
+		QVERIFY(port.readablePorts().empty()); target.inputs = QStringList{"keyboard", "absent input"}; target.outputs = QStringList{"speaker", "absent output"}; target.refresh();
 		QVERIFY(port.readablePorts().value("absent input")); QVERIFY(port.writablePorts().value("absent output")); QCOMPARE(target.reads.value(&port).size(), 2); QCOMPARE(target.writes.value(&port).size(), 2);
 	}
 

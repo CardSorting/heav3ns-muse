@@ -103,7 +103,7 @@ namespace lmms
 
 using LocklessListElement = LocklessList<PlayHandle*>::Element;
 
-static thread_local bool s_renderingThread = false;
+thread_local bool AudioEngine::s_renderingThread = false;
 static thread_local unsigned int s_modelChangeDepth = 0;
 
 const char* AudioEngine::dspFailureName(DspFailure failure)

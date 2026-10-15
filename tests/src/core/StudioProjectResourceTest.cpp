@@ -1,3 +1,4 @@
+#include "Instrument.h"
 /* Native declared dependency pages and agent discovery. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QDir>

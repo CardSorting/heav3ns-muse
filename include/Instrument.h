@@ -54,6 +54,7 @@ class SampleFrame;
 
 class LMMS_EXPORT Instrument : public Plugin
 {
+	friend class NativeInstrumentTestAccess;
 public:
 	enum class Flag
 	{

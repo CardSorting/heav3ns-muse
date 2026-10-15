@@ -65,7 +65,7 @@ class LfoWaveResourceTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
+	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void cleanup() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->getSaveOptions().setDefaultOptions(); }
 	void missingSettingsRetainControlsAndZeroWaveContribution_data()
 	{ QTest::addColumn<bool>("marked"); QTest::addColumn<bool>("present"); QTest::newRow("legacy-missing") << false << false; QTest::newRow("marked-missing") << true << false; QTest::newRow("marked-file-appeared") << true << true; }
@@ -139,7 +139,7 @@ private slots:
 	{ QTest::addColumn<bool>("replace"); QTest::newRow("project-path") << false; QTest::newRow("project-generation") << true; }
 	void nativeProjectChangesInvalidateReturnedResourceWork()
 	{
-		QFETCH(bool, replace); QTemporaryDir source; const auto path = source.filePath("wave.wav"); QVERIFY(wave(path)); Lfo native; bool invoked = false; QString error; { FileResourceIO::Scope work([&] { if (!invoked) { invoked = true; if (replace) { Engine::getSong()->createEmptyProject(); } else { Engine::getSong()->setProjectFileName(source.filePath("another.mmp")); } } return false; }); QVERIFY_EXCEPTION_THROWN(native.setUserWave(path, error), std::runtime_error); } QVERIFY(invoked); QVERIFY(native.userWave().empty()); QVERIFY(native.setUserWave(path, error));
+		QFETCH(bool, replace); QTemporaryDir source; const auto path = source.filePath("wave.wav"); QVERIFY(wave(path)); Lfo native; bool invoked = false; QString error; { FileResourceIO::Scope work([&] { if (!invoked) { invoked = true; if (replace) { Engine::getSong()->createEmptyProject(); } else { NativeSongTestAccess::setProjectFileName(Engine::getSong(), source.filePath("another.mmp")); } } return false; }); QVERIFY_EXCEPTION_THROWN(native.setUserWave(path, error), std::runtime_error); } QVERIFY(invoked); QVERIFY(native.userWave().empty()); QVERIFY(native.setUserWave(path, error));
 	}
 	void serializationRejectsCooperativeControlChanges()
 	{

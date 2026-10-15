@@ -41,7 +41,7 @@ public:
 	~TemplatesMenu() override = default;
 
 private slots:
-	static void createNewProjectFromTemplate(QAction * _action);
+	void createNewProjectFromTemplate(QAction * _action);
 	void fillTemplatesMenu();
 	void addTemplatesFromDir( const QDir& dir );
 

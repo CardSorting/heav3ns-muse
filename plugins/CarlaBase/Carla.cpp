@@ -165,7 +165,7 @@ static intptr_t host_dispatcher(NativeHostHandle handle, NativeHostDispatcherOpc
 static const char* host_ui_open_file(NativeHostHandle, bool isDir, const char* title, const char* filter)
 {
     auto* app = qobject_cast<QApplication*>(QCoreApplication::instance());
-    if (!getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
+    if (!gui::getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
     static QByteArray retStr;
     const QFileDialog::Options options(isDir ? QFileDialog::ShowDirsOnly : 0x0);
 
@@ -177,7 +177,7 @@ static const char* host_ui_open_file(NativeHostHandle, bool isDir, const char* t
 static const char* host_ui_save_file(NativeHostHandle, bool isDir, const char* title, const char* filter)
 {
     auto* app = qobject_cast<QApplication*>(QCoreApplication::instance());
-    if (!getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
+    if (!gui::getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
     static QByteArray retStr;
     const QFileDialog::Options options(isDir ? QFileDialog::ShowDirsOnly : 0x0);
 
@@ -379,7 +379,7 @@ intptr_t CarlaInstrument::handleDispatcher(const NativeHostDispatcherOpcode opco
     case NATIVE_HOST_OPCODE_HOST_IDLE:
         // A plugin callback must not pump arbitrary studio commands while an
         // instrument is being constructed, restored, or destroyed.
-        if (getGUI() && QCoreApplication::instance()
+        if (gui::getGUI() && QCoreApplication::instance()
             && QThread::currentThread() == QCoreApplication::instance()->thread())
         {
             QCoreApplication::processEvents();
@@ -688,7 +688,7 @@ void CarlaInstrument::paramModelChanged(uint32_t index)
 		}
 
 		// TODO? Shouldn't Carla be doing this?
-		if (getGUI() && fDescriptor->ui_set_parameter_value != nullptr)
+		if (gui::getGUI() && fDescriptor->ui_set_parameter_value != nullptr)
 		{
 			fDescriptor->ui_set_parameter_value(fHandle, index, m_paramModels[index]->value());
 		}
@@ -892,7 +892,7 @@ bool CarlaInstrument::handleMidiEvent(const MidiEvent& event, const TimePos&, f_
 gui::PluginView* CarlaInstrument::instantiateView(QWidget* parent)
 {
     auto* app = qobject_cast<QApplication*>(QCoreApplication::instance());
-    if (!getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
+    if (!gui::getGUI() || !app || QThread::currentThread() != app->thread()) { return nullptr; }
 // Disable plugin focus per https://bugreports.qt.io/browse/QTBUG-30181
 #ifndef CARLA_OS_MAC
     if (QWidget* const window = parent ? parent->window() : nullptr)
@@ -1173,9 +1173,9 @@ CarlaParamsView::CarlaParamsView(CarlaInstrumentView* const instrumentView, QWid
 	verticalLayout->addWidget(splitter);
 
 	// -- Sub window
-	auto win = new CarlaParamsSubWindow(getGUI()->mainWindow()->workspace()->viewport(),
+	auto win = new CarlaParamsSubWindow(gui::getGUI()->mainWindow()->workspace()->viewport(),
 		Qt::SubWindow | Qt::CustomizeWindowHint | Qt::WindowTitleHint | Qt::WindowSystemMenuHint);
-	m_carlaInstrumentView->m_paramsSubWindow = getGUI()->mainWindow()->workspace()->addSubWindow(win);
+	m_carlaInstrumentView->m_paramsSubWindow = gui::getGUI()->mainWindow()->workspace()->addSubWindow(win);
 	m_carlaInstrumentView->m_paramsSubWindow->setSizePolicy(
 		QSizePolicy::MinimumExpanding, QSizePolicy::MinimumExpanding);
 	m_carlaInstrumentView->m_paramsSubWindow->setMinimumHeight(200);

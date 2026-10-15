@@ -1,3 +1,4 @@
+#include "NativeSongTestAccess.h"
 /* Native studio render ownership across returned callbacks. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QCryptographicHash>
@@ -86,7 +87,7 @@ private slots:
 		QVERIFY(ProjectRenderer::fileEncodeDevices.at(static_cast<std::size_t>(Format::Flac)).isAvailable());
 	}
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stopExport(); QVERIFY(Engine::audioEngine()->restoreAudioDevice()); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::getSong()->setProjectFileName(""); preferences(true, true, 7); arrange(); }
+	void init() { Engine::getSong()->stopExport(); QVERIFY(Engine::audioEngine()->restoreAudioDevice()); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); preferences(true, true, 7); arrange(); }
 	void cleanup() { Engine::getSong()->stopExport(); QVERIFY(Engine::audioEngine()->restoreAudioDevice()); Engine::getSong()->clearProject(); released(); }
 	void successfulNativeResultsRestoreSettings_data()
 	{
@@ -116,7 +117,7 @@ private slots:
 	{
 		QFETCH(bool, clear); QFETCH(bool, publication); QTemporaryDir output; const auto path = output.filePath("prior.wav"); QVERIFY(write(path, "prior export"));
 		auto engine = Engine::audioEngine(); auto original = engine->audioDev(); bool sawFile = false, restored = false, fired = false;
-		const auto mutate = [&] { if (fired) { return; } fired = true; FileResourceIO::Suspension work; if (clear) { Engine::getSong()->clearProject(); } else { Engine::getSong()->setProjectFileName("replacement.mmp"); } preferences(false, false, 19); };
+		const auto mutate = [&] { if (fired) { return; } fired = true; FileResourceIO::Suspension work; if (clear) { Engine::getSong()->clearProject(); } else { NativeSongTestAccess::setProjectFileName(Engine::getSong(), "replacement.mmp"); } preferences(false, false, 19); };
 		const auto connection = connect(engine, &AudioEngine::sampleRateChanged, this, [&] {
 			if (dynamic_cast<AudioFileDevice*>(engine->audioDev())) { sawFile = true; }
 			if (sawFile && engine->audioDev() == original) { restored = true; if (!publication) { mutate(); } }
@@ -218,7 +219,7 @@ private slots:
 		QFETCH(bool, reservation); QTemporaryDir output; const auto path = output.filePath("prior.wav"); QVERIFY(write(path, "prior export")); bool fired = false;
 		auto engine = Engine::audioEngine(); std::uint64_t newer = 0; bool accepted = false;
 		const auto recover = qScopeGuard([&] { FileResourceIO::Suspension work; engine->restoreAudioDevice(); });
-		QJsonObject response; { FileResourceIO::Scope work([&] { if (!fired) { fired = true; if (reservation) { accepted = engine->storeAudioDevice(); newer = engine->audioDeviceReservationGeneration(); } else { Engine::getSong()->setProjectFileName("changed-during-studio-admission.mmp"); } } return false; }); response = StudioCapabilities::execute("audio.render", arguments(path, true)); }
+		QJsonObject response; { FileResourceIO::Scope work([&] { if (!fired) { fired = true; if (reservation) { accepted = engine->storeAudioDevice(); newer = engine->audioDeviceReservationGeneration(); } else { NativeSongTestAccess::setProjectFileName(Engine::getSong(), "changed-during-studio-admission.mmp"); } } return false; }); response = StudioCapabilities::execute("audio.render", arguments(path, true)); }
 		QVERIFY(fired); QVERIFY(!response.value("ok").toBool()); QCOMPARE(read(path), QByteArray("prior export")); QVERIFY(noStaging(output));
 		if (reservation) { QVERIFY(accepted); QVERIFY(engine->hasStoredAudioDevice()); QCOMPARE(engine->audioDeviceReservationGeneration(), newer); QVERIFY(engine->restoreAudioDevice()); }
 		originalPreferences(); released();

@@ -38,9 +38,9 @@ struct NativeGraph
 		for (int i = 0; i < 3; ++i)
 		{
 			events.push_back({ENGINE_CALLBACK_PATCHBAY_PORT_ADDED, 1, i + 1, types[i], 0, "Input source " + QByteArray::number(i)});
-			events.push_back({ENGINE_CALLBACK_PATCHBAY_PORT_ADDED, 2, i + 1, types[i] | PATCHBAY_PORT_IS_INPUT, 0, "Plugin input " + QByteArray::number(i)});
+			events.push_back({ENGINE_CALLBACK_PATCHBAY_PORT_ADDED, 2, i + 1, static_cast<int>(types[i] | PATCHBAY_PORT_IS_INPUT), 0, "Plugin input " + QByteArray::number(i)});
 			events.push_back({ENGINE_CALLBACK_PATCHBAY_PORT_ADDED, 2, i + 4, types[i], 9, "Plugin output " + QByteArray::number(i)});
-			events.push_back({ENGINE_CALLBACK_PATCHBAY_PORT_ADDED, 3, i + 1, types[i] | PATCHBAY_PORT_IS_INPUT, 0, "Output sink " + QByteArray::number(i)});
+			events.push_back({ENGINE_CALLBACK_PATCHBAY_PORT_ADDED, 3, i + 1, static_cast<int>(types[i] | PATCHBAY_PORT_IS_INPUT), 0, "Output sink " + QByteArray::number(i)});
 		}
 	}
 #endif

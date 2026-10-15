@@ -1,3 +1,4 @@
+#include "../core/NativeSongTestAccess.h"
 /* Native retained FluidSynth rate conversion. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QFile>
@@ -97,7 +98,7 @@ class Sf2RateFallbackTest : public QObject
 private slots:
 	void initTestCase() { QVERIFY(configuration.isValid()); ConfigManager::inst()->setWorkingDir(configuration.filePath("workspace")); ConfigManager::inst()->loadConfigFile(configuration.filePath("config.xml")); ConfigManager::inst()->setSF2File(""); ConfigManager::inst()->setValue("midi", "midiautoassign", "none"); NotePlayHandleManager::init(); Engine::init(true); Engine::audioEngine()->audioDev()->stopProcessing(); QVERIFY(QFile::exists(bank())); }
 	void cleanupTestCase() { Engine::destroy(); NotePlayHandleManager::free(); }
-	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); clock(44100); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); Engine::getSong()->setProjectFileName(""); }
+	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); clock(44100); Engine::getSong()->clearErrors(); Engine::getSong()->setLoadOnLaunch(false); NativeSongTestAccess::setProjectFileName(Engine::getSong(), ""); }
 	void cleanup() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); clock(44100); }
 	void verificationFailureKeepsTheRetainedSynthAtTheNewOutputRate_data()
 	{ QTest::addColumn<int>("rate"); QTest::newRow("32000") << 32000; QTest::newRow("48000") << 48000; QTest::newRow("88200") << 88200; QTest::newRow("96000") << 96000; QTest::newRow("192000") << 192000; }

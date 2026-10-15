@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-15T18:51:06Z",
+  "compiled_at": "2026-10-15T20:54:30Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
@@ -278,13 +278,19 @@
       "artifact": "doc/evidence/test-runs/20261014-full-song-render.json",
       "command": "python3 tests/studio_process_test.py",
       "sha256": ""
+    },
+    {
+      "gate": "summary",
+      "artifact": "doc/evidence/ci-runs/20261015_185214-summary.json",
+      "command": "local-verification",
+      "sha256": "f2eb8fb23d38"
     }
   ],
   "domains": {
     "studio-runtime": {
       "title": "Studio Runtime & Process Lifecycle",
       "status": "reviewed",
-      "reviewer": "Deputy Gemini (Commission 011)",
+      "reviewer": "Build Stabilization",
       "review_by": "2026-11-14",
       "guides_count": 15,
       "sources_patterns": [
@@ -299,7 +305,7 @@
     "capabilities": {
       "title": "Native DAW Capabilities & Operation Dispatch",
       "status": "reviewed",
-      "reviewer": "Capabilities Maintainers",
+      "reviewer": "Build Stabilization",
       "review_by": "2026-11-14",
       "guides_count": 4,
       "sources_patterns": [
@@ -319,7 +325,7 @@
     "agent-coordinator": {
       "title": "Agent Execution & Job Lifecycle",
       "status": "reviewed",
-      "reviewer": "Deputy Gemini (Commission 011)",
+      "reviewer": "Build Stabilization",
       "review_by": "2026-11-14",
       "guides_count": 5,
       "sources_patterns": [
@@ -330,8 +336,8 @@
     "inference-adapters": {
       "title": "Conversational & Multimodal Inference Adapters",
       "status": "reviewed",
-      "reviewer": "AI Inference Maintainers",
-      "review_by": "2026-11-15",
+      "reviewer": "Build Stabilization",
+      "review_by": "2026-11-14",
       "guides_count": 1,
       "sources_patterns": [
         "src/core/StudioInference.*",
@@ -352,7 +358,7 @@
     "session-durability": {
       "title": "Session Durability, Manifests & Storage",
       "status": "reviewed",
-      "reviewer": "Deputy Gemini (Commission 011)",
+      "reviewer": "Build Stabilization",
       "review_by": "2026-11-14",
       "guides_count": 2,
       "sources_patterns": [
@@ -371,7 +377,7 @@
     "live-capture": {
       "title": "Live Recording, MIDI Ingestion & Automation Capture",
       "status": "reviewed",
-      "reviewer": "Live Capture Maintainers",
+      "reviewer": "Build Stabilization",
       "review_by": "2026-11-14",
       "guides_count": 2,
       "sources_patterns": [

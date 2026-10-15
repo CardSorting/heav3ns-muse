@@ -1,5 +1,6 @@
 /* Native JACK shared-client ownership tests. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
+#include "FileResourceIO.h"
 #include <QScopeGuard>
 #include <QTemporaryDir>
 #include <atomic>
@@ -695,7 +696,7 @@ private slots:
 		std::vector<std::pair<jack_nframes_t, int>> received;
 		for (int cycle = 0; cycle < 20 && midi->outputBackendStatus().pendingEvents; ++cycle)
 		{
-			const auto cycleStart = t.latest().clock; t.latest().tick();
+			const auto cycleStart = t.latest().clock.load(); t.latest().tick();
 			for (const auto& e : t.latest().midiPort(true)->events) { received.emplace_back(cycleStart + e.time, e.bytes[1]); }
 		}
 		QCOMPARE(received.size(), std::size_t{2}); QCOMPARE(received[0].second, 60); QCOMPARE(received[1].second, 61);
@@ -714,7 +715,7 @@ private slots:
 		if (kind == "channel") { event = MidiEvent(MidiNoteOn, 16, 60, 100); }
 		if (kind == "key") { event = MidiEvent(MidiNoteOn, 0, 128, 100); }
 		if (kind == "velocity") { event = MidiEvent(MidiNoteOn, 0, 60, 128); }
-		if (kind == "bend") { event = MidiEvent(MidiPitchBend, 0, 16384); }
+		if (kind == "bend") { event = MidiEvent(MidiPitchBend, 0, 16384, 0); }
 		if (kind == "system") { event = MidiEvent(static_cast<MidiEventTypes>(0xf0), 0, 1, 2); }
 		if (kind == "negative-delay") { delay = TimePos(-1); }
 		if (kind == "long-delay") { delay = TimePos(std::numeric_limits<int>::max()); }
@@ -745,7 +746,7 @@ private slots:
 		midi->processOutEvent(MidiEvent(MidiNoteOn, 0, 60, 100), TimePos(1), port); port->~MidiPort();
 		auto replacement = new (storage.data()) MidiPort("replacement", midi.get(), &processor);
 		const auto cleanup = qScopeGuard([&] { replacement->~MidiPort(); });
-		midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 42), {}, replacement); t.latest().tick();
+		midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 42, 0), {}, replacement); t.latest().tick();
 		QCOMPARE(t.latest().midiPort(true)->events.size(), std::size_t{1}); QCOMPARE(t.latest().midiPort(true)->events.front().bytes[1], static_cast<unsigned char>(42));
 		for (int cycle = 0; cycle < 20; ++cycle) { t.latest().tick(); QVERIFY(t.latest().midiPort(true)->events.empty()); }
 	}
@@ -754,13 +755,13 @@ private slots:
 	{
 		Transport t; auto midi = MidiJackTestAccess::create(nullptr, t.api); Processor processor; MidiPort port("overflow", midi.get(), &processor);
 		midi->processOutEvent(MidiEvent(MidiNoteOn, 0, 60, 100), {}, &port); t.latest().tick();
-		for (unsigned int i = 0; i < MidiJack::OutputQueueLimit; ++i) { midi->processOutEvent(MidiEvent(MidiProgramChange, 0, i % 128), TimePos(48), &port); }
+		for (unsigned int i = 0; i < MidiJack::OutputQueueLimit; ++i) { midi->processOutEvent(MidiEvent(MidiProgramChange, 0, i % 128, 0), TimePos(48), &port); }
 		QCOMPARE(midi->outputBackendStatus().pendingEvents, MidiJack::OutputQueueLimit);
 		QVERIFY_EXCEPTION_THROWN(midi->processOutEvent(MidiEvent(MidiNoteOff, 0, 60, 0), {}, &port), std::runtime_error);
 		auto status = midi->outputBackendStatus(); QCOMPARE(status.nativeErrorCode, -ENOBUFS); QCOMPARE(status.pendingEvents, 0u); QCOMPARE(status.cleanupPendingChannels, 1u);
 		t.latest().tick(); QCOMPARE(t.latest().midiPort(true)->events.size(), std::size_t{4}); status = midi->outputBackendStatus();
 		QVERIFY(status.active); QCOMPARE(status.lastNativeErrorCode, -ENOBUFS);
-		midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 10), {}, &port); t.latest().tick(); QCOMPARE(t.latest().midiPort(true)->events.size(), std::size_t{1});
+		midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 10, 0), {}, &port); t.latest().tick(); QCOMPARE(t.latest().midiPort(true)->events.size(), std::size_t{1});
 	}
 
 	void nativeOutputFailureDiscardsTheCycleAndRecovers_data()
@@ -771,7 +772,7 @@ private slots:
 		midi->processOutEvent(MidiEvent(MidiNoteOn, 0, 60, 100), {}, &port); t.latest().tick(); t.latest().tick();
 		midi->processOutEvent(MidiEvent(MidiNoteOn, 0, 61, 100), {}, &port); midi->processOutEvent(MidiEvent(MidiNoteOff, 0, 60, 0), {}, &port);
 		t.fault = fault;
-		if (fault == "throw-clock") { QVERIFY_EXCEPTION_THROWN(midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 1), {}, &port), std::runtime_error); }
+		if (fault == "throw-clock") { QVERIFY_EXCEPTION_THROWN(midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 1, 0), {}, &port), std::runtime_error); }
 		else { t.latest().tick(); }
 		QVERIFY(midi->outputBackendStatus().nativeErrorCode != 0); QVERIFY(midi->isAvailable());
 		QCOMPARE(midi->outputBackendStatus().pendingEvents, 0u); QVERIFY(t.latest().midiPort(true)->events.empty());
@@ -795,8 +796,8 @@ private slots:
 	void callbackContentionClearsBuffersAndDefersDelivery()
 	{
 		Transport t; auto midi = MidiJackTestAccess::create(nullptr, t.api); Processor processor; MidiPort port("contention", midi.get(), &processor);
-		midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 10), {}, &port); t.latest().tick();
-		midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 11), {}, &port);
+		midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 10, 0), {}, &port); t.latest().tick();
+		midi->processOutEvent(MidiEvent(MidiProgramChange, 0, 11, 0), {}, &port);
 		MidiJackTestAccess::withOutputLock(*midi, [&] { t.latest().launch(); t.latest().join(); });
 		QVERIFY(t.latest().midiPort(true)->events.empty()); QCOMPARE(midi->outputBackendStatus().pendingEvents, 1u);
 		t.latest().tick(); QCOMPARE(t.latest().midiPort(true)->events.front().bytes[1], static_cast<unsigned char>(11));

@@ -55,7 +55,9 @@ void seed()
 	auto song = Engine::getSong(); song->setMasterVolume(100); auto track = new SampleTrack(song); track->setName("Retained native sample");
 	auto clip = static_cast<SampleClip*>(track->createClip(TimePos())); std::vector<SampleFrame> pcm(1024);
 	for (auto& frame : pcm) { frame[0] = .125f; frame[1] = -.0625f; }
-	clip->setSampleBuffer(std::make_shared<SampleBuffer>(pcm, 44100)); clip->changeLength(TimePos(192));
+	clip->setSampleBuffer(std::make_shared<SampleBuffer>(pcm, 44100));
+	// This fixture retains an authored bar while the test changes tempo.
+	clip->setAutoResize(false); clip->changeLength(TimePos(192));
 }
 SampleClip* retainedClip()
 {

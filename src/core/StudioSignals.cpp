@@ -59,7 +59,7 @@ bool StudioSignals::install(QString& error)
 #else
 	struct sigaction action{};
 	action.sa_handler = studioSignal;
-	if (::sigemptyset(&action.sa_mask) != 0) { error = "Could not initialize studio signal mask"; return false; }
+	if (sigemptyset(&action.sa_mask) != 0) { error = "Could not initialize studio signal mask"; return false; }
 	action.sa_flags = SA_RESTART;
 	if (::sigaction(SIGINT, &action, &m_state->previousInterrupt) != 0)
 	{

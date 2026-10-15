@@ -1,3 +1,4 @@
+#include "FileResourceIO.h"
 /* Native mixer continuations and recovery. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
 #include <QPointer>

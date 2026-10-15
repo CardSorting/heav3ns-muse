@@ -12361,3 +12361,76 @@ hard deadline. Source diagnostics cover 497 changed/new C++ files and 162
 operations; native fixtures, compatibility, actual PCM/hardware, real-provider
 musical production and full DAW acceptance remain unproved. The commission remains
 active.
+
+
+### Feature freeze and native stabilization (2026-10-15)
+
+Feature development is frozen at baseline `bc741e610` while compilation and
+runtime defects are repaired. No studio operation was added. Observation platform:
+macOS 26.5.1, arm64, Apple Clang 21 and Qt 5.15.19, Debug configuration. Qt 6's
+experimental configuration encountered an obsolete AGL framework dependency;
+these observations use the default Qt 5 configuration.
+
+The complete configured native build, including bundled plugins and test
+executables, first completed with exit code 0. Repairs removed editor substitute
+configuration/export headers that shadowed generated headers, selected matching
+Qt framework headers, completed declarations and access for existing native
+callers, exported types needed by plugins, and extended the pinned weak-JACK
+wrapper in the build directory for two already-used JACK APIs. Test fixtures were
+also corrected for actual native interfaces and Qt 5/C++ type rules. The top-level
+CTest directory now discovers tests, and test processes receive the built plugin
+search path.
+
+The first full `ctest --test-dir build/native --output-on-failure --parallel 4
+--no-tests=error` run executed 192 test executables: **100 passed, 92 failed**,
+including crashes and one timeout. This is execution evidence of incomplete
+stabilization, not certification of the existing roadmap's historical completion
+claims. The broad studio process harness failed during checkpoint publication
+after removing its recording fixture. Original results were retained before
+subsequent runs.
+
+A focused four-note TripleOscillator composition saved successfully but exposed
+a real offline-render deadlock: an audio worker waited for the model mutex owned
+by its coordinating render thread. Worker jobs now share the coordinator's render
+admission for the duration of processing. Additional repairs round occupied
+partial bars up when computing native track extent, and correct the export-name
+regular expression. A manually sized cancellation fixture now explicitly disables
+sample autoresizing; it no longer assumes tempo edits preserve an automatic
+sample length.
+
+`StudioRenderProcessTest` then passed creation of four notes, native project
+publication, WAV rendering, digest-bound analysis and restart with unchanged note
+content. The retained observation contained 176384 frames at 44100 Hz and stereo
+sample peaks of approximately 0.497314. It is native audio evidence, not perceptual
+or hardware-output verification. The focused cancellation, meter safety, bulk
+render preparation and worker scheduler tests also passed. Audio identity tests
+passed all three PCM depths and all four deterministic provider revision-loop
+fixtures; their remaining validation-poll assertion exposed a test boundary
+mismatch between direct decoder validation and capability admission. Its test
+correction requires subsequent execution.
+
+A local desktop bundle was launched with an isolated configuration. Desktop
+visual interaction and physical audio output remain unverified. Broad regression
+failures, compatibility, hardware, real-provider musical acceptance and the full
+DAW commission remain open. No roadmap gate is advanced by this stabilization
+record.
+
+
+The subsequent complete rebuild also passed. A second full run executed 193 test
+executables: **108 passed, 85 failed**. Audio identity now passed, including direct
+invalid-input validation and all four fixture-driven revision loops. The focused
+process regression timed out once during `instrument.load` under the full suite;
+three isolated repetitions then passed in 2.36–2.69 seconds, and a rerun alongside
+three heavy native tests passed in 3.05 seconds. The timeout remains unexplained;
+a native stack is now captured if it recurs. These results must not be presented
+as a clean regression suite or a guaranteed timing bound.
+
+
+The extended isolated repetition check completed **20 consecutive passing native
+load/synthesize/save/render/analyze/restart runs** in 52.80 seconds total. All four
+tests in the concurrent reproduction also passed (58.34 seconds total). These
+runs did not reproduce or explain the earlier instrument-load timeout. Remaining
+priorities are checkpoint publication after track deletion, recording and backend
+lifetime failures, and the other failures retained from the second broad run.
+The local application and focused workflow are runnable; broad stabilization
+remains open.

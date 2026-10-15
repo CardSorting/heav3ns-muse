@@ -716,6 +716,10 @@ if(Python3_Interpreter_FOUND AND NOT LMMS_MINIMAL)
 		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/studio_process_test.py"
 			--lmms $<TARGET_FILE:lmms> --output "${CMAKE_BINARY_DIR}/studio-evidence")
 	set_tests_properties(StudioProcessTest PROPERTIES TIMEOUT 900)
+	add_test(NAME StudioRenderProcessTest
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/studio_render_process_test.py"
+			--lmms $<TARGET_FILE:lmms> --output "${CMAKE_BINARY_DIR}/studio-render-evidence")
+	set_tests_properties(StudioRenderProcessTest PROPERTIES TIMEOUT 120 LABELS "headless;render;instruments;recovery")
 	if(TARGET VstNativeWorkerTest AND TARGET vsteffect)
 		add_custom_target(StudioVstProcessFixtures DEPENDS lmms vsteffect VstNativeFixture0 VstNativeFixture1 VstNativeFixture2 VstNativeFixture3)
 		if(LMMS_BUILD_LINUX)
@@ -741,3 +745,8 @@ if(Python3_Interpreter_FOUND AND NOT LMMS_MINIMAL)
 		set_tests_properties(StudioVstDenseProcessTest PROPERTIES TIMEOUT 900 LABELS "native-vst;worker;headless;recovery;large-layout")
 	endif()
 endif()
+
+# Native tests live one directory below the executable and cannot discover its
+# sibling plugin directory through the usual application-relative paths.
+get_property(LMMS_REGISTERED_TESTS DIRECTORY PROPERTY TESTS)
+set_property(TEST ${LMMS_REGISTERED_TESTS} APPEND PROPERTY ENVIRONMENT "LMMS_PLUGIN_DIR=${PROJECT_BINARY_DIR}/plugins")

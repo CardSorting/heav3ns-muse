@@ -128,7 +128,7 @@ private slots:
 	void ordinaryControlValuesAndIndependentNameMuteRemainEditable()
 	{
 		stage(); instrument->volumeModel()->setValue(120); clip->setName("Retained"); clip->setMuted(true);
-		clip->recordValue(24, instrument->volumeModel()->inverseScaledValue(instrument->volumeModel()->value<float>()));
+		clip->recordValue(24, instrument->volumeModel()->inverseScaledValue(instrument->volumeModel()->value()));
 		QVERIFY(clip->recordingError().isEmpty()); clip->commitRecordingTake(); QCOMPARE(clip->valueAt(24), 120.f);
 		QCOMPARE(clip->name(), QString("Retained")); QVERIFY(clip->isMuted());
 	}

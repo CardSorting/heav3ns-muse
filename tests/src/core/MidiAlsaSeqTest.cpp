@@ -466,10 +466,10 @@ private slots:
 		// Immediate release remains possible even with an unusable musical queue.
 		backend.client->processOutEvent(MidiEvent(MidiControlChange, 0, MidiControllerAllSoundOff, 0), {}, &port);
 		QCOMPARE(capture.delivered.size(), std::size_t(1)); capture.setTempoError = -EIO;
-		QVERIFY_EXCEPTION_THROWN(backend.client->processOutEvent(MidiEvent(MidiProgramChange, 0, 7), TimePos(1), &port), std::runtime_error);
+		QVERIFY_EXCEPTION_THROWN(backend.client->processOutEvent(MidiEvent(MidiProgramChange, 0, 7, 0), TimePos(1), &port), std::runtime_error);
 		QCOMPARE(capture.attempts.size(), std::size_t(1)); QVERIFY(capture.pending.empty());
 		capture.failReadAt = -1; capture.setTempoError = 0; capture.ignoreTempoWrite = false; capture.corruptReadback.clear();
-		backend.client->processOutEvent(MidiEvent(MidiProgramChange, 0, 7), TimePos(1), &port);
+		backend.client->processOutEvent(MidiEvent(MidiProgramChange, 0, 7, 0), TimePos(1), &port);
 		QCOMPARE(capture.pending.size(), std::size_t(1)); QVERIFY(backend.client->outputClockStatus().configurationVerified);
 		QCOMPARE(backend.client->outputClockStatus().nativeErrorCode, 0); port.releaseOutput();
 	}
@@ -513,7 +513,7 @@ private slots:
 		QCOMPARE(MidiAlsaSeqTestAccess::nativeTempo(*backend), std::make_pair(48, 60000000u / unsigned(bpm)));
 		MidiPort port("clock", backend.get(), &processor);
 		port.subscribeWritablePort(QString("%1:%2 Studio Clock Peer:Clock Sink").arg(snd_seq_client_id(peer.get())).arg(sink));
-		QElapsedTimer elapsed; elapsed.start(); port.processOutEvent(MidiEvent(MidiProgramChange, 0, 9), TimePos(12));
+		QElapsedTimer elapsed; elapsed.start(); port.processOutEvent(MidiEvent(MidiProgramChange, 0, 9, 0), TimePos(12));
 		bool arrived = false;
 		QTRY_VERIFY(([&] {
 			for (int n = 0; n < 64; ++n)

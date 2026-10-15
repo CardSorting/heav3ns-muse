@@ -153,7 +153,7 @@ private slots:
 			if (tempo == 97 && !edited) { edited = true; counters.cpu = 150; counters.resident = 4 * 1024. * 1024.; }
 		}, Qt::DirectConnection);
 		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
-		QVERIFY(!studio.advanceAgent().isEmpty()); QVERIFY(edited); QCOMPARE(calls, 1); QCOMPARE(Engine::getSong()->getTempo(), 91); QVERIFY(Engine::getSong()->tracks().isEmpty());
+		QVERIFY(!studio.advanceAgent().isEmpty()); QVERIFY(edited); QCOMPARE(calls, 1); QCOMPARE(Engine::getSong()->getTempo(), 91); QVERIFY(Engine::getSong()->tracks().empty());
 		const auto stopped = job(directory); QCOMPARE(stopped.value("status").toString(), QString("paused")); QVERIFY(stopped.value("pending").toArray().isEmpty());
 		QCOMPARE(stopped.value("operations").toInt(), 1); QCOMPARE(manifest(directory).value("history"), before.value("history"));
 		QCOMPARE(manifest(directory).value("revision").toInt(), before.value("revision").toInt() + 1);

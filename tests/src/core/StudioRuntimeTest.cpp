@@ -1,5 +1,7 @@
+#include "NativeInstrumentTestAccess.h"
 /* Native studio integration tests. SPDX-License-Identifier: GPL-2.0-or-later */
 #include <QtTest>
+#include <optional>
 #include <QtEndian>
 #include <QFile>
 #include <QJsonDocument>
@@ -278,7 +280,7 @@ class StudioRuntimeTest : public QObject
 	QDomElement instrumentSettings(Instrument* native)
 	{
 		QDomDocument document; auto root = document.createElement(native->nodeName()); document.appendChild(root);
-		native->saveSettings(document, root); return root;
+		NativeInstrumentTestAccess::save(native, document, root); return root;
 	}
 
 	std::array<double, 3> measureNativeSoundFont(Instrument* native, std::vector<SampleFrame>& output)
@@ -1310,7 +1312,7 @@ private slots:
 		QVERIFY(native->setFileResource("soundfont", path, error));
 		const auto frames = Engine::audioEngine()->framesPerPeriod();
 		const Note note(TimePos(48), TimePos(), 69);
-		auto old = std::make_unique<NotePlayHandle>(track, 0, frames * 100, note);
+		std::optional<NotePlayHandle> old(std::in_place, track, 0, frames * 100, note);
 		std::vector<SampleFrame> output(frames);
 		old->play(output.data()); QVERIFY(measureNativeSoundFont(native, output)[0] > .0001);
 		if (rebuild) { QVERIFY(QMetaObject::invokeMethod(native, "reloadSynth", Qt::DirectConnection)); }
@@ -1818,7 +1820,7 @@ private slots:
 		QVERIFY(recovered.process(request("clear", "instrument.resource.set", {{"track", 0}, {"resource", "patch"}, {"path", ""}})).value("ok").toBool()); QVERIFY(path().isEmpty());
 		QVERIFY(recovered.process(request("preset-restore", "preset.load", {{"track", 0}, {"path", preset}})).value("ok").toBool()); QVERIFY(path().endsWith("first.pat"));
 		QDomDocument document; auto empty = document.createElement("patman"); document.appendChild(empty);
-		static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0))->instrument()->loadSettings(empty); QVERIFY(path().isEmpty());
+		NativeInstrumentTestAccess::load(static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0))->instrument(), empty); QVERIFY(path().isEmpty());
 	}
 
 	void nativeOpulenzImportsSbiIntoNativeControlsAndLabels()
@@ -1885,7 +1887,7 @@ private slots:
 		QVERIFY(writeFixtureBytes(path, source.left(47))); QVERIFY(native->setFileResource("patch", path, error));
 		QVERIFY(writeFixtureBytes(path, source + QByteArray("ignored trailing data"))); QVERIFY(native->setFileResource("patch", path, error));
 		// XML changes native init values; clearing must still restore the constructor's defaults.
-		native->loadSettings(previous); QVERIFY(native->setFileResource("patch", "", error));
+		NativeInstrumentTestAccess::load(native, previous); QVERIFY(native->setFileResource("patch", "", error));
 		const auto cleared = instrumentSettings(native); QVERIFY(native->fileResources().front().path.isEmpty()); QVERIFY(!native->midiPatch());
 		QCOMPARE(cleared.attribute("op1_a").toInt(), 14); QCOMPARE(cleared.attribute("op2_mul").toInt(), 1);
 		QCOMPARE(cleared.attribute("op2_lvl").toInt(), 63); QCOMPARE(cleared.attribute("feedback").toInt(), 0);
@@ -1902,13 +1904,13 @@ private slots:
 		const auto selected = instrumentSettings(native); QCOMPARE(selected.attribute("gmProgram").toInt(), 42);
 		QVERIFY(!native->selectProgram(1, 42, error)); QVERIFY(!native->selectProgram(0, 128, error)); QCOMPARE(int(native->midiPatch()->program), 42);
 		QVERIFY(setNamedInstrumentParameter(0, "Patch", 0)); QCOMPARE(int(native->midiPatch()->program), 0);
-		native->loadSettings(selected); QVERIFY(native->midiPatch()); QCOMPARE(int(native->midiPatch()->program), 42);
+		NativeInstrumentTestAccess::load(native, selected); QVERIFY(native->midiPatch()); QCOMPARE(int(native->midiPatch()->program), 42);
 		QCOMPARE(instrumentSettings(native).attribute("op1_mul"), selected.attribute("op1_mul"));
 		const int previous = selected.attribute("op2_mul").toInt();
 		QVERIFY(setNamedInstrumentParameter(0, "Op 2 frequency multiplier", previous == 15 ? 14 : 15)); QVERIFY(!native->midiPatch());
-		const auto custom = instrumentSettings(native); native->loadSettings(custom); QVERIFY(!native->midiPatch());
+		const auto custom = instrumentSettings(native); NativeInstrumentTestAccess::load(native, custom); QVERIFY(!native->midiPatch());
 		auto inconsistent = selected; inconsistent.setAttribute("op2_mul", previous == 15 ? 14 : 15);
-		native->loadSettings(inconsistent); QVERIFY(!native->midiPatch());
+		NativeInstrumentTestAccess::load(native, inconsistent); QVERIFY(!native->midiPatch());
 	}
 
 	void nativeOpulenzHeldLevelsAndMidiBoundsUseNativeEmulator()
@@ -1920,7 +1922,7 @@ private slots:
 		QVERIFY(native->setFileResource("patch", QString(LMMS_TEST_FIXTURE_DIR) + "/native-opl-carrier.sbi", error));
 		for (int key : {-1, 128}) { QVERIFY(!native->handleMidiEvent(MidiEvent(MidiNoteOn, 0, key, 127), TimePos())); }
 		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiKeyPressure, 0, 69, 128), TimePos()));
-		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiPitchBend, 0, 16384), TimePos()));
+		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiPitchBend, 0, 16384, 0), TimePos()));
 		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiControlChange, 0, 128, 127), TimePos()));
 		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiControlChange, 0, 1, -1), TimePos()));
 		QVERIFY(native->handleMidiEvent(MidiEvent(MidiNoteOn, 0, 69, 127), TimePos()));
@@ -1968,7 +1970,7 @@ private slots:
 		QVERIFY(recovered.process(request("redo", "session.redo")).value("ok").toBool()); QCOMPARE(int(native()->midiPatch()->program), 42);
 		QVERIFY(recovered.process(request("restore-preset", "preset.load", {{"track", 0}, {"path", preset}})).value("ok").toBool());
 		QVERIFY(!native()->midiPatch()); QCOMPARE(instrumentSettings(native()).attribute("op2_mul").toInt(), 2);
-		QDomDocument document; auto empty = document.createElement("opulenz"); native()->loadSettings(empty);
+		QDomDocument document; auto empty = document.createElement("opulenz"); NativeInstrumentTestAccess::load(native(), empty);
 		QVERIFY(native()->fileResources().front().path.isEmpty()); QVERIFY(!native()->midiPatch());
 	}
 
@@ -2115,13 +2117,13 @@ private slots:
 		QVERIFY(native->setFileResource("sample", path, error));
 		const std::vector<float> points{0, 0.123456789f, 0.7f, 1}; QVERIFY(native->setSlicePoints(points, error));
 		QVERIFY(setNamedInstrumentParameter(0, "Slice snap", 4));
-		QDomDocument document; auto saved = document.createElement("slicert"); document.appendChild(saved); native->saveSettings(document, saved);
+		QDomDocument document; auto saved = document.createElement("slicert"); document.appendChild(saved); NativeInstrumentTestAccess::save(native, document, saved);
 		saved.setAttribute("src", ""); saved.setAttribute("sampledata", SampleBuffer::fromFile(path)->toBase64());
-		QVERIFY(native->setFileResource("sample", "", error)); native->loadSettings(saved);
+		QVERIFY(native->setFileResource("sample", "", error)); NativeInstrumentTestAccess::load(native, saved);
 		QCOMPARE(native->sliceLayout()->sampleRate, 16000); QVERIFY(native->sliceLayout()->points == points);
-		QDomDocument check; auto restored = check.createElement("slicert"); native->saveSettings(check, restored); QCOMPARE(restored.attribute("snap"), QString("4"));
-		saved.setAttribute("totalSlices", 2147483647); native->loadSettings(saved); QVERIFY(native->sliceLayout()->points == std::vector<float>({0, 1}));
-		QDomDocument emptyDocument; auto empty = emptyDocument.createElement("slicert"); native->loadSettings(empty);
+		QDomDocument check; auto restored = check.createElement("slicert"); NativeInstrumentTestAccess::save(native, check, restored); QCOMPARE(restored.attribute("snap"), QString("4"));
+		saved.setAttribute("totalSlices", 2147483647); NativeInstrumentTestAccess::load(native, saved); QVERIFY(native->sliceLayout()->points == std::vector<float>({0, 1}));
+		QDomDocument emptyDocument; auto empty = emptyDocument.createElement("slicert"); NativeInstrumentTestAccess::load(native, empty);
 		QCOMPARE(native->sliceLayout()->sourceFrames, 0); QVERIFY(native->sliceLayout()->points.empty());
 	}
 
@@ -2252,7 +2254,7 @@ private slots:
 		QCOMPARE(track->nominalFrequency(64), 56.25f); QCOMPARE(track->nominalFrequency(56), 900.f);
 		QVERIFY(StudioCapabilities::execute("tuning.keymap.set", {{"slot", 1}, {"name", "Unmapped reference"}, {"mapping", "x\n0"}, {"baseKey", 60}}).value("ok").toBool());
 		QCOMPARE(track->nominalFrequency(61), 0.f);
-		QVERIFY(!StudioCapabilities::execute("tuning.keymap.inspect", {{"slot", MaxKeymapCount}}).value("ok").toBool());
+		QVERIFY(!StudioCapabilities::execute("tuning.keymap.inspect", {{"slot", static_cast<int>(MaxKeymapCount)}}).value("ok").toBool());
 		QVERIFY(StudioCapabilities::execute("tuning.scale.set", {{"slot", 1}, {"name", "Constant pitch"}, {"intervals", ""}}).value("ok").toBool());
 		QVERIFY(StudioCapabilities::execute("tuning.keymap.set", {{"slot", 1}, {"name", "Linear"}, {"mapping", ""},
 			{"baseKey", 61}, {"baseFrequency", 10000.1234567}}).value("ok").toBool());
@@ -2803,7 +2805,7 @@ private slots:
 	void incompleteEmbeddedProjectAndPresetLoadsRollbackNativeState()
 	{
 		QFETCH(QString, kind);
-		if (kind != "sampleclip" && getPluginFactory()->pluginInfo(kind).isNull())
+		if (kind != "sampleclip" && getPluginFactory()->pluginInfo(kind.toUtf8().constData()).isNull())
 		{
 			QSKIP("Full embedded project verification requires this native instrument");
 		}
@@ -2866,11 +2868,11 @@ private slots:
 		QDomDocument document; auto input = document.createElement("audiofileprocessor"); document.appendChild(input);
 		input.setAttribute("src", ""); input.setAttribute("sampledata", pcm);
 		if (explicitRate) { input.setAttribute("sampleRate", 24000); }
-		native->loadSettings(input); QVERIFY(!Engine::getSong()->hasErrors());
+		NativeInstrumentTestAccess::load(native, input); QVERIFY(!Engine::getSong()->hasErrors());
 		const auto restored = instrumentSettings(native);
 		QCOMPARE(restored.attribute("sampledata"), pcm);
 		QCOMPARE(restored.attribute("sampleRate").toInt(), explicitRate ? 24000 : static_cast<int>(Engine::audioEngine()->outputSampleRate()));
-		input.setAttribute("sampleRate", "invalid"); native->loadSettings(input);
+		input.setAttribute("sampleRate", "invalid"); NativeInstrumentTestAccess::load(native, input);
 		QVERIFY(Engine::getSong()->hasErrors()); const auto retained = instrumentSettings(native);
 		QCOMPARE(retained.attribute("sampledata"), pcm); QCOMPARE(retained.attribute("sampleRate"), restored.attribute("sampleRate"));
 		Engine::getSong()->clearErrors();
@@ -2923,7 +2925,8 @@ private slots:
 		}
 		QVERIFY(QFile::remove(path));
 		const auto retained = SampleDecoder::decode(buffer->acceptedFile()); QVERIFY(retained);
-		QVERIFY(retained->data == decoded->data);
+		QCOMPARE(retained->data.size(), decoded->data.size());
+		QVERIFY(std::equal(retained->data.begin(), retained->data.end(), decoded->data.begin(), [](const SampleFrame& a, const SampleFrame& b) { return a.left() == b.left() && a.right() == b.right(); }));
 		{ FileResourceIO::Scope cancelled([] { return true; }); QVERIFY(!SampleDecoder::decode(buffer->acceptedFile())); }
 		QVERIFY(SampleDecoder::decode(buffer->acceptedFile()));
 	}
@@ -3177,7 +3180,7 @@ private slots:
 	void nativeResourceTrackClonesKeepDistinctAcceptedVersions()
 	{
 		QFETCH(QString, kind); QFETCH(bool, remove);
-		if (getPluginFactory()->pluginInfo(kind).isNull()) { QSKIP("Full cloning verification requires this native instrument"); }
+		if (getPluginFactory()->pluginInfo(kind.toUtf8().constData()).isNull()) { QSKIP("Full cloning verification requires this native instrument"); }
 		QTemporaryDir directory; const bool patch = kind == "patman", soundfont = kind == "sf2player", pcm = !patch && !soundfont;
 		const auto source = directory.filePath("same." + QString(patch ? "pat" : soundfont ? "sf2" : "wav"));
 		std::array<QByteArray, 2> accepted; std::array<InstrumentTrack*, 2> originals{}, copies{};
@@ -3185,7 +3188,7 @@ private slots:
 		const auto attribute = kind == "tripleoscillator" ? QString("userwavefile0") : QString("src");
 		const auto resident = [&](InstrumentTrack* track) {
 			DataFile document(DataFile::Type::JournalData); auto node = document.createElement(kind);
-			{ DataFile::ResourceSourceScope save(document, true, true); track->instrument()->saveSettings(document, node); }
+			{ DataFile::ResourceSourceScope save(document, true, true); NativeInstrumentTestAccess::save(track->instrument(), document, node); }
 			DataFile::ResourceReadScope read(document); DataFile::ResourceReferenceScope reference(node, attribute);
 			return SampleBuffer::fromFile(node.attribute(attribute));
 		};
@@ -3252,7 +3255,7 @@ private slots:
 		QVERIFY(QFile::remove(source));
 		auto copy = static_cast<InstrumentTrack*>(original->clone()); QVERIFY2(copy, qPrintable(Engine::getSong()->errorSummary())); delete original;
 		DataFile document(DataFile::Type::JournalData); auto node = document.createElement("tripleoscillator");
-		{ DataFile::ResourceSourceScope save(document, true, true); copy->instrument()->saveSettings(document, node); }
+		{ DataFile::ResourceSourceScope save(document, true, true); NativeInstrumentTestAccess::save(copy->instrument(), document, node); }
 		DataFile::ResourceReadScope read(document); const std::array<float, 3> expected{.25f, -.5f, .75f};
 		for (int index = 0; index < 3; ++index)
 		{
@@ -3274,7 +3277,7 @@ private slots:
 		QVERIFY(addNativeSampleConsumer("audiofileprocessor", source));
 		auto original = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0));
 		DataFile document(DataFile::Type::JournalData); auto node = document.createElement("audiofileprocessor");
-		{ DataFile::ResourceSourceScope save(document, true, true); original->instrument()->saveSettings(document, node); }
+		{ DataFile::ResourceSourceScope save(document, true, true); NativeInstrumentTestAccess::save(original->instrument(), document, node); }
 		std::shared_ptr<const SampleBuffer> buffer;
 		{
 			DataFile::ResourceReadScope read(document); DataFile::ResourceReferenceScope resource(node, "src"); buffer = SampleBuffer::fromFile(source);
@@ -3989,7 +3992,7 @@ private slots:
 	void nativeSampleBundlesPreserveAcceptedInputsAfterSourceChanges()
 	{
 		QFETCH(QString, kind); QFETCH(bool, remove);
-		if (kind != "sampleclip" && kind != "lfocontroller" && getPluginFactory()->pluginInfo(kind).isNull())
+		if (kind != "sampleclip" && kind != "lfocontroller" && getPluginFactory()->pluginInfo(kind.toUtf8().constData()).isNull())
 		{
 			QSKIP("This unit build lacks the requested instrument; full verification still requires it");
 		}

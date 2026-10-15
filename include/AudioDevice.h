@@ -25,6 +25,8 @@
 #ifndef LMMS_AUDIO_DEVICE_H
 #define LMMS_AUDIO_DEVICE_H
 
+#include "lmms_export.h"
+
 #include <QMutex>
 #include <QString>
 #include <atomic>
@@ -48,7 +50,7 @@ class AudioBusHandle;
 class SampleFrame;
 
 
-class AudioDevice
+class LMMS_EXPORT AudioDevice
 {
 public:
 	struct BackendGraph
