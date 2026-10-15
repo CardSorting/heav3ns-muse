@@ -32,7 +32,9 @@
 #include <cstdint>
 #include <functional>
 #include <vector>
+#if __has_include(<samplerate.h>)
 #include <samplerate.h>
+#endif
 
 #include "LmmsTypes.h"
 

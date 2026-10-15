@@ -25,7 +25,9 @@
 #ifndef LMMS_CONSTANTS_H
 #define LMMS_CONSTANTS_H
 
+#if __has_include("lmmsconfig.h")
 #include "lmmsconfig.h"
+#endif
 #include "LmmsTypes.h"
 
 namespace lmms

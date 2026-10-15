@@ -191,12 +191,12 @@ public:
 
 	inline bool isPlaying() const
 	{
-		return m_playing == true && m_exporting == false;
+		return m_playing && !m_exporting;
 	}
 
 	inline bool isStopped() const
 	{
-		return m_playing == false && m_paused == false;
+		return !m_playing && !m_paused;
 	}
 
 	inline bool isExporting() const
@@ -219,9 +219,13 @@ public:
 	inline void setLoopRenderCount(int count)
 	{
 		if (count < 1)
+		{
 			m_loopRenderCount = 1;
+		}
 		else
+		{
 			m_loopRenderCount = count;
+		}
 		m_loopRenderRemaining = m_loopRenderCount;
 	}
 

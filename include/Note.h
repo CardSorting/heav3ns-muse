@@ -230,6 +230,7 @@ public:
 	{
 		return m_volume;
 	}
+	inline volume_t volume() const { return getVolume(); }
 
 	int midiVelocity( int midiBaseVelocity ) const
 	{
@@ -240,6 +241,7 @@ public:
 	{
 		return m_panning;
 	}
+	inline panning_t panning() const { return getPanning(); }
 
 	static QString classNodeName()
 	{

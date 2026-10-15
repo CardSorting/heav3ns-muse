@@ -32,7 +32,9 @@
 
 #include <QThread>
 #include <QStringList>
+#if __has_include(<samplerate.h>)
 #include <samplerate.h>
+#endif
 
 #include <memory>
 #include <vector>

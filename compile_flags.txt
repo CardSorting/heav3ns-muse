@@ -1,7 +1,10 @@
 -xc++-header
--std=c++17
+-std=c++20
 -Iinclude
 -Isrc
+-Ibuild
+-Ibuild/src
+-Ibuild/include
 -I/opt/homebrew/opt/qt/include
 -I/opt/homebrew/opt/qt/include/QtCore
 -I/opt/homebrew/opt/qt/include/QtGui
@@ -14,3 +17,4 @@
 -I/usr/include/x86_64-linux-gnu/qt5
 -I/usr/include/x86_64-linux-gnu/qt5/QtCore
 -DLMMS_EXPORT=
+-Wno-implicit-function-declaration
