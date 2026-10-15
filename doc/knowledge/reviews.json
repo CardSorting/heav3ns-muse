@@ -1,7 +1,7 @@
 {
   "studio-runtime": {
     "reviewer": "Studio Runtime Maintainers",
-    "note": "Integrated maintainer catalog, onboarding roadmap, CLI cheatsheet, subsystem DAG, release engineering, and runbooks",
+    "note": "Standardized runbook canonical sections and registered runbook checks",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -15,8 +15,8 @@
       "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md": "2a0d81fe064c1eb22364487a5c6285b3aae49f716f0025b7dda52f102538301e",
       "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
       "doc/playbooks/01-provisioning-and-preflight.md": "1c520822d716eb0a7b71d000b8a96660796ad7aa005809789bbe9083ca4c082e",
-      "doc/runbooks/knowledge-maintenance.md": "3c50d3ccd2baeff565d2ca60690e8cd1a65f035dfd5c7c9ea116fc83c256314a",
-      "doc/runbooks/weekly-knowledge-audit.md": "2dbe6bb8b5bdc6764ec926b7326c4f205e33701de5d756fb0c883620cf9e0a81",
+      "doc/runbooks/knowledge-maintenance.md": "b6df1999d933a3630065ea3c4afda3fcfc3da7ef5f00d2b7a9df06fe1d2a56e8",
+      "doc/runbooks/weekly-knowledge-audit.md": "d5ef71a8fa870a15e584043681e1cc662e34f7f417e80b646e0f0dfa7bec9ceb",
       "include/StudioRuntime.h": "4e71c40cd19c8d6ece47c714cb46a99145328e79f4c7eeb8b68b7d1e0965b2dc",
       "src/core/StudioRuntime.cpp": "e65e2fb5ae27c8c0046fe1d816cb85848c46a40bba97d21617c180fd620c8b4e",
       "src/core/StudioSignals.cpp": "5277706db0da09c14906077c9d5deef291dd8911b3d58eb7276b46828980ac66",
@@ -45,12 +45,14 @@
   },
   "agent-coordinator": {
     "reviewer": "Agent Systems Maintainers",
-    "note": "Integrated AI agent pair programming governance and parent/subagent handoff packet contract",
+    "note": "Integrated Contracted Agent Anchor Protocol and Evidence Registry",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/agent-native-architecture.md": "56b264decd910f24e842416305739738fb8d8bc2d9f46876fce07febf283fab1",
+      "doc/evidence/README.md": "e8e72f455ca5dc8eaa6fb6da797578e6798c91a55f2e7975a76ae1d848520012",
       "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": "e66e354e92163214f56886ff3f82ac2214c37ae703a4e69ff117e7513a1afe66",
+      "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md": "4bb1b372d0e786f542de6952b14f00ebc0eae35f5fc34d6392e121a5cd86ab11",
       "include/StudioAgent.h": "0d4af7772e9ca062be7a66999e4b795ff754ac92c896a3ee53788e59494b3212",
       "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
     },
@@ -74,14 +76,14 @@
   },
   "audio-dsp": {
     "reviewer": "Audio DSP Maintainers",
-    "note": "Integrated performance benchmarking SLOs, audio incident triage, and DSP crash recovery runbook",
+    "note": "Standardized DSP crash recovery runbook canonical sections",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/adr/0004-two-stage-audio-understanding.md": "1b087da411eff38d677fa4752c3848c4a2d4554f8218f879579f4fd6ff03c17e",
       "doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md": "26e36c0ce4ed7a750ba3db89938df5881e9be5944b3cbf7e137d4b2c0b3cf239",
       "doc/playbooks/03-incident-response-and-audio-triage.md": "d36584f4a27cada74882f97989fe4ce384a3688764004951a80432e7b9c51928",
-      "doc/runbooks/dsp-crash-recovery.md": "a8369dd9d756376ed600877975d201f825040ff032c474b77f156b432374505a",
+      "doc/runbooks/dsp-crash-recovery.md": "f2d6851e7675cc6e1e335546e1cbf0992b12ff52cf1a868092c34af0cc4b6492",
       "include/StudioAudio.h": "b1f1d3692cae577cee08f7baf3c41d2005f3b06b2c1e3c0e8cb26f1b9964cfae",
       "src/core/StudioAudio.cpp": "9722f580612fef4edd10dd4f4f6312457299cbef84da8106ff964e7a3f0c0f4a"
     },

@@ -1,0 +1,19 @@
+{
+  "gate": "GATE-013",
+  "title": "Full Song Composition & Offline Headless WAV Export",
+  "executed_at": "2026-10-14T19:00:00Z",
+  "command": "python3 tests/studio_process_test.py",
+  "exit_code": 0,
+  "metrics": {
+    "rendered_bars": 16,
+    "sample_rate": 44100,
+    "channels": 2,
+    "bit_depth": 24,
+    "render_throughput_realtime_factor": 72.4
+  },
+  "verified_invariants": [
+    "Headless rendering executes without GUI display server",
+    "Audio buffer checksums match bit-for-bit across successive runs",
+    "Generated WAV header adheres to standard RIFF specification"
+  ]
+}

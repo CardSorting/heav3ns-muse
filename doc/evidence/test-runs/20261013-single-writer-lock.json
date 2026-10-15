@@ -1,0 +1,17 @@
+{
+  "gate": "GATE-003",
+  "title": "Atomic Manifests, Single-Writer Persistence & Lock Contention",
+  "executed_at": "2026-10-13T10:15:00Z",
+  "command": "python3 tests/studio_process_test.py",
+  "exit_code": 0,
+  "metrics": {
+    "total_tests": 10,
+    "passed": 10,
+    "failed": 0
+  },
+  "verified_invariants": [
+    "Single-writer session mutual exclusion using fcntl / LockFileEx",
+    "Atomic replacement via temporary write and fsync rename",
+    "Stale lock detection and crash recovery"
+  ]
+}

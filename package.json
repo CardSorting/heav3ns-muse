@@ -5,16 +5,18 @@
   "private": true,
   "scripts": {
     "docs:sync": "python3 scripts/docs-kb.py sync && python3 scripts/roadmap-sync.py sync",
-    "docs:check": "python3 scripts/verify-docs.py && python3 scripts/docs-kb.py check && python3 scripts/roadmap-sync.py check",
+    "docs:check": "python3 tests/test_docs_kb.py && python3 scripts/verify-docs.py && python3 scripts/docs-kb.py check && python3 scripts/roadmap-sync.py check",
     "docs:status": "python3 scripts/docs-kb.py status",
     "docs:impact": "python3 scripts/docs-kb.py impact",
     "docs:review": "python3 scripts/docs-kb.py review",
     "docs:audit": "python3 scripts/docs-kb.py audit",
+    "docs:search": "python3 scripts/docs-kb.py search",
     "maintainer:check": "python3 scripts/onboard-maintainer.py",
     "maintainer:preflight": "python3 scripts/onboard-maintainer.py",
     "roadmap:sync": "python3 scripts/roadmap-sync.py sync",
     "roadmap:check": "python3 scripts/roadmap-sync.py check",
     "roadmap:roll": "python3 scripts/roadmap-sync.py roll",
+    "test:kb": "python3 tests/test_docs_kb.py",
     "test:studio": "python3 tests/studio_process_test.py --lmms build/lmms --output build/studio-evidence"
   },
   "license": "GPL-2.0-or-later"

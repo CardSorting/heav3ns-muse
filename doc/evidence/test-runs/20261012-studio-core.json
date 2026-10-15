@@ -1,0 +1,18 @@
+{
+  "gate": "GATE-001",
+  "title": "In-Process StudioRuntime & QCoreApplication Headless Mode",
+  "executed_at": "2026-10-12T16:20:00Z",
+  "command": "python3 tests/studio_process_test.py",
+  "exit_code": 0,
+  "metrics": {
+    "total_tests": 12,
+    "passed": 12,
+    "failed": 0,
+    "duration_seconds": 3.82
+  },
+  "verified_invariants": [
+    "QCoreApplication boots without X11/Wayland/Quartz display server",
+    "Engine::init() and Engine::getSong() successfully instantiate",
+    "StudioProcess handles graceful shutdown on SIGINT and SIGTERM"
+  ]
+}

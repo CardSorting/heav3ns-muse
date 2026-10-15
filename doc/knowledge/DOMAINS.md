@@ -40,6 +40,8 @@ Owner role: **Agent Systems Maintainers**. Domain: `agent-coordinator`.
 
 - [HEAV3NS LMMS engineering record](../../doc/agent-native-architecture.md)
 - [AI Agent Pair Programming & Governance](../../doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md)
+- [Contracted Agent Anchor Protocol & High-Velocity Data Pipeline](../../doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md)
+- [Evidence Catalog & Execution Artifact Registry](../../doc/evidence/README.md)
 
 Relevant checks: `python3 tests/studio_process_test.py`.
 

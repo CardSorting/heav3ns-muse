@@ -6,42 +6,37 @@ Operational procedure for isolating, diagnosing, and mitigating instrument or ef
 
 ---
 
-## 1. Symptoms & Triage
+## Purpose and trigger
 
-A DSP plugin crash typically presents as:
-- Immediate `SIGSEGV` or `SIGFPE` during `song.play()` or `song.export()`.
-- Abrupt termination of the `lmms --studio` headless process with broken socket connection on the client SDK.
-- Audio silence or NaN/Inf floating-point values propagated through the `Mixer`.
+- Trigger: Headless studio crash (`SIGSEGV`, `SIGFPE`), runaway memory leak, or broken socket connection during playback or export.
+- Purpose: Restore studio host stability, isolate offending synth or effect code, and preserve user project state.
+- Primary Owner: Audio DSP Maintainers.
 
----
+## Authority and prerequisites
 
-## 2. Isolation Workflow
+- Local build tree with debug symbols: `cmake -B build -DCMAKE_BUILD_TYPE=Debug -DHEADLESS=ON`.
+- LLDB (macOS) or GDB (Linux) installed.
+- Access to disposable reproduction project manifests.
 
-### Step 1: Isolate the Faulty Plugin
-Reproduce the issue by loading the project manifest and inspecting which instrument track triggers the fault:
+## Procedure
 
-```sh
-# Run inside LLDB with immediate backtrace on crash
-lldb -o "run" -o "bt" -- ./build/lmms --studio --socket /tmp/muse-triage.sock
-```
+1. **Capture Backtrace**: Reproduce the crash under LLDB/GDB batch mode (`lldb -- ./build/lmms --studio --socket /tmp/triage.sock`).
+2. **Identify Faulting Subsystem**: Pinpoint whether the fault originated in an instrument oscillator, an effect filter, or the `Mixer` buffer loop.
+3. **Isolate Plugin**: Remove or bypass the offending plugin channel using `client.remove_track(track_index=N)`.
+4. **Audit Numerical Invariants**: Inspect C++ loop for divide-by-zero, uninitialized buffers, or buffer indexing overruns.
+5. **Add Regression Test**: Create an automated test in `tests/studio_process_test.py` reproducing the exact parameter configuration.
 
-### Step 2: Disable Rogue Plugin Headless
-If a specific plugin (e.g., an external VST or experimental LADSPA effect) is crashing the host, bypass it via the studio protocol:
+## Stop conditions
 
-```python
-import muse
-client = muse.StudioClient(socket_path="/tmp/muse-triage.sock")
+- Halt live audio routing immediately if high-gain runaway feedback or infinite floating-point loops occur.
+- Never deploy a crash fix that suppresses asserts without addressing underlying memory bounds.
 
-# Inspect loaded tracks
-tracks = client.list_tracks()
-print("Active tracks:", tracks)
+## Recovery and rollback
 
-# Bypass or remove the crashing track
-client.remove_track(track_index=2)
-```
+- Revert the offending plugin commit if an immediate hotfix is unavailable.
+- Restore the last known clean project checkpoint from `.mmpz` backup.
 
-### Step 3: Audit DSP Numerical Safety
-Inspect the plugin's C++ audio generation loop:
-1. **Divide-by-Zero Checks**: Check frequency, resonance, and filter cutoff calculations.
-2. **Buffer Overruns**: Ensure write indices do not exceed `AudioEngine::framesPerPeriod()`.
-3. **Denormal / NaN Protection**: Ensure audio buffers flush denormals to zero (`_mm_setcsr(_mm_getcsr() | 0x8040)`).
+## Verification and evidence
+
+- Build with AddressSanitizer and verify zero memory errors: `ASAN_OPTIONS=detect_leaks=1 python3 tests/studio_process_test.py`.
+- Verify clean offline audio export with bit-identical output.

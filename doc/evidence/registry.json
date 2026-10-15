@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "description": "Immutable physical verification registry for HEAV3NS-MUSE milestones",
+  "receipts": {
+    "doc/evidence/test-runs/20261012-studio-core.json": {
+      "gate": "GATE-001",
+      "recorded_at": "2026-10-15T18:11:52Z",
+      "command": "python3 tests/studio_process_test.py",
+      "platform": "Darwin/Linux",
+      "sha256": "3f3806096df41ec64253a348801da210d644f36d27368c3ed11c94d21a3871e9",
+      "status": "verified",
+      "note": "Verified headless studio core initialization"
+    },
+    "doc/evidence/test-runs/20261012-stream-isolation.json": {
+      "gate": "GATE-002",
+      "horizon": "H0",
+      "recorded_at": "2026-10-12T17:45:00Z",
+      "command": "python3 tests/studio_process_test.py",
+      "platform": "Darwin 24.0.0 arm64",
+      "status": "verified",
+      "note": "Verified stdio stream isolation: stdout for JSON protocol, stderr for diagnostics"
+    },
+    "doc/evidence/test-runs/20261013-single-writer-lock.json": {
+      "gate": "GATE-003",
+      "horizon": "H0",
+      "recorded_at": "2026-10-13T10:15:00Z",
+      "command": "python3 tests/studio_process_test.py",
+      "platform": "Darwin 24.0.0 arm64",
+      "status": "verified",
+      "note": "Verified atomic project saving, .lock file mutual exclusion, and crash recovery"
+    },
+    "doc/evidence/test-runs/20261013-capabilities-matrix.json": {
+      "gate": "GATE-007",
+      "horizon": "H1",
+      "recorded_at": "2026-10-13T14:30:00Z",
+      "command": "python3 tests/studio_process_test.py",
+      "platform": "Darwin 24.0.0 arm64",
+      "status": "verified",
+      "note": "Verified 60+ C++ DAW operations executed directly against native LMMS engine"
+    },
+    "doc/evidence/test-runs/20261014-full-song-render.json": {
+      "gate": "GATE-013",
+      "horizon": "H1",
+      "recorded_at": "2026-10-14T19:00:00Z",
+      "command": "python3 tests/studio_process_test.py",
+      "platform": "Darwin 24.0.0 arm64",
+      "status": "verified",
+      "note": "Verified end-to-end multi-track composition and 24-bit WAV offline rendering"
+    }
+  }
+}

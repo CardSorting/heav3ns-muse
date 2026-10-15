@@ -6,37 +6,37 @@ Scheduled weekly maintenance procedure for maintainers and autonomous monitoring
 
 ---
 
-## 1. Audit Schedule & Responsibilities
+## Purpose and trigger
 
-- **Cadence**: Every Monday at 09:00 UTC.
-- **Primary Role**: Lead Engineering Maintainer or Designated Review Agent.
-- **Success Criteria**: Zero stale reviews, zero unmapped source files, 100% roadmap gate verification integrity.
+- Trigger: Every Monday at 09:00 UTC or upon sprint milestone rollover.
+- Purpose: Prevent stale knowledge from accumulating, reconcile rapid C++ commits with active documentation, and audit roadmap gates against physical evidence.
+- Primary Owner: Lead Engineering Maintainer or Designated Review Agent.
 
----
+## Authority and prerequisites
 
-## 2. Weekly Checklist
+- Clean git checkout of `main` branch.
+- Verified local toolchain (`cmake`, `clang++`/`g++`, `python3`, `node`).
+- Access to run headless studio verification test suite.
 
-### 1. Source Drift & Review Freshness
-```sh
-# Verify that all 6 knowledge domains are currently reviewed
-npm run docs:status -- --fail-on-due --fail-on-unreviewed
-```
-If any domain is due or stale, execute [knowledge-maintenance.md](knowledge-maintenance.md).
+## Procedure
 
-### 2. Comprehensive Documentation Verification
-```sh
-npm run docs:check
-```
-Ensures:
-- Exactly 1 valid `docs-scope` marker per document.
-- Zero broken internal markdown links or invalid anchors.
-- Strict contiguous numbering of ADRs.
-- 100% inclusion in `doc/CATALOG.md`.
+1. **Audit Documentation Corpus**: Run `npm run docs:check` to verify that all 33+ guides have valid scopes and intact internal links.
+2. **Audit Review Freshness**: Run `npm run docs:status -- --fail-on-due --fail-on-unreviewed` to confirm zero stale or due domain reviews.
+3. **Execute Scorecard Audit**: Run `npm run docs:audit` to generate the complete governance scorecard.
+4. **Audit Roadmap Gates**: Run `npm run roadmap:check` and cross-reference closed gates against physical artifacts in `doc/evidence/`.
+5. **Verify Preflight Health**: Run `npm run maintainer:check` to verify toolchain readiness.
 
-### 3. Roadmap Evidentiary Audit
-Inspect [doc/roadmap/register.json](../roadmap/register.json) against physical test results:
-```sh
-npm run roadmap:check
-npm run test:studio
-```
-Verify that every completed gate in Horizon 0, 1, and 2 has a physical timestamp, verifying command, and valid test receipt.
+## Stop conditions
+
+- Halt if any roadmap gate is marked "completed" without an associated test command and passing exit code.
+- Halt if any C++ source in `src/core/` has drifted without a documented review.
+
+## Recovery and rollback
+
+- If drift is detected, open an issue in `doc/roadmap/OPEN_ITEMS.md` and execute [knowledge-maintenance.md](knowledge-maintenance.md).
+- If a gate lacks physical verification evidence, reopen it via `npm run roadmap:roll -- --gate <ID> --status in_progress`.
+
+## Verification and evidence
+
+- `npm run docs:audit` outputs all checks `[PASS] Clean`.
+- Record the weekly audit summary in [doc/roadmap/ROLLING_LOG.md](../roadmap/ROLLING_LOG.md).

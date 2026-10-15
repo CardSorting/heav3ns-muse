@@ -43,6 +43,7 @@ Complete index of all authoritative documentation, architecture records, guides,
 | [Debugging & Diagnostic Runbooks](maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md) | `doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md` | `current-guide` | `studio-runtime` | `runbook` |
 | [Performance Benchmarking & SLOs](maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md) | `doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md` | `domain-reference` | `audio-dsp` | `reference` |
 | [Git Workflows, Hooks & PR Attestation](maintainers/GIT_WORKFLOWS_AND_HOOKS.md) | `doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md` | `current-guide` | `studio-runtime` | `reference` |
+| [Contracted Agent Anchor Protocol](maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md) | `doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md` | `current-guide` | `agent-coordinator` | `reference` |
 
 ---
 
@@ -68,7 +69,15 @@ Complete index of all authoritative documentation, architecture records, guides,
 
 ---
 
-## 6. Knowledgebase & Roadmap Navigation
+## 6. Physical Evidence & Verification Receipts
+
+| Title | Path | Scope | Domain | Kind |
+| :--- | :--- | :---: | :--- | :---: |
+| [Evidence Catalog & Artifact Registry](evidence/README.md) | `doc/evidence/README.md` | `operational-record` | `agent-coordinator` | `evidence` |
+
+---
+
+## 7. Knowledgebase & Roadmap Navigation
 
 | Title | Path | Scope | Domain | Kind |
 | :--- | :--- | :---: | :--- | :---: |

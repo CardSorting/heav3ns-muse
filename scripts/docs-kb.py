@@ -22,6 +22,15 @@ KINDS = {
 }
 STATUSES = {"proposed", "accepted", "rejected", "deprecated", "superseded"}
 DELIVERY = {"not-started", "local", "deployed", "verified"}
+RUNBOOK_SECTIONS = (
+    "Purpose and trigger",
+    "Authority and prerequisites",
+    "Procedure",
+    "Stop conditions",
+    "Recovery and rollback",
+    "Verification and evidence"
+)
+EVIDENCE_REGISTRY = f"{DOCS_DIR}/evidence/registry.json"
 
 
 def read(root, path):
@@ -128,6 +137,25 @@ def validate(root, config, reviews, require_complete=True):
         safe_file(root, name)
         if metadata.get("kind") not in KINDS:
             errors.append(f"{name}: invalid content kind: {metadata.get('kind')}")
+    for name in config.get("runbooks", []):
+        body = safe_file(root, name).read_text(encoding="utf-8")
+        for heading in RUNBOOK_SECTIONS:
+            if f"## {heading}\n" not in body and f"## {heading}\r\n" not in body:
+                errors.append(f"{name}: missing runbook section: {heading}")
+    for path in (root / f"{DOCS_DIR}/runbooks").glob("*.md"):
+        name = path.relative_to(root).as_posix()
+        if path.name != "README.md" and name not in config.get("runbooks", []):
+            errors.append(f"{name}: new runbook requires registration in registry.json")
+
+    ev_reg_path = root / EVIDENCE_REGISTRY
+    if ev_reg_path.is_file():
+        try:
+            ev_data = json.loads(ev_reg_path.read_text(encoding="utf-8"))
+            for receipt_path in ev_data.get("receipts", {}).keys():
+                safe_file(root, receipt_path)
+        except Exception as e:
+            errors.append(f"Evidence registry invalid: {e}")
+
     decisions = config.get("decisions", {})
     for name, record in decisions.items():
         safe_file(root, name)
@@ -139,6 +167,21 @@ def validate(root, config, reviews, require_complete=True):
             errors.append(f"{name}: missing decision domain/owner")
         for item in record.get("evidence", []):
             safe_file(root, item)
+        successor = record.get("superseded_by")
+        if record["status"] == "superseded" and not successor:
+            errors.append(f"{name}: superseded requires a successor")
+        if successor and (successor not in decisions or name not in decisions[successor].get("supersedes", [])):
+            errors.append(f"{name}: successor must reciprocate supersession")
+        for previous in record.get("supersedes", []):
+            if previous not in decisions or decisions[previous].get("superseded_by") != name:
+                errors.append(f"{name}: predecessor must reciprocate supersession")
+        seen = {name}
+        while successor in decisions:
+            if successor in seen:
+                errors.append(f"{name}: supersession cycle")
+                break
+            seen.add(successor)
+            successor = decisions[successor].get("superseded_by")
     for key, review in reviews.items():
         if key not in domains:
             errors.append(f"{key}: review for unknown domain")
@@ -221,12 +264,72 @@ def impact(config, names):
     return result
 
 
+def search(root, config, query, history=False, limit=10):
+    terms = re.findall(r"[\w-]+", query.lower())
+    if not terms:
+        return []
+    results = []
+    for row in documents(root, config):
+        if row["kind"] == "navigation":
+            continue
+        if not history and (row["scope"] != "current-guide" and
+                            (not row["decision"] or row["decision"]["status"] != "accepted")):
+            continue
+        title = (row["title"] + " " + " ".join(row["keywords"])).lower()
+        body = safe_file(root, row["path"]).read_text(encoding="utf-8").lower()
+        if not all(t in body or t in title for t in terms):
+            continue
+        score = sum(10 * title.count(t) + min(body.count(t), 3) for t in terms)
+        snippet = ""
+        for t in terms:
+            idx = body.find(t)
+            if idx != -1:
+                start = max(0, idx - 40)
+                end = min(len(body), idx + 80)
+                snippet = "..." + body[start:end].replace("\n", " ").strip() + "..."
+                break
+        results.append({**row, "score": score, "snippet": snippet})
+    return sorted(results, key=lambda r: (-r["score"], r["path"]))[:limit]
+
+
+def record_evidence(root, gate, command, artifact, note="", platform="Darwin/Linux"):
+    ev_path = root / EVIDENCE_REGISTRY
+    ev_data = json.loads(ev_path.read_text(encoding="utf-8")) if ev_path.is_file() else {"version": 1, "receipts": {}}
+    art_file = safe_file(root, artifact)
+    sha = hashlib.sha256(art_file.read_bytes()).hexdigest()
+    iso_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    ev_data.setdefault("receipts", {})[artifact] = {
+        "gate": gate,
+        "recorded_at": iso_now,
+        "command": command,
+        "platform": platform,
+        "sha256": sha,
+        "status": "verified",
+        "note": note
+    }
+    ev_path.write_text(dump(ev_data), encoding="utf-8")
+    print(f"Recorded evidence receipt for {gate} ({artifact}, sha256={sha[:12]}).")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("sync", help="Synchronize generated catalogs and markdown views")
     sub.add_parser("check", help="Validate knowledge registry, reviews, and decision records")
     sub.add_parser("audit", help="Run comprehensive documentation and governance audit scorecard")
+
+    search_parser = sub.add_parser("search", help="Search authoritative knowledgebase documents")
+    search_parser.add_argument("query", help="Keywords to query")
+    search_parser.add_argument("--history", action="store_true", help="Include non-current guides and superseded decisions")
+    search_parser.add_argument("--limit", type=int, default=10, help="Maximum results to return")
+
+    ev_parser = sub.add_parser("record-evidence", help="Record physical evidence receipt into registry")
+    ev_parser.add_argument("--gate", required=True, help="Roadmap gate ID")
+    ev_parser.add_argument("--command", dest="exec_command", required=True, help="Verification command executed")
+    ev_parser.add_argument("--artifact", required=True, help="Path to evidence receipt file")
+    ev_parser.add_argument("--note", default="", help="Contextual note")
+    ev_parser.add_argument("--platform", default="Darwin/Linux", help="Execution platform")
 
     status_parser = sub.add_parser("status", help="Show domain review freshness status")
     status_parser.add_argument("--fail-on-due", action="store_true", help="Exit nonzero if any domain review is due")
@@ -361,7 +464,6 @@ def main():
             ev_path = safe_file(ROOT, args.evidence)
             evidence_dict[args.evidence] = hashlib.sha256(ev_path.read_bytes()).hexdigest()
         today_iso = datetime.now(timezone.utc).date().isoformat()
-        # Set next review due date 30 days out
         next_month = date.fromordinal(datetime.now(timezone.utc).date().toordinal() + 30).isoformat()
         reviews[domain_key] = {
             "reviewer": args.reviewer,
@@ -373,6 +475,27 @@ def main():
         }
         (ROOT / REVIEWS).write_text(dump(reviews), encoding="utf-8")
         print(f"Recorded review attestation for domain '{domain_key}' by {args.reviewer} valid through {next_month}.")
+        return 0
+
+    if args.command == "search":
+        results = search(ROOT, config, args.query, history=args.history, limit=args.limit)
+        if not results:
+            print(f"No documents matched '{args.query}'.")
+            return 0
+        print(f"Found {len(results)} matching document(s) for '{args.query}':\n")
+        for r in results:
+            domains_str = ", ".join(r["domains"]) if r["domains"] else "unassigned"
+            print(f"  [{r['score']:>2}] {r['title']}")
+            print(f"       Path:   {r['path']}")
+            print(f"       Scope:  {r['scope']} | Domain: {domains_str}")
+            if r.get("snippet"):
+                print(f"       Match:  {r['snippet']}")
+            print()
+        return 0
+
+    if args.command == "record-evidence":
+        record_evidence(ROOT, args.gate, args.exec_command,
+                        args.artifact, note=args.note, platform=args.platform)
         return 0
 
     return 0

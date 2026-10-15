@@ -142,6 +142,24 @@
       "decision": null
     },
     {
+      "path": "doc/evidence/README.md",
+      "title": "Evidence Catalog & Execution Artifact Registry",
+      "scope": "operational-record",
+      "kind": "evidence",
+      "domains": [
+        "agent-coordinator"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "evidence",
+        "receipts",
+        "permanence",
+        "benchmarks",
+        "runs"
+      ],
+      "decision": null
+    },
+    {
       "path": "doc/how-to/change-with-documentation.md",
       "title": "Maintain knowledge with a change",
       "scope": "current-guide",
@@ -200,6 +218,24 @@
         "parent-child",
         "handoff",
         "invariants"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md",
+      "title": "Contracted Agent Anchor Protocol & High-Velocity Data Pipeline",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "agent-coordinator"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "contracted-agent",
+        "anchor",
+        "datapipeline",
+        "evidence",
+        "zero-stale"
       ],
       "decision": null
     },

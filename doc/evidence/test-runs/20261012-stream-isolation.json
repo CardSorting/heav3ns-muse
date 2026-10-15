@@ -1,0 +1,18 @@
+{
+  "gate": "GATE-002",
+  "title": "Stream Isolation & Line-Delimited JSON-RPC Protocol",
+  "executed_at": "2026-10-12T17:45:00Z",
+  "command": "python3 tests/studio_process_test.py",
+  "exit_code": 0,
+  "metrics": {
+    "total_tests": 8,
+    "passed": 8,
+    "failed": 0,
+    "max_payload_bytes": 1048576
+  },
+  "verified_invariants": [
+    "Stdio stream isolation: stdout carries strict JSON-RPC 2.0 lines",
+    "Diagnostic and engine logs route exclusively to stderr",
+    "Malformed framing triggers structured -32700 Parse Error responses"
+  ]
+}

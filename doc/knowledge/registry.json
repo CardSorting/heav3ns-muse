@@ -57,7 +57,9 @@
       ],
       "guides": [
         "doc/agent-native-architecture.md",
-        "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md"
+        "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md",
+        "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md",
+        "doc/evidence/README.md"
       ],
       "checks": [
         "python3 tests/studio_process_test.py"
@@ -164,6 +166,14 @@
       "kind": "reference",
       "keywords": ["git", "commits", "hooks", "pr", "attestation"]
     },
+    "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md": {
+      "kind": "reference",
+      "keywords": ["contracted-agent", "anchor", "datapipeline", "evidence", "zero-stale"]
+    },
+    "doc/evidence/README.md": {
+      "kind": "evidence",
+      "keywords": ["evidence", "receipts", "permanence", "benchmarks", "runs"]
+    },
     "doc/playbooks/01-provisioning-and-preflight.md": {
       "kind": "how-to",
       "keywords": ["provisioning", "preflight", "macos", "linux", "qt"]
@@ -192,9 +202,7 @@
   "runbooks": [
     "doc/runbooks/knowledge-maintenance.md",
     "doc/runbooks/weekly-knowledge-audit.md",
-    "doc/runbooks/dsp-crash-recovery.md",
-    "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md",
-    "doc/playbooks/03-incident-response-and-audio-triage.md"
+    "doc/runbooks/dsp-crash-recovery.md"
   ],
   "decisions": {
     "doc/adr/0001-native-dsp-model-authority.md": {
