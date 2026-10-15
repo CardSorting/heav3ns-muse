@@ -34,16 +34,28 @@ flowchart TD
 
 ## 2. Agent Execution Workflow
 
+### Step 0: Pre-Flight Ground Truth Anchor Verification
+Before initiating any task, contracted agents must verify that the environment and repository are grounded in authoritative invariants:
+```sh
+# Verify active horizon, core source mappings, and zero-stale domain seals
+npm run docs:anchor
+
+# Or dump the compiled machine-readable anchor context directly into system prompts:
+npm run docs:anchor:dump
+```
+If `npm run docs:anchor` fails, stop immediately: the workspace is ungrounded or source code has drifted ahead of documentation.
+
 ### Step 1: Discover Authoritative Guidance
 Use the offline knowledge search engine:
 ```sh
 # Search active guides for specific capabilities or architecture rules
 python3 scripts/docs-kb.py search "track model authority"
 python3 scripts/docs-kb.py search "audio thread lock-free"
+python3 scripts/docs-kb.py search "capture pipeline transaction"
 ```
 
 ### Step 2: Analyze Source Impact
-Before editing, identify which knowledge domains govern the target files:
+Before editing, identify which of the 7 knowledge domains govern the target files:
 ```sh
 npm run docs:impact
 ```

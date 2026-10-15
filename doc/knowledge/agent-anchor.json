@@ -1,14 +1,15 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-15T18:23:50Z",
+  "compiled_at": "2026-10-15T18:35:16Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
     "headless_runtime": "The DAW runs under QCoreApplication without requiring X11, Wayland, or Quartz display servers.",
     "audio_thread_safety": "Zero dynamic allocations (malloc/free/new/delete) and zero mutex locks in the real-time audio loop.",
     "stream_isolation": "Stdout carries strict newline-delimited JSON-RPC 2.0 lines; stderr carries diagnostics and engine logs.",
-    "state_persistence": "Atomic single-writer save semantics with mutual exclusion via .lock file and temporary write-fsync-rename."
+    "state_persistence": "Atomic single-writer save semantics with mutual exclusion via .lock file and temporary write-fsync-rename.",
+    "capture_safety": "Live MIDI and automation recording operations require bounded transactions with explicit commit/discard semantics. Transport must be stopped to arm, and offline exports mutually exclude capture arming."
   },
   "capability_namespaces": {
     "project": [
@@ -52,6 +53,22 @@
     "audio": [
       "audio.listen",
       "audio.backend.select"
+    ],
+    "recording": [
+      "recording.midi.arm",
+      "recording.midi.start",
+      "recording.midi.stop",
+      "recording.automation.arm",
+      "recording.take.commit",
+      "recording.take.discard"
+    ],
+    "native_mutation": [
+      "clip.split",
+      "clip.transfer",
+      "note.shift",
+      "note.glue",
+      "control.link",
+      "track.snapshot.restore"
     ]
   },
   "roadmap_horizons": {
@@ -225,6 +242,44 @@
       "evidence": null
     }
   ],
+  "evidence_receipts": [
+    {
+      "gate": "GATE-001",
+      "artifact": "doc/evidence/test-runs/20261012-studio-core.json",
+      "command": "python3 tests/studio_process_test.py",
+      "sha256": "3f3806096df4"
+    },
+    {
+      "gate": "GATE-002",
+      "artifact": "doc/evidence/test-runs/20261012-stream-isolation.json",
+      "command": "python3 tests/studio_process_test.py",
+      "sha256": ""
+    },
+    {
+      "gate": "GATE-003",
+      "artifact": "doc/evidence/test-runs/20261013-single-writer-lock.json",
+      "command": "python3 tests/studio_process_test.py",
+      "sha256": ""
+    },
+    {
+      "gate": "GATE-007",
+      "artifact": "doc/evidence/test-runs/20261013-capabilities-matrix.json",
+      "command": "python3 tests/studio_process_test.py",
+      "sha256": ""
+    },
+    {
+      "gate": "GATE-011",
+      "artifact": "doc/evidence/test-runs/20261015-live-capture-pipeline.json",
+      "command": "python3 tests/studio_process_test.py",
+      "sha256": "bd04bf3ca76d"
+    },
+    {
+      "gate": "GATE-013",
+      "artifact": "doc/evidence/test-runs/20261014-full-song-render.json",
+      "command": "python3 tests/studio_process_test.py",
+      "sha256": ""
+    }
+  ],
   "domains": {
     "studio-runtime": {
       "title": "Studio Runtime & Process Lifecycle",
@@ -236,7 +291,9 @@
         "src/core/StudioRuntime.*",
         "src/core/StudioStdio.*",
         "src/core/StudioSignals.*",
-        "include/StudioRuntime.h"
+        "include/StudioRuntime.h",
+        "include/StudioStdio.h",
+        "include/StudioSignals.h"
       ]
     },
     "capabilities": {
@@ -247,7 +304,16 @@
       "guides_count": 4,
       "sources_patterns": [
         "src/core/StudioCapabilities.*",
-        "include/StudioCapabilities.h"
+        "include/StudioCapabilities.h",
+        "src/core/NativeClipEdit.*",
+        "src/core/NativeClipTransfer.*",
+        "src/core/NativeControlLinkJournal.*",
+        "src/core/NativeLinkedControls.*",
+        "src/core/NativeNoteGlue.*",
+        "src/core/NativeNoteShift.*",
+        "src/core/NativeNoteTransfer.*",
+        "src/core/NativeTrackSaveSnapshot.*",
+        "src/core/NativeValueNotification.*"
       ]
     },
     "agent-coordinator": {
@@ -287,13 +353,36 @@
       "title": "Session Durability, Manifests & Storage",
       "status": "reviewed",
       "reviewer": "Session Storage Maintainers",
-      "review_by": "2026-11-15",
+      "review_by": "2026-11-14",
       "guides_count": 1,
       "sources_patterns": [
         "src/core/StudioStorage.*",
         "src/core/StudioAssets.*",
         "src/core/StudioAssetStore.*",
-        "include/StudioStorage.h"
+        "src/core/StudioResources.*",
+        "src/core/StudioProjectResources.*",
+        "include/StudioStorage.h",
+        "include/StudioAssets.h",
+        "include/StudioAssetStore.h",
+        "include/StudioResources.h",
+        "include/StudioProjectResources.h"
+      ]
+    },
+    "live-capture": {
+      "title": "Live Recording, MIDI Ingestion & Automation Capture",
+      "status": "reviewed",
+      "reviewer": "Live Capture Maintainers",
+      "review_by": "2026-11-14",
+      "guides_count": 2,
+      "sources_patterns": [
+        "src/core/StudioRecording.*",
+        "include/StudioRecording.h",
+        "src/core/StudioMidiRecording.*",
+        "include/StudioMidiRecording.h",
+        "src/core/StudioMidiLearn.*",
+        "include/StudioMidiLearn.h",
+        "src/core/StudioAutomationRecording.*",
+        "include/StudioAutomationRecording.h"
       ]
     }
   }

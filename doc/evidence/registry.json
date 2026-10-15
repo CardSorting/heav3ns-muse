@@ -46,6 +46,15 @@
       "platform": "Darwin 24.0.0 arm64",
       "status": "verified",
       "note": "Verified end-to-end multi-track composition and 24-bit WAV offline rendering"
+    },
+    "doc/evidence/test-runs/20261015-live-capture-pipeline.json": {
+      "gate": "GATE-011",
+      "recorded_at": "2026-10-15T18:31:45Z",
+      "command": "python3 tests/studio_process_test.py",
+      "platform": "Darwin/Linux",
+      "sha256": "bd04bf3ca76d5327f47e15ae450ec299b56fceae41fe19e192008b1a850105b4",
+      "status": "verified",
+      "note": "Verified live capture and MIDI/automation recording pipeline"
     }
   }
 }

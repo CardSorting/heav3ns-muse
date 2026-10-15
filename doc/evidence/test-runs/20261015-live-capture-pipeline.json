@@ -1,0 +1,19 @@
+{
+  "gate": "GATE-011",
+  "title": "Automation, MIDI Ingestion & Live Capture Pipeline",
+  "executed_at": "2026-10-15T18:30:00Z",
+  "command": "python3 tests/studio_process_test.py",
+  "exit_code": 0,
+  "metrics": {
+    "total_tests": 12,
+    "passed": 12,
+    "failed": 0,
+    "duration_seconds": 3.75
+  },
+  "verified_invariants": [
+    "StudioRecording interlocks transport with active takes",
+    "StudioMidiRecording captures note events and velocity without real-time allocations",
+    "StudioAutomationRecording decodes breakpoint journals and restores on abort",
+    "StudioMidiLearn binds CC targets deterministically to automatable models"
+  ]
+}

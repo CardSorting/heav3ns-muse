@@ -44,6 +44,7 @@ Complete index of all authoritative documentation, architecture records, guides,
 | [Performance Benchmarking & SLOs](maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md) | `doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md` | `domain-reference` | `audio-dsp` | `reference` |
 | [Git Workflows, Hooks & PR Attestation](maintainers/GIT_WORKFLOWS_AND_HOOKS.md) | `doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md` | `current-guide` | `studio-runtime` | `reference` |
 | [Contracted Agent Anchor Protocol](maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md) | `doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md` | `current-guide` | `agent-coordinator` | `reference` |
+| [Live Recording & Capture Pipeline](maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md) | `doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md` | `current-guide` | `live-capture` | `reference` |
 
 ---
 

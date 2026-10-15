@@ -15,6 +15,8 @@ Private maintainer operational guide for the HEAV3NS-MUSE agent-native digital a
 | [Maintainer CLI Cheatsheet](MAINTAINER_CLI_CHEATSHEET.md) | Command lookup for CMake, CTest, Python SDK, headless studio, KB sync, and roadmap rolls | `current-guide` |
 | [Maintainer Glossary](MAINTAINER_GLOSSARY_AND_LEXICON.md) | Definitive technical lexicon for DSP, headless host, perception pipeline, and state leases | `domain-reference` |
 | [Git Workflows & Hooks](GIT_WORKFLOWS_AND_HOOKS.md) | Commit conventions, branch lifecycle, pre-commit verification, and PR attestations | `current-guide` |
+| [Contracted Agent Anchor Protocol](CONTRACTED_AGENT_ANCHOR_PROTOCOL.md) | Immutable ground truth anchor for autonomous agents, high-velocity data pipelines, and evidence permanence | `current-guide` |
+| [Live Recording & Capture Pipeline](LIVE_RECORDING_AND_CAPTURE_PIPELINE.md) | Bounded MIDI note recording, automation parameter curves, lockless FIFO rings, and take rollback | `current-guide` |
 
 ---
 

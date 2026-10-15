@@ -55,10 +55,16 @@ def main():
     docs_proc = subprocess.run(["python3", "scripts/verify-docs.py"], cwd=ROOT, capture_output=True, text=True)
     kb_proc = subprocess.run(["python3", "scripts/docs-kb.py", "check"], cwd=ROOT, capture_output=True, text=True)
     roadmap_proc = subprocess.run(["python3", "scripts/roadmap-sync.py", "check"], cwd=ROOT, capture_output=True, text=True)
+    anchor_proc = subprocess.run(["python3", "scripts/docs-kb.py", "anchor", "--validate"], cwd=ROOT, capture_output=True, text=True)
+    hooks_installed = (ROOT / ".git/hooks/pre-push").is_file() and (ROOT / ".git/hooks/pre-commit").is_file()
+    ev_present = (ROOT / "doc/evidence/registry.json").is_file()
 
     print(f"    {'[OK]' if docs_proc.returncode == 0 else '[FAIL]':<10} Documentation Corpus & Link Integrity")
-    print(f"    {'[OK]' if kb_proc.returncode == 0 else '[FAIL]':<10} Cryptographic Knowledgebase Reviews")
+    print(f"    {'[OK]' if kb_proc.returncode == 0 else '[FAIL]':<10} Cryptographic Knowledgebase Reviews (7 Domains)")
     print(f"    {'[OK]' if roadmap_proc.returncode == 0 else '[FAIL]':<10} Auto-Rolling Roadmap Register")
+    print(f"    {'[OK]' if anchor_proc.returncode == 0 else '[FAIL]':<10} Contracted Agent Ground Truth Anchor")
+    print(f"    {'[OK]' if hooks_installed else '[PENDING]':<10} Local Git Governance Hooks (.git/hooks/)")
+    print(f"    {'[OK]' if ev_present else '[FAIL]':<10} Physical Evidence Permanence Registry")
 
     # 3. Maintainer Learning Path Progress
     print()

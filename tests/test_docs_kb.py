@@ -138,6 +138,25 @@ class KnowledgeGuardTests(unittest.TestCase):
         self.assertEqual(results[0]["path"], "doc/how-to/synth.md")
         self.assertIn("envelope", results[0]["title"].lower())
 
+    def test_unmapped_core_studio_source_fails_validation(self):
+        # Restrict sources to specific file so StudioUnmappedExample is unmapped
+        self.domain["sources"] = ["src/core/test_source.cpp"]
+        unmapped_file = "src/core/StudioUnmappedExample.cpp"
+        self.write(unmapped_file, "// Unmapped studio source\n")
+        errors = kb.validate(self.root, self.config, {})
+        self.assertTrue(any("Unmapped core studio sources detected" in e for e in errors))
+
+    def test_agent_anchor_invariants_compiled(self):
+        gen = kb.generated(self.root, self.config)
+        self.assertIn("doc/knowledge/agent-anchor.json", gen)
+        anchor = json.loads(gen["doc/knowledge/agent-anchor.json"])
+        self.assertIn("invariants", anchor)
+        self.assertIn("model_authority", anchor["invariants"])
+        self.assertIn("capture_safety", anchor["invariants"])
+        self.assertIn("capability_namespaces", anchor)
+        self.assertIn("recording", anchor["capability_namespaces"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

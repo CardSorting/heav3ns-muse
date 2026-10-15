@@ -11,7 +11,9 @@
         "src/core/StudioRuntime.*",
         "src/core/StudioStdio.*",
         "src/core/StudioSignals.*",
-        "include/StudioRuntime.h"
+        "include/StudioRuntime.h",
+        "include/StudioStdio.h",
+        "include/StudioSignals.h"
       ],
       "guides": [
         "doc/DOCUMENTATION_POLICY.md",
@@ -37,7 +39,16 @@
       "owner": "Capabilities Maintainers",
       "sources": [
         "src/core/StudioCapabilities.*",
-        "include/StudioCapabilities.h"
+        "include/StudioCapabilities.h",
+        "src/core/NativeClipEdit.*",
+        "src/core/NativeClipTransfer.*",
+        "src/core/NativeControlLinkJournal.*",
+        "src/core/NativeLinkedControls.*",
+        "src/core/NativeNoteGlue.*",
+        "src/core/NativeNoteShift.*",
+        "src/core/NativeNoteTransfer.*",
+        "src/core/NativeTrackSaveSnapshot.*",
+        "src/core/NativeValueNotification.*"
       ],
       "guides": [
         "doc/native-studio-protocol.md",
@@ -104,10 +115,37 @@
         "src/core/StudioStorage.*",
         "src/core/StudioAssets.*",
         "src/core/StudioAssetStore.*",
-        "include/StudioStorage.h"
+        "src/core/StudioResources.*",
+        "src/core/StudioProjectResources.*",
+        "include/StudioStorage.h",
+        "include/StudioAssets.h",
+        "include/StudioAssetStore.h",
+        "include/StudioResources.h",
+        "include/StudioProjectResources.h"
       ],
       "guides": [
         "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md"
+      ],
+      "checks": [
+        "python3 tests/studio_process_test.py"
+      ]
+    },
+    "live-capture": {
+      "title": "Live Recording, MIDI Ingestion & Automation Capture",
+      "owner": "Live Capture Maintainers",
+      "sources": [
+        "src/core/StudioRecording.*",
+        "include/StudioRecording.h",
+        "src/core/StudioMidiRecording.*",
+        "include/StudioMidiRecording.h",
+        "src/core/StudioMidiLearn.*",
+        "include/StudioMidiLearn.h",
+        "src/core/StudioAutomationRecording.*",
+        "include/StudioAutomationRecording.h"
+      ],
+      "guides": [
+        "doc/native-studio-protocol.md",
+        "doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md"
       ],
       "checks": [
         "python3 tests/studio_process_test.py"
@@ -170,6 +208,10 @@
     "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md": {
       "kind": "reference",
       "keywords": ["contracted-agent", "anchor", "datapipeline", "evidence", "zero-stale"]
+    },
+    "doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md": {
+      "kind": "reference",
+      "keywords": ["recording", "midi", "automation", "capture", "takes", "transactions", "datapipeline"]
     },
     "doc/evidence/README.md": {
       "kind": "evidence",

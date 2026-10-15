@@ -1,7 +1,7 @@
 {
   "studio-runtime": {
     "reviewer": "Studio Runtime Maintainers",
-    "note": "Integrated Milestone Engineering History & Horizon Ledger",
+    "note": "Mapped StudioStdio.h and StudioSignals.h headers into studio-runtime domain",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -19,17 +19,19 @@
       "doc/runbooks/knowledge-maintenance.md": "b6df1999d933a3630065ea3c4afda3fcfc3da7ef5f00d2b7a9df06fe1d2a56e8",
       "doc/runbooks/weekly-knowledge-audit.md": "d5ef71a8fa870a15e584043681e1cc662e34f7f417e80b646e0f0dfa7bec9ceb",
       "include/StudioRuntime.h": "4e71c40cd19c8d6ece47c714cb46a99145328e79f4c7eeb8b68b7d1e0965b2dc",
+      "include/StudioSignals.h": "abb09a7a673b5b118526198089d26d568e102521afc5138f18855aacf86f4d47",
+      "include/StudioStdio.h": "43e8ac4d47efea1635386b6365ccf93df5f2e64f9e73b83080d69c58219789dd",
       "src/core/StudioRuntime.cpp": "e65e2fb5ae27c8c0046fe1d816cb85848c46a40bba97d21617c180fd620c8b4e",
       "src/core/StudioSignals.cpp": "5277706db0da09c14906077c9d5deef291dd8911b3d58eb7276b46828980ac66",
       "src/core/StudioStdio.cpp": "76478fb8e5e8786388f785f95c64073d48fa6c84e37b50720eeab2773a2f6c61"
     },
     "evidence": {
-      "src/core/StudioRuntime.cpp": "e65e2fb5ae27c8c0046fe1d816cb85848c46a40bba97d21617c180fd620c8b4e"
+      "doc/evidence/test-runs/20261012-studio-core.json": "3f3806096df41ec64253a348801da210d644f36d27368c3ed11c94d21a3871e9"
     }
   },
   "capabilities": {
     "reviewer": "Capabilities Maintainers",
-    "note": "Integrated maintainer glossary and zero-hesitation developer ergonomics playbook",
+    "note": "Mapped native mutation pipelines (NativeClipEdit, NativeNoteTransfer, NativeLinkedControls, etc.)",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -38,27 +40,36 @@
       "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
       "doc/playbooks/02-zero-hesitation-developer-ergonomics.md": "b031753ab00e33f391aa22c0e5d4ef9f7247666e622a82c02a36401ad128f17e",
       "include/StudioCapabilities.h": "86ce7620d618526a274f67e88fc7c227d80d4748a933f88fb88e2ef542ed5042",
+      "src/core/NativeClipEdit.cpp": "560885ee5df2be1d26f3f6dd8e56288d7cdd65cda16e22fa6d09899d1d9042a2",
+      "src/core/NativeClipTransfer.cpp": "a3e777b221b3c32cf9ca2eeb51bfcc51c1d875a2a71648d56245fafb92de3c91",
+      "src/core/NativeControlLinkJournal.cpp": "b55898a379979b62cbf1be4ea5497e421192f9f1df4f82d6a577afb328cb99bd",
+      "src/core/NativeLinkedControls.cpp": "66bd542d62e7e8ffa9d5cd5e7294b3c8a1759f05549c491365926b5216ed73b7",
+      "src/core/NativeNoteGlue.cpp": "6eb6118924aa117f4f51ca17f80c5691211966eb44063d95d20e84c8062718f8",
+      "src/core/NativeNoteShift.cpp": "d260f4c9c4db48f798df2421a522fed896264104c6c46b42868a89851da8804e",
+      "src/core/NativeNoteTransfer.cpp": "349b445639d3a467e2c95ea0b79cfe680c88c33ca17c7e823e7d0c2732391728",
+      "src/core/NativeTrackSaveSnapshot.cpp": "fbed9bc608f43541d5e57f88d0fd33d5a290819098cf1ef4852548a83f474cb0",
+      "src/core/NativeValueNotification.cpp": "4da8166a2e96d21f05529daf7b130c046da76065dfb20a7120b5c65f98fd1b56",
       "src/core/StudioCapabilities.cpp": "3704f9595c4f538e5bd3ed54216120c2e7920d527000119ede2c7c6e04b04efd"
     },
     "evidence": {
-      "src/core/StudioCapabilities.cpp": "3704f9595c4f538e5bd3ed54216120c2e7920d527000119ede2c7c6e04b04efd"
+      "doc/evidence/test-runs/20261013-capabilities-matrix.json": "a6ce3a92d9ee2f37dd7b338227d41a191e0b92dad62c8f94fb3323b1379b187f"
     }
   },
   "agent-coordinator": {
     "reviewer": "Agent Systems Maintainers",
-    "note": "Integrated Contracted Agent Anchor Protocol and Evidence Registry",
+    "note": "Integrated Step 0 Pre-Flight Anchor check into Contracted Agent Anchor Protocol",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/agent-native-architecture.md": "56b264decd910f24e842416305739738fb8d8bc2d9f46876fce07febf283fab1",
       "doc/evidence/README.md": "e8e72f455ca5dc8eaa6fb6da797578e6798c91a55f2e7975a76ae1d848520012",
       "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": "e66e354e92163214f56886ff3f82ac2214c37ae703a4e69ff117e7513a1afe66",
-      "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md": "4bb1b372d0e786f542de6952b14f00ebc0eae35f5fc34d6392e121a5cd86ab11",
+      "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md": "6637df3a2afecb1270273f5546c6668673661c498900dad54ce30ef52418c7b7",
       "include/StudioAgent.h": "0d4af7772e9ca062be7a66999e4b795ff754ac92c896a3ee53788e59494b3212",
       "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
     },
     "evidence": {
-      "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
+      "doc/evidence/test-runs/20261012-studio-core.json": "3f3806096df41ec64253a348801da210d644f36d27368c3ed11c94d21a3871e9"
     }
   },
   "inference-adapters": {
@@ -94,18 +105,45 @@
   },
   "session-durability": {
     "reviewer": "Session Storage Maintainers",
-    "note": "Baseline review of single-writer locks, manifest commits and idempotency receipts",
+    "note": "Mapped resource managers (StudioResources, StudioProjectResources, headers)",
     "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-15",
+    "review_by": "2026-11-14",
     "files": {
       "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": "06f0f80ffef901c2ef1659567be42b4ff07a5d5c0f62df7f4ee6d2c01138490f",
+      "include/StudioAssetStore.h": "40ff2a9766de81ed9d0469f4c402195b9e8e4c9f3aba43463bb72828a62c2aeb",
+      "include/StudioAssets.h": "5bb071380f1870d1ab40cfaf22dd88a7a6941d74e207ed3556ef5418faf66e2f",
+      "include/StudioProjectResources.h": "2be67fe7eaed780e1f1bebafa72ab158c78c88b83c07cb88da5694fb94cf4c9b",
+      "include/StudioResources.h": "d6954a72163916641ee4a4adacdbb545e3748e4f267efda54841035cd7bbc4ef",
       "include/StudioStorage.h": "58b10fb1bf3e469438fda17d8c5655f1f697b8def2b02963586fb6854706e9e4",
       "src/core/StudioAssetStore.cpp": "3b048b401847ce083f43190318304716f98f36bcb476e0c54ffe005276b1db28",
       "src/core/StudioAssets.cpp": "a15c0f540c2553ab0d0eccfb1b9e76a11d41032b01a65bdfce74d9ecb5090ec7",
+      "src/core/StudioProjectResources.cpp": "65f2ff523c4f6e9df880466026251d66cb084c4081a7c4d5274a2d0b8abffe08",
+      "src/core/StudioResources.cpp": "74faa8a07c070c9e3f3d3e45f777951a464153030c293e3bee69cacedbed2722",
       "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208"
     },
     "evidence": {
-      "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208"
+      "doc/evidence/test-runs/20261013-single-writer-lock.json": "ee69c9f09521d8a325efc75e28756e724026727cd3c35e78ac8614c476ca8a8c"
+    }
+  },
+  "live-capture": {
+    "reviewer": "Live Capture Maintainers",
+    "note": "Sealed live capture, MIDI ingestion, and automation recording pipeline",
+    "reviewed_at": "2026-10-15",
+    "review_by": "2026-11-14",
+    "files": {
+      "doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md": "e61907fea24f17777500e148a37e94d93c6303fced3e0589b776b593cfcd053c",
+      "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
+      "include/StudioAutomationRecording.h": "c75ef5c140283048d7d2c2184f46a25f576ff0b67ecc056c436776c0f4308236",
+      "include/StudioMidiLearn.h": "7565ddd2594c6786645f12630db60629be8ff95dbc0c026a1aa30bba3aef4f66",
+      "include/StudioMidiRecording.h": "f4c74028711202cce7da7b5e5b9b8a30f392a5e7c565e93acd1e63c04135daa6",
+      "include/StudioRecording.h": "60df55a4ab06959befdf85f3473db576021abf01d947887cc0ee3a71422bc446",
+      "src/core/StudioAutomationRecording.cpp": "3a48ce67921a3fc5afd32dfde2b910fb8b3b1501540247a16ec87ece215d9567",
+      "src/core/StudioMidiLearn.cpp": "9fce42079024c8428eaecd481226b1a3d0634269c02e850a331ec05089f00695",
+      "src/core/StudioMidiRecording.cpp": "d9fa299772f87e3ae453f3eda247c2263ef3d9f0ca4463e08394bf6d1c79f637",
+      "src/core/StudioRecording.cpp": "68e3b7b581975338a567e569a1563452b718525b85bde9d95577b7ec873cd8cb"
+    },
+    "evidence": {
+      "doc/evidence/test-runs/20261015-live-capture-pipeline.json": "bd04bf3ca76d5327f47e15ae450ec299b56fceae41fe19e192008b1a850105b4"
     }
   }
 }

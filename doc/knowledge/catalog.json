@@ -294,6 +294,26 @@
       "decision": null
     },
     {
+      "path": "doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md",
+      "title": "Live Recording, MIDI Ingestion & Automation Capture Pipeline",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "live-capture"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "recording",
+        "midi",
+        "automation",
+        "capture",
+        "takes",
+        "transactions",
+        "datapipeline"
+      ],
+      "decision": null
+    },
+    {
       "path": "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md",
       "title": "Maintainer CLI Cheatsheet",
       "scope": "current-guide",
@@ -401,7 +421,8 @@
       "kind": "reference",
       "domains": [
         "studio-runtime",
-        "capabilities"
+        "capabilities",
+        "live-capture"
       ],
       "curation": "assigned",
       "keywords": [

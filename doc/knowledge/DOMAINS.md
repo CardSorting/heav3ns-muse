@@ -72,3 +72,12 @@ Owner role: **Session Storage Maintainers**. Domain: `session-durability`.
 - [ADR 0003: Atomic Manifests, File Locks, and Request Idempotency](../../doc/adr/0003-atomic-manifest-and-single-writer-persistence.md)
 
 Relevant checks: `python3 tests/studio_process_test.py`.
+
+## Live Recording, MIDI Ingestion & Automation Capture
+
+Owner role: **Live Capture Maintainers**. Domain: `live-capture`.
+
+- [Native studio development interface](../../doc/native-studio-protocol.md)
+- [Live Recording, MIDI Ingestion & Automation Capture Pipeline](../../doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md)
+
+Relevant checks: `python3 tests/studio_process_test.py`.
