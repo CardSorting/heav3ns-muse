@@ -25,6 +25,14 @@
 #ifndef LMMS_SONG_H
 #define LMMS_SONG_H
 
+#if __has_include("lmms_export.h")
+#include "lmms_export.h"
+#endif
+
+#ifndef LMMS_EXPORT
+#define LMMS_EXPORT
+#endif
+
 #include <array>
 #include <atomic>
 #include <cstdint>
