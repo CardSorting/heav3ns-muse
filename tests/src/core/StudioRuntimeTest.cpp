@@ -1924,7 +1924,10 @@ private slots:
 		const auto native = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0))->instrument(); QString error;
 		QVERIFY(native->setFileResource("patch", QString(LMMS_TEST_FIXTURE_DIR) + "/native-opl-carrier.sbi", error));
 		for (int key : {-1, 128}) { QVERIFY(!native->handleMidiEvent(MidiEvent(MidiNoteOn, 0, key, 127), TimePos())); }
-		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiKeyPressure, 0, 69, 128), TimePos()));
+		for (const auto type : {MidiNoteOn, MidiNoteOff, MidiKeyPressure})
+		{
+			for (const int velocity : {-1, 128}) { QVERIFY(!native->handleMidiEvent(MidiEvent(type, 0, 69, velocity), TimePos())); }
+		}
 		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiPitchBend, 0, 16384, 0), TimePos()));
 		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiControlChange, 0, 128, 127), TimePos()));
 		QVERIFY(!native->handleMidiEvent(MidiEvent(MidiControlChange, 0, 1, -1), TimePos()));

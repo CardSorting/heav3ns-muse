@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-15T22:27:24Z",
+  "compiled_at": "2026-10-15T22:34:07Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
@@ -354,12 +354,13 @@
     "audio-dsp": {
       "title": "Audio Synthesis, Rendering & Technical Analysis",
       "status": "reviewed",
-      "reviewer": "Audio DSP Maintainers",
+      "reviewer": "Build Stabilization",
       "review_by": "2026-11-14",
       "guides_count": 4,
       "sources_patterns": [
         "src/core/StudioAudio.*",
-        "include/StudioAudio.h"
+        "include/StudioAudio.h",
+        "plugins/OpulenZ/OpulenZ.cpp"
       ]
     },
     "session-durability": {

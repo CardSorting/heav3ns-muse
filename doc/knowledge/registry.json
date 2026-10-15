@@ -106,7 +106,8 @@
       "owner": "Audio DSP Maintainers",
       "sources": [
         "src/core/StudioAudio.*",
-        "include/StudioAudio.h"
+        "include/StudioAudio.h",
+        "plugins/OpulenZ/OpulenZ.cpp"
       ],
       "guides": [
         "doc/adr/0004-two-stage-audio-understanding.md",

@@ -241,3 +241,15 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   complete suite remains 155/193 passing. Remaining failures stay explicit in the
   [engineering record](../agent-native-architecture.md#native-unit-hosts-and-playable-bank-fixture-corrections-2026-10-15).
 - Feature development remains frozen and no gate status changes.
+
+
+### 2026-10-15 — Raw OpulenZ MIDI bounds
+
+- Existing note/pressure range checks now inspect raw input before seven-bit
+  masking. Six malformed-message cases and native held-note audio passed in the
+  isolated emulator test after a successful rebuild.
+- A separate full runtime attempt timed out at 300.04 seconds with a captured
+  pending-worker/model-lock wait. That failure remains open despite ten passing
+  nine-worker batch-test repetitions; see the
+  [engineering record](../agent-native-architecture.md#raw-opulenz-midi-bounds-and-observed-worker-wait-2026-10-15).
+- No feature or gate advanced. The last complete suite remains 155/193 passing.

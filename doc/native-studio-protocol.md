@@ -692,7 +692,11 @@ project/preset state. The discovered `Patch` parameter delegates to this selecti
 including explicit same-value writes. Editing patch controls subsequently makes
 the sound custom and clears the program-selection marker. Custom sounds report
 an empty `programSelection`. The two native waveform selectors expose their four
-existing waveform names. This source implementation still needs native execution.
+existing waveform names. Native note-on, note-off and polyphonic pressure
+validation checks the raw velocity/pressure value in the range 0–127; it refuses
+malformed values before changing emulator state. Dated native execution
+and remaining regression limits are recorded in the
+[engineering record](agent-native-architecture.md).
 
 `tuning.list` reports LMMS's ten scale and ten keyboard-map slots. Its optional
 `details: true` includes interval and mapping data; `project.inspect` includes the

@@ -318,7 +318,7 @@ int OpulenzInstrument::pushVoice(int v) {
 bool OpulenzInstrument::handleMidiEvent( const MidiEvent& event, const TimePos& time, f_cnt_t offset )
 {
 	int key = event.key();
-	int vel = event.velocity();
+	int vel = event.param(1);
 	if ((event.type() == MidiNoteOn || event.type() == MidiNoteOff || event.type() == MidiKeyPressure)
 		&& (key < 0 || key >= NumKeys || vel < 0 || vel > 127)) { return false; }
 	if (event.type() == MidiPitchBend && (event.pitchBend() < 0 || event.pitchBend() > 16383)) { return false; }

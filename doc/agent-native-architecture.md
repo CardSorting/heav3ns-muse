@@ -12824,3 +12824,31 @@ remaining malformed OpulenZ pressure-value refusal; GIG resource polling,
 scripted repair completion and a GIG dialog retirement crash remain. Earlier
 intermediate focused failures are retained. These targeted runs do not replace
 the last complete 155-pass/38-failure count. No feature or roadmap gate advanced.
+
+
+### Raw OpulenZ MIDI bounds and observed worker wait (2026-10-15)
+
+Continuing from `ecc006559`, OpulenZ now checks the raw second MIDI parameter
+before accepting note-on, note-off or polyphonic pressure. The previous velocity
+accessor masked it to seven bits before the existing range check, so malformed
+values such as 128 or -1 could pass that check. Valid 0–127 values retain the
+existing emulator path. The native fixture now refuses both malformed values
+for all three message types while preserving its held-note level, envelope and
+note-off audio requirements. No capability or synthesis feature was added.
+
+The plugin and StudioRuntimeTest rebuilt. The isolated native
+`nativeOpulenzHeldLevelsAndMidiBoundsUseNativeEmulator` case passed, including its
+actual emulator audio assertions, in 1.371 seconds on macOS arm64 / Qt 5 Debug.
+The full StudioRuntimeTest attempt timed out at 300.04 seconds before reaching
+that case. A native sample and debugger inspection located a separate worker
+wait during `invalidTransportArgumentsPreserveNativePlayback`: the audio
+coordinator retained one pending worker scan, while that worker had pending work
+and was waiting to reacquire the scheduler mutex. Other scanners were idle and
+the model owner was waiting for the render-held model lock. This is retained
+failed evidence requiring its own synchronization investigation; it is not
+reclassified as an OpulenZ failure or a successful full runtime suite.
+
+A nine-worker extension of the existing static/dynamic batch tests passed ten
+repetitions before scheduler changes (6.83 seconds). That narrower result did not
+reproduce or explain the observed native runtime wait. The last complete suite
+remains 155/193 passing; no broader completion or roadmap gate is claimed.
