@@ -28,7 +28,10 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <stdexcept>
+#include <type_traits>
 #include <vector>
 #include <QMap>
 #include <QMutex>
@@ -154,12 +157,28 @@ public:
 	template<class T>
 	static T castValue( const float v )
 	{
+		if constexpr (std::is_integral_v<T>)
+		{
+			if (!std::isfinite(v)) { throw std::domain_error("Native parameter cannot convert a nonfinite value to an integer or Boolean"); }
+			if constexpr (!std::is_same_v<T, bool>)
+			{
+				// Test the truncated value, including valid negative fractions
+				// that become unsigned zero. The exclusive upper bound avoids
+				// rounding INT_MAX/UINT64_MAX into an invalid source float.
+				constexpr double lower = static_cast<double>(std::numeric_limits<T>::lowest());
+				constexpr double upper = static_cast<double>(std::numeric_limits<T>::max()) + 1.0;
+				const auto truncated = std::trunc(static_cast<double>(v));
+				if (truncated < lower || truncated >= upper)
+				{ throw std::out_of_range("Native parameter value exceeds its integer representation"); }
+			}
+		}
 		return (T)( v );
 	}
 
 	template<bool>
 	static bool castValue( const float v )
 	{
+		if (!std::isfinite(v)) { throw std::domain_error("Native Boolean parameter requires a finite value"); }
 		return (std::round(v) != 0);
 	}
 
