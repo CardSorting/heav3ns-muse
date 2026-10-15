@@ -12,6 +12,7 @@ public:
 	static bool isCreating(const Song* song) { return song->m_creatingProject; }
 	static bool permitsCreationLoad(const Song* song) { return song->m_permitCreationLoad; }
 	static bool isImporting(const Song* song) { return song->m_importingProject; }
+	static void setExporting(Song* song, bool value) { song->m_exporting = value; }
 };
 }
 #endif

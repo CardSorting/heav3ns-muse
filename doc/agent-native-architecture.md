@@ -12746,3 +12746,34 @@ The rebuilt legacy CLI render path also exited successfully with isolated
 configuration and nonzero stereo PCM: 173312 frames at 44100 Hz, 16-bit, peak
 0.398987. This directly exercises its corrected teardown order; it is not a
 hardware-output or acoustic observation.
+
+
+### Unit fixture baselines and native timing (2026-10-15)
+
+Continuing from `2dd88bed1`, runtime retirement fixtures now acknowledge their
+native track/controller setup before expecting rollback to restore it. The tempo
+fault probe throws once and verifies injection. Sample copy/clone fixtures set
+their tempo before creating their sample offsets, respecting native preservation
+of frame offsets across tempo changes. The bus exclusion fixture enables export
+state, because a prepared stem selection affects audio only while exporting.
+The JACK restart fixture crosses a native period before requiring a new render,
+rather than assuming a 13-frame callback must immediately render another period.
+Recording-publication checks verify every emitted notification without imposing
+an undocumented single-notification count.
+
+Six SoundFont/GIG module fixtures now create their track and load the instrument
+through the two existing native operations, rather than passing an unsupported
+instrument field to `track.add`. Assertions still require actual module loading,
+resource behavior and native audio/rollback results. No native capability or
+product source changes in this tranche.
+
+The 14 affected executables rebuilt successfully. The focused CTest run passed
+**9 and failed 5** in 23.45 seconds. Newly passing executables include linked
+value ownership, model setter ownership, tempo notification recovery, clip copy,
+track clone, audio bus output, AudioJack, SoundFont rate fallback and SoundFont
+render audition. StudioRuntime, GIG resource/dialog and SoundFont resource/dialog
+executables retain separate failures. The last complete suite remains the
+155-pass/38-failure run; this focused result is not a replacement full-suite count.
+A separate actual executable probe imported the same format-0 MIDI file used by
+a failing unit fixture and shut down successfully, narrowing that remaining
+investigation to the unit/module boundary without establishing its root cause.

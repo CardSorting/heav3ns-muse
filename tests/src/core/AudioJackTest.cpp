@@ -195,7 +195,11 @@ private slots:
 		device->stopProcessing(); const auto before = periods, captured = transport.inputs.load();
 		for (int i = 0; i < 5; ++i) { transport.poisonOutput(); QCOMPARE(transport.tick(frames), 0); QVERIFY(transport.silent(frames)); }
 		QCOMPARE(periods, before); QCOMPARE(transport.inputs.load(), captured); QCOMPARE(transport.deactivations.load(), 0);
-		device->startProcessing(); QCOMPARE(transport.tick(frames), 0); QVERIFY(periods > before); QCOMPARE(transport.activations.load(), 1);
+		device->startProcessing();
+		// A short callback can consume the remainder of an already-rendered
+		// native period. Cross a full period before requiring another render.
+		for (int resumed = 0; resumed <= int(Engine::audioEngine()->framesPerPeriod()); resumed += frames) { QCOMPARE(transport.tick(frames), 0); }
+		QVERIFY(periods > before); QCOMPARE(transport.activations.load(), 1);
 	}
 
 	void malformedBuffersAndExceptionsStayInsideTheCallback_data()

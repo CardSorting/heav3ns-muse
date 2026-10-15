@@ -392,6 +392,7 @@ private slots:
 		};
 		{
 			StudioRuntime runtime(directory.path()); QString error; QVERIFY2(runtime.open(error), qPrintable(error));
+			song()->setTempo(103);
 			if (pattern) { patterns(); } else { Track::create(Track::Type::Instrument, song()); fill(Track::create(Track::Type::Sample, song())->createClip(384), 1); }
 			QVERIFY(runtime.process(request("fixture", "song.set", {{"tempo", 103}})).value("ok").toBool()); const int before = song()->tracks().size();
 			const auto cloning = request("clone", "track.clone", {{"track", pattern ? 2 : 1}}); auto response = runtime.process(cloning);

@@ -125,6 +125,7 @@ private slots:
 	{
 		QFETCH(bool, runtime); QTemporaryDir directory; QString error; std::unique_ptr<StudioRuntime> studio; if (runtime) { studio = std::make_unique<StudioRuntime>(directory.path()); QVERIFY(studio->open(error)); }
 		auto track = new InstrumentTrack(Engine::getSong()); const auto id = track->volumeModel()->id(); const float stored = track->volumeModel()->storedValue(); const QPointer<AutomatableModel> old(track->volumeModel());
+		if (runtime) { QVERIFY(studio->process(request("baseline", "song.set", {{"tempo", Engine::getSong()->getTempo()}})).value("ok").toBool()); }
 		const auto connection = QObject::connect(track->volumeModel(), &AutomatableModel::dataChanged, this, [track] { delete track; }, Qt::DirectConnection); const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
 		const QJsonObject args{{"parameter", static_cast<int>(id)}, {"value", 70}}; const auto result = runtime ? studio->process(request("retire", "parameter.set", args)) : StudioCapabilities::execute("parameter.set", args);
 		QVERIFY(!result.value("ok").toBool()); QVERIFY(!old);

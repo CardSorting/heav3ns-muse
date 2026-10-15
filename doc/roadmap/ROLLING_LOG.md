@@ -217,3 +217,14 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   executable process tests passed (94.31 seconds and 5.89 seconds).
 - Feature development remains frozen. This is not a clean suite or a gate change;
   see the [engineering record](../agent-native-architecture.md#unit-suite-stabilization-native-files-and-engine-restarts-2026-10-15).
+
+
+### 2026-10-15 — Native fixture baseline corrections
+
+- Corrected durable setup, native sample offset timing, export-state setup and
+  recoverable fault injection in existing tests. Module fixtures use existing
+  track creation and instrument loading operations separately.
+- The 14 affected executables rebuilt; the focused run passed 9 and failed 5.
+  The last complete suite remains 155 passing and 38 failing out of 193.
+- Feature development and gate statuses remain frozen; see the
+  [engineering record](../agent-native-architecture.md#unit-fixture-baselines-and-native-timing-2026-10-15).

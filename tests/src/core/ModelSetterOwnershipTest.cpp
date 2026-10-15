@@ -160,6 +160,7 @@ private slots:
 		QFETCH(int, phase); QFETCH(bool, runtime); QTemporaryDir directory; QString error; std::unique_ptr<StudioRuntime> studio;
 		if (runtime) { studio = std::make_unique<StudioRuntime>(directory.path()); QVERIFY(studio->open(error)); }
 		auto song = Engine::getSong(); auto controller = new LfoController(song); song->addController(controller); auto speed = controller->findChild<TempoSyncKnobModel*>(); QVERIFY(speed);
+		if (runtime) { QVERIFY(studio->process({{"id", "baseline"}, {"op", "song.set"}, {"args", QJsonObject{{"tempo", song->getTempo()}}}}).value("ok").toBool()); }
 		const QPointer<TempoSyncKnobModel> old(speed); const auto stored = speed->storedValue();
 		auto target = phase == 0 ? static_cast<AutomatableModel*>(&speed->getCustomMeterModel().numeratorModel()) : phase == 1 ? static_cast<AutomatableModel*>(&speed->getCustomMeterModel().denominatorModel()) : static_cast<AutomatableModel*>(speed);
 		const auto connection = QObject::connect(target, &AutomatableModel::dataChanged, this, [song, controller] { song->removeController(controller); }, Qt::DirectConnection); const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });

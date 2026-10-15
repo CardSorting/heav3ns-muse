@@ -500,8 +500,9 @@ private slots:
 		QVERIFY(StudioCapabilities::execute("clip.add", {{"track", 0}, {"position", 0}}).value("ok").toBool());
 		const auto sample = static_cast<SampleClip*>(song->tracks().at(0)->getClip(0));
 		auto capture = std::make_shared<SampleRecordingBuffer>(); SampleFrame input(.25f, -.5f);
-		QVERIFY(capture->append(&input, 1, 24000)); int checked = 0;
+		QVERIFY(capture->append(&input, 1, 24000)); int checked = 0, notifications = 0;
 		const auto connection = QObject::connect(sample, &SampleClip::sampleChanged, sample, [&] {
+			++notifications;
 			QVERIFY(sample->isFinalizingRecording());
 			for (const auto operation : {QString("transport.play"), QString("transport.pause"), QString("transport.stop"), QString("transport.seek")})
 			{
@@ -510,7 +511,7 @@ private slots:
 			}
 		}, Qt::DirectConnection);
 		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
-		sample->beginRecordingTake(); sample->stageRecordingCompletion(std::move(capture)); QCOMPARE(checked, 4);
+		sample->beginRecordingTake(); sample->stageRecordingCompletion(std::move(capture)); QVERIFY(notifications > 0); QCOMPARE(checked, 4 * notifications);
 		QVERIFY(!sample->isFinalizingRecording()); QCOMPARE(sample->sample().sampleRate(), 24000);
 	}
 

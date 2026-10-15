@@ -25,6 +25,7 @@
 #include "NotePlayHandle.h"
 #include "SampleTrack.h"
 #include "Song.h"
+#include "NativeSongTestAccess.h"
 #include "TrackRenderScope.h"
 
 using namespace lmms;
@@ -244,13 +245,16 @@ private slots:
 		GuardedPlanar warmMaster(2, period * 2), warmTap(2, period * 2); render(warmMaster, warmTap, source); QVERIFY(!warmTap.all());
 		std::unique_ptr<TrackRenderScope> scope;
 		if (excluded) { scope = std::make_unique<TrackRenderScope>(selected); } else { target->setMuted(true); }
+		// A prepared stem selection takes effect only during native exporting.
+		if (excluded) { NativeSongTestAccess::setExporting(Engine::getSong(), true); }
+		const auto stopExport = qScopeGuard([&] { NativeSongTestAccess::setExporting(Engine::getSong(), false); });
 		GuardedPlanar master(2, period * 2), tap(2, period * 2); render(master, tap, source);
 		for (f_cnt_t frame = 0; frame < period * 2; ++frame)
 		{
 			QCOMPARE(tap.sample(0, frame), frame < period ? .25f : 0.f); QCOMPARE(tap.sample(1, frame), frame < period ? -.125f : 0.f);
 			QCOMPARE(master.sample(0, frame), tap.sample(0, frame)); QCOMPARE(master.sample(1, frame), tap.sample(1, frame));
 		}
-		scope.reset(); target->setMuted(false);
+		NativeSongTestAccess::setExporting(Engine::getSong(), false); scope.reset(); target->setMuted(false);
 		GuardedPlanar resumedMaster(2, period * 2), resumedTap(2, period * 2); render(resumedMaster, resumedTap, source);
 		for (f_cnt_t frame = 0; frame < period * 2; ++frame) { QCOMPARE(resumedTap.sample(0, frame), frame < period ? 0.f : .25f); }
 	}

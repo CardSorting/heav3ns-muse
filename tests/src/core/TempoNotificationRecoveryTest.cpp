@@ -251,7 +251,9 @@ private slots:
 			StudioRuntime runtime(directory.path()); QString error; QVERIFY2(runtime.open(error), qPrintable(error)); arrange();
 			QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 91}})).value("ok").toBool()); const auto before = manifest(directory);
 			auto speed = Engine::getSong()->controllers().front()->findChild<TempoSyncKnobModel*>(); QVERIFY(speed); const QPointer<TempoSyncKnobModel> old(speed);
-			ModelValueNotificationProbe fault(speed, [&] { fail(nonstandard); }, true); receipt = runtime.process(command);
+			bool injected = false;
+			ModelValueNotificationProbe fault(speed, [&] { if (!injected) { injected = true; fail(nonstandard); } }, true); receipt = runtime.process(command);
+			QVERIFY(injected);
 			QVERIFY(!receipt.value("ok").toBool()); QVERIFY(!receipt.contains("result")); QVERIFY(!runtime.stopping()); QVERIFY(!old); restoredLfo(91);
 			const auto after = manifest(directory); QCOMPARE(after.value("history"), before.value("history")); QCOMPARE(after.value("cursor"), before.value("cursor"));
 			QCOMPARE(after.value("revision").toInt(), before.value("revision").toInt() + 1);

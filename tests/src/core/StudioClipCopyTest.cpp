@@ -292,6 +292,7 @@ private slots:
 		const auto owner = [&]() -> Track* { return patternTarget ? store()->tracks().at(0) : song()->tracks().at(2); };
 		{
 			StudioRuntime runtime(directory.path()); QString error; QVERIFY2(runtime.open(error), qPrintable(error));
+			song()->setTempo(103);
 			Track::create(Track::Type::Instrument, song()); auto source = Track::create(kind(type), song())->createClip(0); fill(source);
 			if (patternTarget) { Track::create(Track::Type::Pattern, song()); Track::create(kind(type), store()); }
 			else { Track::create(kind(type), song()); }
