@@ -34,6 +34,7 @@
 #include <vector>
 
 #include <QString>
+#include <QDomDocument>
 #include <QHash>  // IWYU pragma: keep
 #include <QJsonArray>
 #include <QPointer>
