@@ -54,15 +54,17 @@ def run_hygiene_gate():
     success = True
     total_dur = 0
 
-    # 1. YAML syntax
+    # 1. YAML syntax & formatting
     if shutil.which("yamllint"):
-        ok, _, dur = run_step("YAML Syntax & Formatting (yamllint)", ["yamllint", "-c", ".yamllint", ".github", "package.json"])
+        yamllint_cfg = ROOT / ".yamllint"
+        cmd = ["yamllint", "-c", str(yamllint_cfg), ".github/workflows"] if yamllint_cfg.exists() else ["yamllint", "-d", "{extends: default, rules: {line-length: disable, document-start: disable, truthy: disable}}", ".github/workflows"]
+        ok, _, dur = run_step("YAML Syntax & Formatting (yamllint)", cmd)
         success = success and ok
         total_dur += dur
     else:
         try:
             import yaml
-            for y in list(ROOT.glob(".github/**/*.yml")) + [ROOT / ".yamllint"]:
+            for y in ROOT.glob(".github/**/*.yml"):
                 if y.is_file():
                     yaml.safe_load(y.read_text(encoding="utf-8"))
             print(f"  {CYAN}▶{RESET} {BOLD}{'YAML Syntax Validation (pyyaml)':<52}{RESET} {GREEN}[PASS]{RESET}")
@@ -74,13 +76,24 @@ def run_hygiene_gate():
                     if "\t" in line and not line.strip().startswith("#"):
                         raise ValueError(f"{path.name}:{idx}: Tab character not allowed in YAML")
             try:
-                for y in list(ROOT.glob(".github/**/*.yml")) + [ROOT / ".yamllint"]:
+                for y in ROOT.glob(".github/**/*.yml"):
                     if y.is_file():
                         check_yaml_file(y)
                 print(f"  {CYAN}▶{RESET} {BOLD}{'YAML Syntax & Formatting (built-in)':<52}{RESET} {GREEN}[PASS]{RESET}")
             except Exception as e:
                 print(f"  {CYAN}▶{RESET} {BOLD}{'YAML Syntax & Formatting':<52}{RESET} {RED}[FAIL]{RESET} {e}")
                 success = False
+
+    # 2. JSON Manifest & Schema Syntax
+    try:
+        json_targets = [ROOT / "package.json"] + list(ROOT.glob("doc/knowledge/*.json")) + list(ROOT.glob("doc/roadmap/*.json"))
+        for j in json_targets:
+            if j.is_file():
+                json.loads(j.read_text(encoding="utf-8"))
+        print(f"  {CYAN}▶{RESET} {BOLD}{'JSON Manifests & Schemas Syntax':<52}{RESET} {GREEN}[PASS]{RESET}")
+    except Exception as e:
+        print(f"  {CYAN}▶{RESET} {BOLD}{'JSON Manifests & Schemas Syntax':<52}{RESET} {RED}[FAIL]{RESET} {e}")
+        success = False
 
     # 2. Submodule status
     ok, _, dur = run_step("Git Submodule Pinning & Integrity", ["git", "submodule", "status"])

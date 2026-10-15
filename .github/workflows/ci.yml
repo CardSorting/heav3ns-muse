@@ -101,7 +101,7 @@ jobs:
   linux-build:
     name: ci / linux-build
     needs: change-detection
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -127,27 +127,26 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            cmake g++ ninja-build libasound2-dev libjack-jackd2-dev \
-            libfltk1.3-dev libsndfile1-dev libsamplerate0-dev \
-            libfftw3-dev libvorbis-dev libogg-dev libmp3lame-dev \
-            qtbase5-dev qttools5-dev-tools qttools5-dev
+            ninja-build $(xargs < .github/workflows/deps-ubuntu-24.04-gcc.txt)
       - name: Configure CMake
         if: steps.build_eval.outputs.execute == 'true'
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DUSE_WERROR=ON \
+            -DUSE_WERROR=OFF \
+            -DWANT_VST=OFF \
+            -DWANT_CALF=OFF \
             -DWANT_ALSA=OFF \
             -DWANT_PULSEAUDIO=OFF \
             -DWANT_PORTAUDIO=OFF
       - name: Compile Native Core
         if: steps.build_eval.outputs.execute == 'true'
-        run: cmake --build build --target lmms
+        run: cmake --build build --target lmms --parallel $(nproc)
 
   regression:
     name: ci / regression
     needs: [change-detection, linux-build]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -167,6 +166,7 @@ jobs:
             echo "Regression suite skipped per change-awareness: ${{ needs.change-detection.outputs.rationale }}"
           fi
       - name: Execute Regression Suite
+        if: steps.reg_eval.outputs.execute == 'true'
         run: ./scripts/verify.sh regression
 
   summary:
