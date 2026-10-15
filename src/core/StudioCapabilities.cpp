@@ -879,9 +879,69 @@ QJsonObject parameterLocation(const AutomatableModel* model)
 	return {{"scope", "project"}};
 }
 
+// Inspection must retain a repair handle when a live controller cannot supply a
+// usable value. This is observational only: native typed getters still refuse
+// invalid conversions, and inspection never changes a binding or stored value.
+QJsonObject parameterReadback(AutomatableModel* model)
+{
+	FileResourceIO::EventSuspension events;
+	const QPointer<AutomatableModel> selected(model);
+	const QPointer<Song> owner(Engine::getSong());
+	if (!selected || !owner) { fail("Native parameter inspection has no live project or target"); }
+	const auto generation = owner->replacementGeneration();
+	const auto alive = [&] {
+		if (!selected || !owner || Engine::getSong() != owner.data() || owner->replacementGeneration() != generation)
+		{ fail("Native parameter inspection target or project retired during readback"); }
+	};
+	const auto current = [&] { alive(); checkInspectionWork(); alive(); };
+	QJsonObject result{{"value", QJsonValue::Null}, {"effectiveValue", QJsonValue::Null}, {"state", "unavailable"}};
+	float observed = 0;
+	bool available = false;
+	current();
+	try { observed = model->value<float>(); available = true; }
+	catch (const std::exception& exception)
+	{
+		const auto message = exception.what(); int length = 0;
+		while (length < 1024 && message[length]) { ++length; }
+		result.insert("error", QString::fromUtf8(message, length));
+	}
+	catch (...) { result.insert("error", "Native parameter getter threw a nonstandard exception"); }
+	// Retirement/replacement and cancellation remain failures of the entire
+	// inspection, including when the getter also threw an ordinary exception.
+	current();
+	if (!available) { return result; }
+	if (!std::isfinite(observed)) { result.insert("state", "nonfinite"); return result; }
+	result.insert("value", observed);
+	double effective = observed;
+	try
+	{
+		// A hosted FloatModel may advertise integer choices without using the
+		// native IntModel conversion. Do not truncate those models by metadata.
+		if (dynamic_cast<IntModel*>(model)) { effective = AutomatableModel::castValue<int>(observed); result.insert("effectiveValue", effective); }
+		else if (dynamic_cast<BoolModel*>(model))
+		{ const auto value = AutomatableModel::castValue<bool>(observed); effective = value; result.insert("effectiveValue", value); }
+		else { result.insert("effectiveValue", observed); }
+	}
+	catch (const std::out_of_range&) { result.insert("state", "unrepresentable"); return result; }
+	result.insert("state", effective < model->minValue<float>() || effective > model->maxValue<float>() ? "outside-range" : "valid");
+	return result;
+}
+
+QJsonObject tempoReadback(Song* song)
+{
+	auto& model = song->tempoModel(); auto result = parameterReadback(&model);
+	result.insert("parameter", static_cast<int>(model.id()));
+	result.insert("manualValue", model.storedValue());
+	// A linked peer may own the effective controller instead. Do not imply that
+	// disconnecting this parameter always removes the source of a bad value.
+	result.insert("directControllerConnected", model.controllerConnection() != nullptr);
+	return result;
+}
+
 QJsonObject inspectParameter(AutomatableModel* model, bool withChoices = true, InspectionPage choicePage = {0, 128})
 {
 	FileResourceIO::EventSuspension events;
+	const auto readback = parameterReadback(model);
 	QString kind = "number";
 	if (model->valueType() == AutomatableModel::ValueType::Boolean) { kind = "boolean"; }
 	else if (model->valueType() == AutomatableModel::ValueType::Integer) { kind = "integer"; }
@@ -894,7 +954,7 @@ QJsonObject inspectParameter(AutomatableModel* model, bool withChoices = true, I
 		}
 	}
 	QJsonObject result{{"id", static_cast<int>(model->id())}, {"name", model->fullDisplayName()},
-		{"value", model->value<float>()}, {"manualValue", model->storedValue()},
+		{"value", readback.value("value")}, {"readback", readback}, {"manualValue", model->storedValue()},
 		{"minimum", model->minValue<float>()}, {"maximum", model->maxValue<float>()},
 		{"step", model->step<float>()}, {"kind", kind}, {"scale", static_cast<int>(model->scaleType())},
 		{"writable", model->isWritable()}, {"automatable", model->supportsAutomation()},
@@ -4708,9 +4768,23 @@ QJsonObject StudioCapabilities::execute(const QString& operation, const QJsonObj
 			}
 			return {{"ok", true}, {"result", inspectAudioDeviceRestore()}};
 		}
+		// Ordinary capabilities need the supplied cancellation source throughout
+		// native execution, not just in validateArguments' temporary scope.
+		FileResourceIO::Scope work(cancelled, false);
 		auto guard = Engine::audioEngine()->requestChangesGuard();
-		const auto result = dispatch(operation, arguments);
-		if (mutatesProject(operation)) { Engine::getSong()->setModified(); }
+		const QPointer<Song> owner(Engine::getSong()); const auto project = owner->replacementGeneration();
+		const auto ready = [&] {
+			if (!owner || Engine::getSong() != owner.data() || owner->replacementGeneration() != project)
+			{ fail("Native capability project retired or changed during execution"); }
+		};
+		const auto boundary = [&] {
+			// A boundary probe must not dispatch queued work between a native
+			// result and its publication. Nested native work keeps its own policy.
+			FileResourceIO::EventSuspension events; ready(); checkInspectionWork(); ready();
+		};
+		boundary(); const auto result = dispatch(operation, arguments); boundary();
+		if (mutatesProject(operation)) { owner->setModified(); ready(); }
+		boundary();
 		return {{"ok", true}, {"result", result}};
 	}
 	catch (const std::exception& error)
@@ -4735,6 +4809,7 @@ QJsonObject StudioCapabilities::inspectSummary()
 	FileResourceIO::EventSuspension events;
 	const auto guard = Engine::audioEngine()->requestChangesGuard(); checkInspectionWork();
 	const auto song = Engine::getSong(); const auto& timeline = song->getTimeline(Song::PlayMode::Song);
+	const auto tempo = tempoReadback(song);
 	const auto heads = [](TrackContainer* owner) {
 		QJsonArray tracks; const InspectionPage page{0, 16};
 		for (int index = 0; index < static_cast<int>(owner->tracks().size()) && index < page.limit; ++index)
@@ -4742,7 +4817,8 @@ QJsonObject StudioCapabilities::inspectSummary()
 		auto result = page.metadata(static_cast<int>(owner->tracks().size()), tracks.size()); result.insert("tracks", tracks); return result;
 	};
 	auto songTracks = heads(song), patternTracks = heads(Engine::patternStore());
-	QJsonObject result{{"inspection", "summary"}, {"tempo", song->getTempo()}, {"masterVolume", song->masterVolume()},
+	QJsonObject result{{"inspection", "summary"}, {"tempo", tempo.value("state").toString() == "valid" ? tempo.value("effectiveValue") : QJsonValue(QJsonValue::Null)},
+		{"tempoReadback", tempo}, {"masterVolume", song->masterVolume()},
 		{"masterPitch", song->masterPitch()}, {"ticksPerBar", song->ticksPerBar()}, {"lengthBars", song->length()},
 		{"tracks", songTracks.take("tracks")}, {"patternTracks", patternTracks.take("tracks")},
 		{"trackPages", QJsonObject{{"song", songTracks}, {"pattern", patternTracks}}},
@@ -4764,6 +4840,7 @@ QJsonObject StudioCapabilities::inspect()
 {
 	const auto guard = Engine::audioEngine()->requestChangesGuard();
 	auto song = Engine::getSong();
+	const auto tempo = tempoReadback(song);
 	QJsonArray channels;
 	for (int i = 0; i < Engine::mixer()->numChannels(); ++i)
 	{
@@ -4786,7 +4863,8 @@ QJsonObject StudioCapabilities::inspect()
 		if (const auto curve = dynamic_cast<AutomationClip*>(clip)) { global.append(inspectCurve(curve)); }
 	}
 	const auto& timeline = song->getTimeline(Song::PlayMode::Song);
-	return {{"tempo", song->getTempo()}, {"masterVolume", song->masterVolume()},
+	return {{"tempo", tempo.value("state").toString() == "valid" ? tempo.value("effectiveValue") : QJsonValue(QJsonValue::Null)},
+		{"tempoReadback", tempo}, {"masterVolume", song->masterVolume()},
 		{"masterPitch", song->masterPitch()}, {"ticksPerBar", song->ticksPerBar()},
 		{"lengthBars", song->length()}, {"tracks", inspectTracks(song)},
 		{"patternTracks", inspectTracks(Engine::patternStore())}, {"controllers", inspectControllers()}, {"channels", channels}, {"routes", routes},

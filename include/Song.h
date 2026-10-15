@@ -72,7 +72,10 @@ const tick_t MaxSongLength = 9999 * DefaultTicksPerBar;
 class LMMS_EXPORT Song : public TrackContainer
 {
 	Q_OBJECT
-	mapPropertyFromModel( int,getTempo,setTempo,m_tempoModel );
+public:
+	int getTempo() const { return checkedTempo(); }
+public slots:
+	void setTempo(const int value) { m_tempoModel.setValue(static_cast<float>(value)); }
 	mapPropertyFromModel( int,masterPitch,setMasterPitch,m_masterPitchModel );
 	mapPropertyFromModel( int,masterVolume,setMasterVolume, m_masterVolumeModel );
 public:
@@ -416,6 +419,7 @@ private slots:
 
 
 private:
+	int checkedTempo() const;
 	class CreationGuard;
 	friend class ImportFilter;
 	Song();
@@ -464,6 +468,7 @@ private:
 	IntModel m_tempoModel;
 	MeterModel m_timeSigModel;
 	int m_oldTicksPerBar;
+	std::uint64_t m_timeSignatureGeneration = 0;
 	IntModel m_masterVolumeModel;
 	IntModel m_masterPitchModel;
 

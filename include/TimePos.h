@@ -98,7 +98,7 @@ public:
 
 	operator int() const { return m_ticks; }
 
-	tick_t ticksPerBeat(const TimeSig& sig) const { return ticksPerBar(sig) / sig.numerator(); }
+	tick_t ticksPerBeat(const TimeSig& sig) const;
 
 	// Remainder ticks after bar is removed
 	tick_t getTickWithinBar(const TimeSig& sig) const { return m_ticks % ticksPerBar(sig); }
@@ -127,7 +127,9 @@ public:
 	}
 
 	static tick_t ticksPerBar() { return s_ticksPerBar; }
-	static tick_t ticksPerBar(const TimeSig& sig) { return DefaultTicksPerBar * sig.numerator() / sig.denominator(); }
+	// Refuse invalid or unrepresentable live meter arithmetic before division
+	// or narrowing. Positive representable meters retain integer truncation.
+	static tick_t ticksPerBar(const TimeSig& sig);
 
 	static int stepsPerBar() { return std::max(1, ticksPerBar() / DefaultBeatsPerBar); }
 	static void setTicksPerBar(tick_t ticks) { s_ticksPerBar = ticks; }

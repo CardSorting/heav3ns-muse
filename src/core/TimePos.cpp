@@ -26,6 +26,9 @@
 #include "TimePos.h"
 
 #include "MeterModel.h"
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
 
 namespace lmms
 {
@@ -40,6 +43,23 @@ TimeSig::TimeSig( const MeterModel &model ) :
 	m_num(model.getNumerator()),
 	m_denom(model.getDenominator())
 {
+}
+
+tick_t TimePos::ticksPerBar(const TimeSig& sig)
+{
+	const auto numerator = sig.numerator(), denominator = sig.denominator();
+	if (numerator <= 0 || denominator <= 0) { throw std::domain_error("Native time signature requires positive numerator and denominator"); }
+	const auto ticks = static_cast<std::int64_t>(DefaultTicksPerBar) * numerator / denominator;
+	if (ticks <= 0) { throw std::domain_error("Native time signature has less than one tick per bar"); }
+	if (ticks > std::numeric_limits<tick_t>::max()) { throw std::out_of_range("Native time signature exceeds the tick range"); }
+	return static_cast<tick_t>(ticks);
+}
+
+tick_t TimePos::ticksPerBeat(const TimeSig& sig) const
+{
+	const auto ticks = ticksPerBar(sig) / sig.numerator();
+	if (ticks <= 0) { throw std::domain_error("Native time signature has less than one tick per beat"); }
+	return ticks;
 }
 
 TimePos::TimePos( const bar_t bar, const tick_t ticks ) :

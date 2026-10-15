@@ -38,6 +38,9 @@ public:
 	static bool validateArguments(const QString& operation, const QJsonObject& arguments, QString& error,
 		const std::function<bool()>& cancelled = {});
 	static bool mutatesProject(const QString& operation);
+	// Cancellation is cooperative at native work/publication checks. A rejected
+	// direct call can have applied native effects; StudioRuntime owns rollback.
+	// Export/device/capture paths retain their own publication/recovery boundaries.
 	static QJsonObject execute(const QString& operation, const QJsonObject& arguments,
 		const std::function<bool()>& cancelled = {});
 	static QJsonObject inspect();

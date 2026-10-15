@@ -160,13 +160,17 @@ public:
 		if constexpr (std::is_integral_v<T>)
 		{
 			if (!std::isfinite(v)) { throw std::domain_error("Native parameter cannot convert a nonfinite value to an integer or Boolean"); }
-			if constexpr (!std::is_same_v<T, bool>)
+			if constexpr (!std::is_same_v<std::remove_cv_t<T>, bool>)
 			{
 				// Test the truncated value, including valid negative fractions
 				// that become unsigned zero. The exclusive upper bound avoids
 				// rounding INT_MAX/UINT64_MAX into an invalid source float.
 				constexpr double lower = static_cast<double>(std::numeric_limits<T>::lowest());
-				constexpr double upper = static_cast<double>(std::numeric_limits<T>::max()) + 1.0;
+				constexpr double upper = [] {
+					double bound = 1.0;
+					for (int digit = 0; digit < std::numeric_limits<T>::digits; ++digit) { bound *= 2.0; }
+					return bound;
+				}();
 				const auto truncated = std::trunc(static_cast<double>(v));
 				if (truncated < lower || truncated >= upper)
 				{ throw std::out_of_range("Native parameter value exceeds its integer representation"); }

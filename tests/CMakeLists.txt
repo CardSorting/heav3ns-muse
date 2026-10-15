@@ -7,6 +7,9 @@ set(LMMS_TESTS
 	src/core/ArrayVectorTest.cpp
 	src/core/AudioBufferTest.cpp
 	src/core/AutomatableModelTest.cpp
+	src/core/NativeParameterConversionTest.cpp
+	src/core/StudioParameterReadbackTest.cpp
+	src/core/StudioCapabilityCancellationTest.cpp
 	src/core/JournalIdAllocatorTest.cpp
 	src/core/MathTest.cpp
 	src/core/ProjectVersionTest.cpp
@@ -329,6 +332,9 @@ set_tests_properties(LinkedValueOwnershipTest PROPERTIES TIMEOUT 300 LABELS "hea
 set_tests_properties(ModelSetterOwnershipTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;tempo;lifetime;recovery")
 set_tests_properties(ModelValueNotificationTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;notifications;lifetimes;recovery")
 set_tests_properties(NativeValueNotificationTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;controllers;midi;notifications;recovery")
+set_tests_properties(NativeParameterConversionTest PROPERTIES TIMEOUT 600 LABELS "headless;parameters;conversion;controllers;render;recovery")
+set_tests_properties(StudioParameterReadbackTest PROPERTIES TIMEOUT 600 LABELS "headless;parameters;inspection;controllers;recovery;persistence;render")
+set_tests_properties(StudioCapabilityCancellationTest PROPERTIES TIMEOUT 300 LABELS "headless;capabilities;cancellation;parameters;recovery;persistence")
 set_tests_properties(LinkedValueJournalTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;journal;recovery")
 set_tests_properties(ControlLinkJournalTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;topology;journal;recovery")
 set_tests_properties(NativeGraphTransitionTest PROPERTIES TIMEOUT 300 LABELS "headless;parameters;topology;persistence;recovery")

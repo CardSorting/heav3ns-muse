@@ -313,8 +313,8 @@ void Song::setTempo()
 	bpm_t tempo;
 	{
 		const auto changes = engine->requestChangesGuard();
-		tempo = static_cast<bpm_t>(m_tempoModel.value()); context();
-		if (tempo < MinTempo || tempo > MaxTempo) { throw std::invalid_argument("Native tempo exceeds the song range"); }
+		const auto value = checkedTempo(); context();
+		tempo = static_cast<bpm_t>(value);
 		for (const auto playHandle : engine->playHandles())
 		{
 			auto nph = dynamic_cast<NotePlayHandle*>(playHandle);
@@ -340,13 +340,34 @@ void Song::setTempo()
 
 void Song::setTimeSignature()
 {
-	TimePos::setTicksPerBar( ticksPerBar() );
-	emit timeSignatureChanged( m_oldTicksPerBar, ticksPerBar() );
-	emit dataChanged();
-	m_oldTicksPerBar = ticksPerBar();
+	const QPointer<Song> owner(this); const QPointer<AudioEngine> engine(Engine::audioEngine());
+	if (!engine) { throw std::runtime_error("Native meter update requires an audio engine"); }
+	const auto changes = engine->requestChangesGuard();
+	const auto project = m_replacementGeneration;
+	if (m_timeSignatureGeneration == std::numeric_limits<std::uint64_t>::max())
+	{ throw std::overflow_error("Native meter notification generation exhausted"); }
+	const auto generation = ++m_timeSignatureGeneration;
+	const auto context = [&] {
+		if (!owner || Engine::getSong() != owner.data() || !engine || Engine::audioEngine() != engine.data()
+			|| owner->m_replacementGeneration != project || owner->m_timeSignatureGeneration != generation)
+		{ throw std::runtime_error("Native meter update context retired, replaced or superseded"); }
+	};
+	// Read once: a controller getter can fail or change between successive reads.
+	const int numerator = m_timeSigModel.getNumerator(); context();
+	const int denominator = m_timeSigModel.getDenominator(); context();
+	if (numerator < m_timeSigModel.numeratorModel().minValue() || numerator > m_timeSigModel.numeratorModel().maxValue()
+		|| denominator < m_timeSigModel.denominatorModel().minValue() || denominator > m_timeSigModel.denominatorModel().maxValue())
+	{ throw std::out_of_range("Native time signature exceeds the song meter range"); }
+	const auto ticks = TimePos::ticksPerBar(TimeSig(numerator, denominator));
+	const auto oldTicks = m_oldTicksPerBar;
+	TimePos::setTicksPerBar(ticks); m_oldTicksPerBar = ticks;
+	m_vstSyncController.setTimeSignature(numerator, denominator);
 
-	m_vstSyncController.setTimeSignature(
-		getTimeSigModel().getNumerator(), getTimeSigModel().getDenominator() );
+	// Receivers report locally; propagate only after Qt returns. A nested update
+	// owns its newer clock and must not be overwritten by this older frame.
+	NativeValueNotification notification;
+	emit timeSignatureChanged(oldTicks, ticks); notification.rethrow(); context();
+	emit dataChanged(); notification.rethrow(); context();
 }
 
 
@@ -1168,9 +1189,16 @@ void Song::addAutomationTrack()
 
 
 
+int Song::checkedTempo() const
+{
+	const auto value = m_tempoModel.value();
+	if (value < MinTempo || value > MaxTempo) { throw std::out_of_range("Native tempo exceeds the song range"); }
+	return value;
+}
+
 bpm_t Song::getTempo()
 {
-	return ( bpm_t )m_tempoModel.value();
+	return static_cast<bpm_t>(checkedTempo());
 }
 
 
