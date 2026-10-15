@@ -36,7 +36,9 @@
 **[🔊 Hardware](#-audio--midi-hardware-backends)** •
 **[🛡️ Durability](#-storage-architecture--crash-resilience)** •
 **[🧪 Testing](#-testing--verification-suites)** •
-**[❓ Troubleshooting](#-troubleshooting--faq)**
+**[❓ Troubleshooting](#-troubleshooting--faq)** •
+**[🗺️ Roadmap](ROADMAP.md)** •
+**[🛠️ Maintainers](MAINTAINERS.md)**
 
 ---
 
@@ -808,22 +810,32 @@ Yes! Ensure Carla and LV2 dependencies are installed. You can scan plugins with 
 
 ---
 
-## 🗺️ Implementation Status & Roadmap
+## 🗺️ Implementation Status & Auto-Rolling Roadmap
 
-| Subsystem / Gate | Implementation Status | Verification Evidence |
-| :--- | :---: | :--- |
-| **Headless Studio Lifecycle** | ✅ Complete | Verified in `tests/studio_process_test.py` across Linux/macOS/Windows |
-| **Line-Delimited JSON Protocol** | ✅ Complete | Stream isolation, 1 MiB framing, error propagation verified |
-| **Authoritative LMMS C++ Mutators** | ✅ Complete | Over 60 operations implemented in `StudioCapabilities.cpp` |
-| **Piano Roll & Microtuning** | ✅ Complete | Batch note insertion, quantization, Scala `.scl`/`.kbm` support |
-| **Synthesizer & Sampler Engines** | ✅ Complete | TripleOscillator, AudioFileProcessor, SlicerT, Patman, SF2Player |
-| **Session Persistence & Recovery** | ✅ Complete | Atomic manifests, SHA-256 receipts, single-writer lock |
-| **Inference Provider Adapters** | ✅ Complete | OpenAI Chat Completions & Anthropic protocols implemented |
-| **Two-Stage Audio Understanding** | 🟡 In Progress | DSP analysis complete; live multimodal evaluation in testing |
-| **Live Audio/MIDI Hardware** | 🟡 In Progress | Hot-swapping backends implemented; hardware edge cases ongoing |
-| **Extended VST3 / CLAP Hosting** | 🔵 Planned | Carla VST2/LV2 supported; native VST3/CLAP roadmap planned |
+HEAV3NS-MUSE uses an **evidence-backed auto-rolling roadmap** where milestone completion requires executing physical verification commands and passing automated criteria:
 
-For detailed engineering logs, architectural decisions, and open gates, see [Engineering Record](doc/agent-native-architecture.md) and [Native Studio Protocol](doc/native-studio-protocol.md).
+| Subsystem / Gate | Horizon | Implementation Status | Verification Evidence |
+| :--- | :---: | :---: | :--- |
+| **Headless Studio Lifecycle** | `H0` | ✅ Complete | Verified in `tests/studio_process_test.py` across Linux/macOS/Windows |
+| **Line-Delimited JSON Protocol** | `H0` | ✅ Complete | Stream isolation, 1 MiB framing, error propagation verified |
+| **Authoritative LMMS C++ Mutators** | `H1` | ✅ Complete | Over 60 operations implemented in `StudioCapabilities.cpp` |
+| **Piano Roll & Microtuning** | `H1` | ✅ Complete | Batch note insertion, quantization, Scala `.scl`/`.kbm` support |
+| **Synthesizer & Sampler Engines** | `H1` | ✅ Complete | TripleOscillator, AudioFileProcessor, SlicerT, Patman, SF2Player |
+| **Session Persistence & Recovery** | `H0` | ✅ Complete | Atomic manifests, SHA-256 receipts, single-writer lock |
+| **Inference Provider Adapters** | `H1` | ✅ Complete | OpenAI Chat Completions & Anthropic protocols implemented |
+| **Two-Stage Audio Understanding** | `H2` | 🟡 Active (In Flight) | DSP analysis complete; live multimodal evaluation in testing |
+| **Live Audio/MIDI Hardware** | `H2` | 🟡 Active (In Flight) | Hot-swapping backends implemented; hardware edge cases ongoing |
+| **Extended VST3 / CLAP Hosting** | `H2` | 🔵 In Progress | Carla VST2/LV2 supported; native VST3/CLAP roadmap planned |
+
+### Maintainer Governance & Architectural Records
+
+- **[Auto-Rolling Roadmap](ROADMAP.md)**: Visual progress tracking across Horizons 0 to 3 backed by `doc/roadmap/register.json`.
+- **[Maintainer Operational Guide](MAINTAINERS.md)**: Private authority boundaries, execution protocols, and verification standards.
+- **[Current Handover Protocol](HANDOVER.md)**: Session-to-session state handover between agents and human maintainers.
+- **[Maintainer Engineering Catalog](doc/maintainers/README.md)**: Subsystem DAGs, AI agent governance, onboarding roadmap, and diagnostic runbooks.
+- **[Operational Playbooks](doc/playbooks/README.md)**: Provisioning preflights, developer ergonomics, and audio triage.
+- **[Maintenance Runbooks](doc/runbooks/README.md)**: Knowledgebase maintenance, weekly audits, and DSP crash recovery.
+- **[Complete Documentation Catalog](doc/CATALOG.md)**: Master index of all 33 documentation guides and 4 ADRs.
 
 ---
 

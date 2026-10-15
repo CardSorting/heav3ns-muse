@@ -1,13 +1,22 @@
 {
   "studio-runtime": {
     "reviewer": "Studio Runtime Maintainers",
-    "note": "Baseline architecture review for in-process studio runtime and headless lifecycle",
+    "note": "Integrated maintainer catalog, onboarding roadmap, CLI cheatsheet, subsystem DAG, release engineering, and runbooks",
     "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-15",
+    "review_by": "2026-11-14",
     "files": {
       "doc/DOCUMENTATION_POLICY.md": "30728aa988e8eac734c04989a68775cf675f11b4c9624f2950a77c3b2bf31ce6",
       "doc/adr/0002-in-process-qcoreapplication-headless-studio.md": "52142280b5dbe2c00460ce00a4578e779e3ed9b946924cb3f6ede2dba104ecf0",
+      "doc/maintainers/DAY_1_TO_30_ONBOARDING_ROADMAP.md": "bd528db140c5eff1bf738b2234017c94be341f6c1480b671b1415580ecd4e79f",
+      "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md": "7eede7c87895a5a2955580f5d47734afe6e609862f67eefbbd23507e8060127b",
+      "doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md": "ff0311634e527902e9fee009a933ca46e6ce06fcd375a35a82360a90c81e3d9b",
+      "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md": "1d449ebbc5dec35ea47b4918ff25d30c7cd7c312ff1a4c36391daf1e7778e181",
+      "doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md": "6dd28766601898d4ccfa36febeb9303116a4d731884cf509795ae28243199298",
+      "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md": "2a0d81fe064c1eb22364487a5c6285b3aae49f716f0025b7dda52f102538301e",
       "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
+      "doc/playbooks/01-provisioning-and-preflight.md": "1c520822d716eb0a7b71d000b8a96660796ad7aa005809789bbe9083ca4c082e",
+      "doc/runbooks/knowledge-maintenance.md": "3c50d3ccd2baeff565d2ca60690e8cd1a65f035dfd5c7c9ea116fc83c256314a",
+      "doc/runbooks/weekly-knowledge-audit.md": "2dbe6bb8b5bdc6764ec926b7326c4f205e33701de5d756fb0c883620cf9e0a81",
       "include/StudioRuntime.h": "4e71c40cd19c8d6ece47c714cb46a99145328e79f4c7eeb8b68b7d1e0965b2dc",
       "src/core/StudioRuntime.cpp": "e65e2fb5ae27c8c0046fe1d816cb85848c46a40bba97d21617c180fd620c8b4e",
       "src/core/StudioSignals.cpp": "5277706db0da09c14906077c9d5deef291dd8911b3d58eb7276b46828980ac66",
@@ -19,12 +28,14 @@
   },
   "capabilities": {
     "reviewer": "Capabilities Maintainers",
-    "note": "Baseline review of native DAW C++ capability dispatch and schema definitions",
+    "note": "Integrated maintainer glossary and zero-hesitation developer ergonomics playbook",
     "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-15",
+    "review_by": "2026-11-14",
     "files": {
       "doc/adr/0001-native-dsp-model-authority.md": "54842d0c55d43c1522a5ffd0dcace1d02d0448118b8813accacd787356d7e343",
+      "doc/maintainers/MAINTAINER_GLOSSARY_AND_LEXICON.md": "6b1ba7b056d59acd8cb1f5435d1bddd9bf663457a7337394cefefd8562793179",
       "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
+      "doc/playbooks/02-zero-hesitation-developer-ergonomics.md": "b031753ab00e33f391aa22c0e5d4ef9f7247666e622a82c02a36401ad128f17e",
       "include/StudioCapabilities.h": "86ce7620d618526a274f67e88fc7c227d80d4748a933f88fb88e2ef542ed5042",
       "src/core/StudioCapabilities.cpp": "3704f9595c4f538e5bd3ed54216120c2e7920d527000119ede2c7c6e04b04efd"
     },
@@ -34,11 +45,12 @@
   },
   "agent-coordinator": {
     "reviewer": "Agent Systems Maintainers",
-    "note": "Baseline review for agent planning, job budgets and context compaction",
+    "note": "Integrated AI agent pair programming governance and parent/subagent handoff packet contract",
     "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-15",
+    "review_by": "2026-11-14",
     "files": {
       "doc/agent-native-architecture.md": "56b264decd910f24e842416305739738fb8d8bc2d9f46876fce07febf283fab1",
+      "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": "e66e354e92163214f56886ff3f82ac2214c37ae703a4e69ff117e7513a1afe66",
       "include/StudioAgent.h": "0d4af7772e9ca062be7a66999e4b795ff754ac92c896a3ee53788e59494b3212",
       "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
     },
@@ -62,11 +74,14 @@
   },
   "audio-dsp": {
     "reviewer": "Audio DSP Maintainers",
-    "note": "Baseline review for offline audio render and technical analysis routines",
+    "note": "Integrated performance benchmarking SLOs, audio incident triage, and DSP crash recovery runbook",
     "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-15",
+    "review_by": "2026-11-14",
     "files": {
       "doc/adr/0004-two-stage-audio-understanding.md": "1b087da411eff38d677fa4752c3848c4a2d4554f8218f879579f4fd6ff03c17e",
+      "doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md": "26e36c0ce4ed7a750ba3db89938df5881e9be5944b3cbf7e137d4b2c0b3cf239",
+      "doc/playbooks/03-incident-response-and-audio-triage.md": "d36584f4a27cada74882f97989fe4ce384a3688764004951a80432e7b9c51928",
+      "doc/runbooks/dsp-crash-recovery.md": "a8369dd9d756376ed600877975d201f825040ff032c474b77f156b432374505a",
       "include/StudioAudio.h": "b1f1d3692cae577cee08f7baf3c41d2005f3b06b2c1e3c0e8cb26f1b9964cfae",
       "src/core/StudioAudio.cpp": "9722f580612fef4edd10dd4f4f6312457299cbef84da8106ff964e7a3f0c0f4a"
     },

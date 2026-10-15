@@ -226,6 +226,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("sync", help="Synchronize generated catalogs and markdown views")
     sub.add_parser("check", help="Validate knowledge registry, reviews, and decision records")
+    sub.add_parser("audit", help="Run comprehensive documentation and governance audit scorecard")
 
     status_parser = sub.add_parser("status", help="Show domain review freshness status")
     status_parser.add_argument("--fail-on-due", action="store_true", help="Exit nonzero if any domain review is due")
@@ -258,6 +259,67 @@ def main():
             return 1
         print(f"Knowledgebase validation passed ({len(config['domains'])} domains, {len(reviews)} reviews).")
         return 0
+
+    if args.command == "audit":
+        kb_errors = validate(ROOT, config, reviews, require_complete=True)
+        docs_proc = subprocess.run(["python3", "scripts/verify-docs.py"], cwd=ROOT, capture_output=True, text=True)
+        docs_ok = (docs_proc.returncode == 0)
+        roadmap_proc = subprocess.run(["python3", "scripts/roadmap-sync.py", "check"], cwd=ROOT, capture_output=True, text=True)
+        roadmap_ok = (roadmap_proc.returncode == 0)
+
+        domain_counts = {"reviewed": 0, "due": 0, "stale": 0, "unreviewed": 0}
+        for key, domain in config.get("domains", {}).items():
+            rev = reviews.get(key)
+            st = review_state(ROOT, domain, rev)
+            domain_counts[st] = domain_counts.get(st, 0) + 1
+
+        docs_list = documents(ROOT, config)
+        scope_counts = {}
+        for d in docs_list:
+            sc = d.get("scope", "unknown")
+            scope_counts[sc] = scope_counts.get(sc, 0) + 1
+
+        register_path = ROOT / "doc/roadmap/register.json"
+        roadmap_data = json.loads(register_path.read_text(encoding="utf-8")) if register_path.is_file() else {}
+        horizons = roadmap_data.get("horizons", {})
+        gates = roadmap_data.get("gates", [])
+        completed_gates = sum(1 for g in gates if g.get("status") == "completed")
+        total_gates = len(gates)
+
+        print("========================================================================")
+        print("            HEAV3NS-MUSE GOVERNANCE & KNOWLEDGEBASE AUDIT SCORECARD     ")
+        print("========================================================================")
+        print(f"  Documentation Integrity:   {'[PASS] Clean' if docs_ok else '[FAIL] Issues detected'}")
+        print(f"    - Total Guides:          {len(docs_list)}")
+        print(f"    - Current Guides:        {scope_counts.get('current-guide', 0)}")
+        print(f"    - Domain References:     {scope_counts.get('domain-reference', 0)}")
+        print(f"    - Decision Records:      {scope_counts.get('decision-record', 0)}")
+        print(f"    - Operational Records:   {scope_counts.get('operational-record', 0)}")
+        print("------------------------------------------------------------------------")
+        print(f"  Knowledgebase Domains:     {'[PASS] All Fresh' if not kb_errors else '[FAIL] Stale/Errors'}")
+        print(f"    - Total Domains:         {len(config.get('domains', {}))}")
+        print(f"    - Reviewed & Sealed:     {domain_counts['reviewed']}")
+        print(f"    - Review Due:            {domain_counts['due']}")
+        print(f"    - Stale / Modified:      {domain_counts['stale']}")
+        print("------------------------------------------------------------------------")
+        print(f"  Auto-Rolling Roadmap:      {'[PASS] Valid' if roadmap_ok else '[FAIL] Schema error'}")
+        print(f"    - Gates Completed:       {completed_gates} / {total_gates} ({int(completed_gates/total_gates*100 if total_gates else 0)}%)")
+        for hid, hdata in sorted(horizons.items()):
+            h_gates = [g for g in gates if g.get("horizon") == hid]
+            h_comp = sum(1 for g in h_gates if g.get("status") == "completed")
+            pct = int(h_comp / len(h_gates) * 100) if h_gates else 0
+            bar = ("#" * (pct // 5)).ljust(20, ".")
+            print(f"    - [{hid}] {hdata.get('title', ''):<32} [{bar}] {pct:>3}%")
+        print("========================================================================")
+
+        if not docs_ok:
+            print("\nDocumentation check errors:\n" + docs_proc.stderr + docs_proc.stdout, file=sys.stderr)
+        if kb_errors:
+            print("\nKnowledgebase errors:\n" + "\n".join(kb_errors), file=sys.stderr)
+        if not roadmap_ok:
+            print("\nRoadmap errors:\n" + roadmap_proc.stderr + roadmap_proc.stdout, file=sys.stderr)
+
+        return 0 if (docs_ok and not kb_errors and roadmap_ok) else 1
 
     if args.command == "status":
         exit_code = 0

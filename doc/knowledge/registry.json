@@ -16,7 +16,16 @@
       "guides": [
         "doc/DOCUMENTATION_POLICY.md",
         "doc/native-studio-protocol.md",
-        "doc/adr/0002-in-process-qcoreapplication-headless-studio.md"
+        "doc/adr/0002-in-process-qcoreapplication-headless-studio.md",
+        "doc/maintainers/DAY_1_TO_30_ONBOARDING_ROADMAP.md",
+        "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md",
+        "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md",
+        "doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md",
+        "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md",
+        "doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md",
+        "doc/playbooks/01-provisioning-and-preflight.md",
+        "doc/runbooks/knowledge-maintenance.md",
+        "doc/runbooks/weekly-knowledge-audit.md"
       ],
       "checks": [
         "python3 tests/studio_process_test.py"
@@ -31,7 +40,9 @@
       ],
       "guides": [
         "doc/native-studio-protocol.md",
-        "doc/adr/0001-native-dsp-model-authority.md"
+        "doc/adr/0001-native-dsp-model-authority.md",
+        "doc/maintainers/MAINTAINER_GLOSSARY_AND_LEXICON.md",
+        "doc/playbooks/02-zero-hesitation-developer-ergonomics.md"
       ],
       "checks": [
         "python3 tests/studio_process_test.py"
@@ -45,7 +56,8 @@
         "include/StudioAgent.h"
       ],
       "guides": [
-        "doc/agent-native-architecture.md"
+        "doc/agent-native-architecture.md",
+        "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md"
       ],
       "checks": [
         "python3 tests/studio_process_test.py"
@@ -73,7 +85,10 @@
         "include/StudioAudio.h"
       ],
       "guides": [
-        "doc/adr/0004-two-stage-audio-understanding.md"
+        "doc/adr/0004-two-stage-audio-understanding.md",
+        "doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md",
+        "doc/playbooks/03-incident-response-and-audio-triage.md",
+        "doc/runbooks/dsp-crash-recovery.md"
       ],
       "checks": [
         "python3 tests/studio_process_test.py"
@@ -112,9 +127,75 @@
     "doc/how-to/change-with-documentation.md": {
       "kind": "how-to",
       "keywords": ["workflow", "impact", "attestation", "adr"]
+    },
+    "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": {
+      "kind": "reference",
+      "keywords": ["agents", "parent-child", "handoff", "invariants"]
+    },
+    "doc/maintainers/DAY_1_TO_30_ONBOARDING_ROADMAP.md": {
+      "kind": "how-to",
+      "keywords": ["onboarding", "stages", "exercises", "verification"]
+    },
+    "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md": {
+      "kind": "reference",
+      "keywords": ["cheatsheet", "cli", "cmake", "ctest", "roadmap"]
+    },
+    "doc/maintainers/MAINTAINER_GLOSSARY_AND_LEXICON.md": {
+      "kind": "reference",
+      "keywords": ["glossary", "dsp", "latency", "tokens", "headless"]
+    },
+    "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md": {
+      "kind": "reference",
+      "keywords": ["internals", "threading", "ringbuffer", "dag", "allocations"]
+    },
+    "doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md": {
+      "kind": "reference",
+      "keywords": ["release", "semver", "cpack", "dmg", "appimage", "rollback"]
+    },
+    "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md": {
+      "kind": "runbook",
+      "keywords": ["debugging", "lldb", "gdb", "asan", "xrun", "backtrace"]
+    },
+    "doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md": {
+      "kind": "reference",
+      "keywords": ["performance", "slo", "latency", "offline-render", "buffer"]
+    },
+    "doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md": {
+      "kind": "reference",
+      "keywords": ["git", "commits", "hooks", "pr", "attestation"]
+    },
+    "doc/playbooks/01-provisioning-and-preflight.md": {
+      "kind": "how-to",
+      "keywords": ["provisioning", "preflight", "macos", "linux", "qt"]
+    },
+    "doc/playbooks/02-zero-hesitation-developer-ergonomics.md": {
+      "kind": "reference",
+      "keywords": ["ergonomics", "zero-hesitation", "sdk", "json-rpc", "errors"]
+    },
+    "doc/playbooks/03-incident-response-and-audio-triage.md": {
+      "kind": "runbook",
+      "keywords": ["triage", "incident", "kill-switch", "feedback", "sev1"]
+    },
+    "doc/runbooks/knowledge-maintenance.md": {
+      "kind": "runbook",
+      "keywords": ["knowledge", "reconcile", "drift", "attestation"]
+    },
+    "doc/runbooks/weekly-knowledge-audit.md": {
+      "kind": "runbook",
+      "keywords": ["audit", "weekly", "checklist", "evidence", "gates"]
+    },
+    "doc/runbooks/dsp-crash-recovery.md": {
+      "kind": "runbook",
+      "keywords": ["dsp", "crash", "isolation", "nan", "plugin"]
     }
   },
-  "runbooks": [],
+  "runbooks": [
+    "doc/runbooks/knowledge-maintenance.md",
+    "doc/runbooks/weekly-knowledge-audit.md",
+    "doc/runbooks/dsp-crash-recovery.md",
+    "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md",
+    "doc/playbooks/03-incident-response-and-audio-triage.md"
+  ],
   "decisions": {
     "doc/adr/0001-native-dsp-model-authority.md": {
       "status": "accepted",

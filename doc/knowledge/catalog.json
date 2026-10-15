@@ -187,6 +187,178 @@
       "decision": null
     },
     {
+      "path": "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md",
+      "title": "AI Agent Pair Programming & Governance",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "agent-coordinator"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "agents",
+        "parent-child",
+        "handoff",
+        "invariants"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/DAY_1_TO_30_ONBOARDING_ROADMAP.md",
+      "title": "Maintainer Onboarding Roadmap",
+      "scope": "current-guide",
+      "kind": "how-to",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "onboarding",
+        "stages",
+        "exercises",
+        "verification"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md",
+      "title": "Debugging & Diagnostic Runbooks",
+      "scope": "current-guide",
+      "kind": "runbook",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "debugging",
+        "lldb",
+        "gdb",
+        "asan",
+        "xrun",
+        "backtrace"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md",
+      "title": "Git Workflows, Hooks & PR Attestation",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "git",
+        "commits",
+        "hooks",
+        "pr",
+        "attestation"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md",
+      "title": "Maintainer CLI Cheatsheet",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "cheatsheet",
+        "cli",
+        "cmake",
+        "ctest",
+        "roadmap"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/MAINTAINER_GLOSSARY_AND_LEXICON.md",
+      "title": "Maintainer Glossary & Lexicon",
+      "scope": "domain-reference",
+      "kind": "reference",
+      "domains": [
+        "capabilities"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "glossary",
+        "dsp",
+        "latency",
+        "tokens",
+        "headless"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md",
+      "title": "Performance Benchmarking & Service Level Objectives (SLOs)",
+      "scope": "domain-reference",
+      "kind": "reference",
+      "domains": [
+        "audio-dsp"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "performance",
+        "slo",
+        "latency",
+        "offline-render",
+        "buffer"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/README.md",
+      "title": "Maintainer Documentation & Engineering Catalog",
+      "scope": "current-guide",
+      "kind": "navigation",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md",
+      "title": "Release Engineering & Versioning",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "release",
+        "semver",
+        "cpack",
+        "dmg",
+        "appimage",
+        "rollback"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md",
+      "title": "Subsystem Internals & Dependency DAG",
+      "scope": "domain-reference",
+      "kind": "reference",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "internals",
+        "threading",
+        "ringbuffer",
+        "dag",
+        "allocations"
+      ],
+      "decision": null
+    },
+    {
       "path": "doc/native-studio-protocol.md",
       "title": "Native studio development interface",
       "scope": "current-guide",
@@ -202,6 +374,70 @@
         "schema",
         "operations"
       ],
+      "decision": null
+    },
+    {
+      "path": "doc/playbooks/01-provisioning-and-preflight.md",
+      "title": "Playbook 01: Provisioning & Preflight",
+      "scope": "current-guide",
+      "kind": "how-to",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "provisioning",
+        "preflight",
+        "macos",
+        "linux",
+        "qt"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/playbooks/02-zero-hesitation-developer-ergonomics.md",
+      "title": "Playbook 02: Zero-Hesitation Developer Ergonomics",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "capabilities"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "ergonomics",
+        "zero-hesitation",
+        "sdk",
+        "json-rpc",
+        "errors"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/playbooks/03-incident-response-and-audio-triage.md",
+      "title": "Playbook 03: Incident Response & Audio Triage",
+      "scope": "current-guide",
+      "kind": "runbook",
+      "domains": [
+        "audio-dsp"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "triage",
+        "incident",
+        "kill-switch",
+        "feedback",
+        "sev1"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/playbooks/README.md",
+      "title": "Operational Playbooks",
+      "scope": "current-guide",
+      "kind": "navigation",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
       "decision": null
     },
     {
@@ -222,6 +458,69 @@
       "domains": [],
       "curation": "unreviewed",
       "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/runbooks/README.md",
+      "title": "Maintainer Runbooks",
+      "scope": "current-guide",
+      "kind": "navigation",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/runbooks/dsp-crash-recovery.md",
+      "title": "Runbook: DSP Crash Recovery & Plugin Isolation",
+      "scope": "current-guide",
+      "kind": "runbook",
+      "domains": [
+        "audio-dsp"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "dsp",
+        "crash",
+        "isolation",
+        "nan",
+        "plugin"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/runbooks/knowledge-maintenance.md",
+      "title": "Runbook: Knowledgebase Maintenance & Reconciliation",
+      "scope": "current-guide",
+      "kind": "runbook",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "knowledge",
+        "reconcile",
+        "drift",
+        "attestation"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/runbooks/weekly-knowledge-audit.md",
+      "title": "Runbook: Weekly Knowledge Audit",
+      "scope": "current-guide",
+      "kind": "runbook",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "audit",
+        "weekly",
+        "checklist",
+        "evidence",
+        "gates"
+      ],
       "decision": null
     }
   ]
