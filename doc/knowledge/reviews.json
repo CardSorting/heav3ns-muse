@@ -1,7 +1,7 @@
 {
   "studio-runtime": {
     "reviewer": "Studio Runtime Maintainers",
-    "note": "Standardized runbook canonical sections and registered runbook checks",
+    "note": "Integrated Milestone Engineering History & Horizon Ledger",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -15,6 +15,7 @@
       "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md": "2a0d81fe064c1eb22364487a5c6285b3aae49f716f0025b7dda52f102538301e",
       "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
       "doc/playbooks/01-provisioning-and-preflight.md": "1c520822d716eb0a7b71d000b8a96660796ad7aa005809789bbe9083ca4c082e",
+      "doc/roadmap/MILESTONES.md": "7a25d530a81addb597a80e23a2eeb22d79e7c933c9bfda5cc920cd35dedeb0db",
       "doc/runbooks/knowledge-maintenance.md": "b6df1999d933a3630065ea3c4afda3fcfc3da7ef5f00d2b7a9df06fe1d2a56e8",
       "doc/runbooks/weekly-knowledge-audit.md": "d5ef71a8fa870a15e584043681e1cc662e34f7f417e80b646e0f0dfa7bec9ceb",
       "include/StudioRuntime.h": "4e71c40cd19c8d6ece47c714cb46a99145328e79f4c7eeb8b68b7d1e0965b2dc",

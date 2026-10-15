@@ -25,7 +25,8 @@
         "doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md",
         "doc/playbooks/01-provisioning-and-preflight.md",
         "doc/runbooks/knowledge-maintenance.md",
-        "doc/runbooks/weekly-knowledge-audit.md"
+        "doc/runbooks/weekly-knowledge-audit.md",
+        "doc/roadmap/MILESTONES.md"
       ],
       "checks": [
         "python3 tests/studio_process_test.py"
@@ -173,6 +174,10 @@
     "doc/evidence/README.md": {
       "kind": "evidence",
       "keywords": ["evidence", "receipts", "permanence", "benchmarks", "runs"]
+    },
+    "doc/roadmap/MILESTONES.md": {
+      "kind": "evidence",
+      "keywords": ["milestones", "horizon", "ledger", "history", "gates"]
     },
     "doc/playbooks/01-provisioning-and-preflight.md": {
       "kind": "how-to",

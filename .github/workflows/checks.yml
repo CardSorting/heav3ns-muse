@@ -38,3 +38,28 @@ jobs:
         uses: actions/checkout@v3
       - name: Run yamllint
         run: for i in $(git ls-files '*.yml'); do yamllint $i; done
+  governance-gate:
+    name: Documentation, Knowledgebase & Roadmap Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run Knowledge Guard Unit Tests
+        run: python3 tests/test_docs_kb.py
+      - name: Verify Documentation Scopes, Links & ADRs
+        run: python3 scripts/verify-docs.py
+      - name: Validate Cryptographic Reviews & Domain Freshness
+        run: python3 scripts/docs-kb.py check
+      - name: Audit Domain Review Freshness (Zero-Stale Gate)
+        run: python3 scripts/docs-kb.py status --fail-on-due --fail-on-unreviewed
+      - name: Validate Auto-Rolling Roadmap Schema
+        run: python3 scripts/roadmap-sync.py check
+      - name: Execute Full Governance Scorecard Audit
+        run: python3 scripts/docs-kb.py audit

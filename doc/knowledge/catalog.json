@@ -477,6 +477,24 @@
       "decision": null
     },
     {
+      "path": "doc/roadmap/MILESTONES.md",
+      "title": "Milestone Engineering History & Horizon Ledger",
+      "scope": "operational-record",
+      "kind": "evidence",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "milestones",
+        "horizon",
+        "ledger",
+        "history",
+        "gates"
+      ],
+      "decision": null
+    },
+    {
       "path": "doc/roadmap/OPEN_ITEMS.md",
       "title": "Active Roadmap Actions & Open Gates",
       "scope": "current-guide",

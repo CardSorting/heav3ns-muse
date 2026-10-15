@@ -226,10 +226,71 @@ def generated(root, config):
     ]
     for name, row in sorted(config.get("decisions", {}).items()):
         decisions.append(f"| [{titles.get(name, Path(name).stem)}](../../{name}) | `{row['status']}` | `{row['delivery']}` | {row['owner']} |")
+    register_path = root / f"{DOCS_DIR}/roadmap/register.json"
+    roadmap_data = json.loads(register_path.read_text(encoding="utf-8")) if register_path.is_file() else {}
+    reviews_data = read(root, REVIEWS) if (root / REVIEWS).is_file() else {}
+
+    domain_summary = {}
+    for key, dom in config.get("domains", {}).items():
+        rev = reviews_data.get(key)
+        st = review_state(root, dom, rev)
+        domain_summary[key] = {
+            "title": dom.get("title", ""),
+            "status": st,
+            "reviewer": rev.get("reviewer", "") if rev else "",
+            "review_by": rev.get("review_by", "") if rev else "",
+            "guides_count": len(dom.get("guides", [])),
+            "sources_patterns": dom.get("sources", [])
+        }
+
+    agent_anchor_payload = {
+        "version": 1,
+        "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
+        "compiled_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "active_horizon": roadmap_data.get("active_horizon", "H2"),
+        "invariants": {
+            "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
+            "headless_runtime": "The DAW runs under QCoreApplication without requiring X11, Wayland, or Quartz display servers.",
+            "audio_thread_safety": "Zero dynamic allocations (malloc/free/new/delete) and zero mutex locks in the real-time audio loop.",
+            "stream_isolation": "Stdout carries strict newline-delimited JSON-RPC 2.0 lines; stderr carries diagnostics and engine logs.",
+            "state_persistence": "Atomic single-writer save semantics with mutual exclusion via .lock file and temporary write-fsync-rename."
+        },
+        "capability_namespaces": {
+            "project": ["project.new", "project.open", "project.save", "project.inspect"],
+            "track": ["track.create", "track.delete", "track.list", "track.volume.set", "track.pan.set"],
+            "clip": ["clip.insert", "clip.remove", "clip.list"],
+            "piano_roll": ["note.add", "note.remove", "note.quantize", "scale.apply"],
+            "synth": ["synth.preset.load", "synth.param.set", "synth.param.get"],
+            "mixer": ["mixer.channel.inspect", "mixer.send.route", "mixer.effect.add"],
+            "render": ["render.export_wav", "render.stems"],
+            "audio": ["audio.listen", "audio.backend.select"]
+        },
+        "roadmap_horizons": {
+            hid: {
+                "title": hdata.get("title", ""),
+                "status": hdata.get("status", ""),
+                "completion_percentage": hdata.get("completion_percentage", 0)
+            }
+            for hid, hdata in roadmap_data.get("horizons", {}).items()
+        },
+        "gates_summary": [
+            {
+                "id": g.get("id"),
+                "horizon": g.get("horizon"),
+                "title": g.get("title"),
+                "status": g.get("status"),
+                "evidence": g.get("evidence")
+            }
+            for g in roadmap_data.get("gates", [])
+        ],
+        "domains": domain_summary
+    }
+
     return {
         CATALOG: dump({"version": 1, "documents": rows}),
         f"{DOCS_DIR}/knowledge/DOMAINS.md": "\n".join(domain_page).rstrip() + "\n",
-        f"{DOCS_DIR}/knowledge/DECISIONS.md": "\n".join(decisions).rstrip() + "\n"
+        f"{DOCS_DIR}/knowledge/DECISIONS.md": "\n".join(decisions).rstrip() + "\n",
+        f"{DOCS_DIR}/knowledge/agent-anchor.json": dump(agent_anchor_payload)
     }
 
 

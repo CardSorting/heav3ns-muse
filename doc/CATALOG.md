@@ -74,6 +74,7 @@ Complete index of all authoritative documentation, architecture records, guides,
 | Title | Path | Scope | Domain | Kind |
 | :--- | :--- | :---: | :--- | :---: |
 | [Evidence Catalog & Artifact Registry](evidence/README.md) | `doc/evidence/README.md` | `operational-record` | `agent-coordinator` | `evidence` |
+| [Milestone Engineering History & Horizon Ledger](roadmap/MILESTONES.md) | `doc/roadmap/MILESTONES.md` | `operational-record` | `studio-runtime` | `evidence` |
 
 ---
 

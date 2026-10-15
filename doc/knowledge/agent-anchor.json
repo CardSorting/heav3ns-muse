@@ -1,0 +1,300 @@
+{
+  "version": 1,
+  "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
+  "compiled_at": "2026-10-15T18:23:50Z",
+  "active_horizon": "H2",
+  "invariants": {
+    "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
+    "headless_runtime": "The DAW runs under QCoreApplication without requiring X11, Wayland, or Quartz display servers.",
+    "audio_thread_safety": "Zero dynamic allocations (malloc/free/new/delete) and zero mutex locks in the real-time audio loop.",
+    "stream_isolation": "Stdout carries strict newline-delimited JSON-RPC 2.0 lines; stderr carries diagnostics and engine logs.",
+    "state_persistence": "Atomic single-writer save semantics with mutual exclusion via .lock file and temporary write-fsync-rename."
+  },
+  "capability_namespaces": {
+    "project": [
+      "project.new",
+      "project.open",
+      "project.save",
+      "project.inspect"
+    ],
+    "track": [
+      "track.create",
+      "track.delete",
+      "track.list",
+      "track.volume.set",
+      "track.pan.set"
+    ],
+    "clip": [
+      "clip.insert",
+      "clip.remove",
+      "clip.list"
+    ],
+    "piano_roll": [
+      "note.add",
+      "note.remove",
+      "note.quantize",
+      "scale.apply"
+    ],
+    "synth": [
+      "synth.preset.load",
+      "synth.param.set",
+      "synth.param.get"
+    ],
+    "mixer": [
+      "mixer.channel.inspect",
+      "mixer.send.route",
+      "mixer.effect.add"
+    ],
+    "render": [
+      "render.export_wav",
+      "render.stems"
+    ],
+    "audio": [
+      "audio.listen",
+      "audio.backend.select"
+    ]
+  },
+  "roadmap_horizons": {
+    "H0": {
+      "title": "Foundation & Headless Wire Protocol",
+      "status": "completed",
+      "completion_percentage": 100
+    },
+    "H1": {
+      "title": "DAW Capability Coverage & Compositional Agency",
+      "status": "completed",
+      "completion_percentage": 100
+    },
+    "H2": {
+      "title": "Production Hardening, Multimodal Audio & Hardware",
+      "status": "open",
+      "completion_percentage": 0
+    },
+    "H3": {
+      "title": "Autonomous Studio Mesh & Timbral Synthesis",
+      "status": "deferred",
+      "completion_percentage": 0
+    }
+  },
+  "gates_summary": [
+    {
+      "id": "GATE-001",
+      "horizon": "H0",
+      "title": "In-Process StudioRuntime & QCoreApplication Headless Mode",
+      "status": "completed",
+      "evidence": "src/core/StudioRuntime.cpp"
+    },
+    {
+      "id": "GATE-002",
+      "horizon": "H0",
+      "title": "Line-Delimited JSON-Lines Wire Protocol",
+      "status": "completed",
+      "evidence": "src/core/StudioStdio.cpp"
+    },
+    {
+      "id": "GATE-003",
+      "horizon": "H0",
+      "title": "Atomic Manifests and Single-Writer File Locking",
+      "status": "completed",
+      "evidence": "src/core/StudioStorage.cpp"
+    },
+    {
+      "id": "GATE-004",
+      "horizon": "H0",
+      "title": "Request Idempotency & SHA-256 Receipt Caching",
+      "status": "completed",
+      "evidence": "src/core/StudioRuntime.cpp"
+    },
+    {
+      "id": "GATE-005",
+      "horizon": "H1",
+      "title": "Arrangement & Track Organization Capabilities",
+      "status": "completed",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-006",
+      "horizon": "H1",
+      "title": "Piano Roll Batch Editing & Microtonal Detuning",
+      "status": "completed",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-007",
+      "horizon": "H1",
+      "title": "BeatMatrix Step Sequencer Operations",
+      "status": "completed",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-008",
+      "horizon": "H1",
+      "title": "Bundled Instrument Loading & Slicer Integration",
+      "status": "completed",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-009",
+      "horizon": "H1",
+      "title": "Scala Microtonal Tuning (.scl) & Keyboard Mapping (.kbm)",
+      "status": "completed",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-010",
+      "horizon": "H1",
+      "title": "Mixer Routing, Sends & Cycle Detection",
+      "status": "completed",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-011",
+      "horizon": "H1",
+      "title": "Automation & Controller Rack Modulation",
+      "status": "completed",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-012",
+      "horizon": "H1",
+      "title": "Offline Multi-Codec Audio Rendering & Technical DSP Analysis",
+      "status": "completed",
+      "evidence": "src/core/StudioAudio.cpp"
+    },
+    {
+      "id": "GATE-013",
+      "horizon": "H1",
+      "title": "End-to-End Process Integration Test Harness",
+      "status": "completed",
+      "evidence": "tests/studio_process_test.py"
+    },
+    {
+      "id": "GATE-014",
+      "horizon": "H2",
+      "title": "Live Multimodal Audio Critique & Revision Loop",
+      "status": "in-progress",
+      "evidence": "src/core/StudioInference.cpp"
+    },
+    {
+      "id": "GATE-015",
+      "horizon": "H2",
+      "title": "Hardware Audio/MIDI Backend Hot-Swapping & Fault Recovery",
+      "status": "in-progress",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-016",
+      "horizon": "H2",
+      "title": "Multi-Track Stem Export & Automated Loudness Compliance",
+      "status": "open",
+      "evidence": "src/core/StudioAudio.cpp"
+    },
+    {
+      "id": "GATE-017",
+      "horizon": "H2",
+      "title": "Third-Party VST3 & CLAP Hosting via Carla Bridge",
+      "status": "open",
+      "evidence": "src/core/StudioCapabilities.cpp"
+    },
+    {
+      "id": "GATE-018",
+      "horizon": "H2",
+      "title": "Cross-Session Musical Preference & Palette Memory",
+      "status": "open",
+      "evidence": "src/core/StudioStorage.cpp"
+    },
+    {
+      "id": "GATE-019",
+      "horizon": "H3",
+      "title": "Multi-Agent Jam Session & Stems Collaboration Mesh",
+      "status": "deferred",
+      "evidence": null
+    },
+    {
+      "id": "GATE-020",
+      "horizon": "H3",
+      "title": "Real-Time Neural Timbre Diffusion Synthesis",
+      "status": "deferred",
+      "evidence": null
+    },
+    {
+      "id": "GATE-021",
+      "horizon": "H3",
+      "title": "Zero-Latency WebSocket Remote Studio Relay",
+      "status": "deferred",
+      "evidence": null
+    }
+  ],
+  "domains": {
+    "studio-runtime": {
+      "title": "Studio Runtime & Process Lifecycle",
+      "status": "reviewed",
+      "reviewer": "Studio Runtime Maintainers",
+      "review_by": "2026-11-14",
+      "guides_count": 13,
+      "sources_patterns": [
+        "src/core/StudioRuntime.*",
+        "src/core/StudioStdio.*",
+        "src/core/StudioSignals.*",
+        "include/StudioRuntime.h"
+      ]
+    },
+    "capabilities": {
+      "title": "Native DAW Capabilities & Operation Dispatch",
+      "status": "reviewed",
+      "reviewer": "Capabilities Maintainers",
+      "review_by": "2026-11-14",
+      "guides_count": 4,
+      "sources_patterns": [
+        "src/core/StudioCapabilities.*",
+        "include/StudioCapabilities.h"
+      ]
+    },
+    "agent-coordinator": {
+      "title": "Agent Execution & Job Lifecycle",
+      "status": "reviewed",
+      "reviewer": "Agent Systems Maintainers",
+      "review_by": "2026-11-14",
+      "guides_count": 4,
+      "sources_patterns": [
+        "src/core/StudioAgent.*",
+        "include/StudioAgent.h"
+      ]
+    },
+    "inference-adapters": {
+      "title": "Conversational & Multimodal Inference Adapters",
+      "status": "reviewed",
+      "reviewer": "AI Inference Maintainers",
+      "review_by": "2026-11-15",
+      "guides_count": 1,
+      "sources_patterns": [
+        "src/core/StudioInference.*",
+        "include/StudioInference.h"
+      ]
+    },
+    "audio-dsp": {
+      "title": "Audio Synthesis, Rendering & Technical Analysis",
+      "status": "reviewed",
+      "reviewer": "Audio DSP Maintainers",
+      "review_by": "2026-11-14",
+      "guides_count": 4,
+      "sources_patterns": [
+        "src/core/StudioAudio.*",
+        "include/StudioAudio.h"
+      ]
+    },
+    "session-durability": {
+      "title": "Session Durability, Manifests & Storage",
+      "status": "reviewed",
+      "reviewer": "Session Storage Maintainers",
+      "review_by": "2026-11-15",
+      "guides_count": 1,
+      "sources_patterns": [
+        "src/core/StudioStorage.*",
+        "src/core/StudioAssets.*",
+        "src/core/StudioAssetStore.*",
+        "include/StudioStorage.h"
+      ]
+    }
+  }
+}
