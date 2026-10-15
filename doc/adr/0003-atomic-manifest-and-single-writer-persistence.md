@@ -43,3 +43,16 @@ This corrects observed rollback state loss without changing the native XML
 format or studio capability signatures. Device delivery and broad crash recovery
 still require their own runtime evidence; the general crash-resilience rationale
 above is not evidence that every serializer or backend is failure-safe.
+
+## Empty automation restoration clarification — 2026-10-15
+
+**Supersedes:** the implicit reuse of interactive first-target initialization
+when reconnecting serialized automation target IDs. Manifest, lock and receipt
+decisions remain unchanged.
+
+Loading a project or recovery checkpoint preserves its saved automation point
+map, including emptiness. Reconnecting a saved target does not author an initial
+point. Interactive attachment still initializes a previously unbound empty curve
+using its target value. This distinction prevents an empty saved global curve
+from turning into active automation that overrides a later tempo or master
+control edit during playback/rendering. The native XML format is unchanged.

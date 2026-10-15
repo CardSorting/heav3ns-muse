@@ -15,7 +15,11 @@ class RenderStudio(Studio):
         self.evidence = evidence
         super().__init__(binary, session, evidence)
 
-    def receive(self, timeout=30):
+    def receive(self, timeout=None):
+        # Cold startup scans the native LADSPA modules through the OS loader.
+        # Keep individual operations bounded independently of engine startup.
+        if timeout is None:
+            timeout = 90 if not hasattr(self, 'ready') else 30
         try:
             return super().receive(timeout=timeout)
         except queue.Empty:
@@ -59,8 +63,14 @@ def main():
             studio.call('note-' + str(index), 'note.add', {'track': 0, 'clip': 0, 'position': index * 48, 'length': 48, 'key': key, 'volume': 65})
         project = root / 'composition.mmp'
         studio.call('save', 'project.save', {'path': str(project)})
+        studio.call('load', 'project.load', {'path': str(project)})
+        studio.call('tempo-after-load', 'song.set', {'tempo': 122})
         before = studio.call('inspect', 'project.inspect')['result']
+        assert before['tempo'] == 122
+        assert len(before['globalAutomations']) == 3
+        assert all(not curve['hasAutomation'] and not curve['points'] for curve in before['globalAutomations'])
         rendered = studio.call('render', 'audio.render', {'path': str(root / 'composition.wav'), 'bitDepth': 16})['result']
+        assert studio.call('after-render', 'project.inspect')['result']['tempo'] == 122
         measured = studio.call('analyze', 'audio.analyze', {'path': rendered['path'], 'sourceSha256': rendered['sha256']})['result']
         assert measured['sourceSha256'] == rendered['sha256']
         assert measured['nonfiniteSamples'] == 0 and measured['frames'] > 0
@@ -71,7 +81,10 @@ def main():
         after = restored.call('reopened', 'project.inspect')['result']
         restored.shutdown()
         assert before['tracks'][0]['clips'][0]['notes'] == after['tracks'][0]['clips'][0]['notes']
-        (root / 'verification.json').write_text(json.dumps({'status': 'passed', 'render': rendered, 'analysis': measured, 'restoredNotes': after['tracks'][0]['clips'][0]['notes']}, indent=2))
+        assert after['tempo'] == 122
+        assert len(after['globalAutomations']) == 3
+        assert all(not curve['hasAutomation'] and not curve['points'] for curve in after['globalAutomations'])
+        (root / 'verification.json').write_text(json.dumps({'status': 'passed', 'render': rendered, 'analysis': measured, 'restoredNotes': after['tracks'][0]['clips'][0]['notes'], 'restoredTempo': after['tempo'], 'restoredGlobalAutomations': after['globalAutomations']}, indent=2))
         print(root)
     finally:
         for index, instance in enumerate(studios):

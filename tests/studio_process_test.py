@@ -492,6 +492,7 @@ def verify_native_resources(studio, evidence):
     studio.call("resource-isolate-sampler", "track.edit", {"track": 0, "muted": True})
     studio.call("resource-sampler-track", "track.add", {"type": "instrument", "name": "Native sampler"})
     studio.call("resource-sampler-plugin", "instrument.load", {"track": 3, "instrument": "audiofileprocessor"})
+    studio.call("resource-sampler-name", "track.edit", {"track": 3, "name": "Native sampler"})
     studio.call("resource-sampler-clip", "clip.add", {"track": 3, "position": 0})
     studio.call("resource-sampler-note", "note.add", {"track": 3, "clip": 0, "position": 0,
                 "length": 48, "key": 69, "volume": 100})

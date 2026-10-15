@@ -12581,3 +12581,65 @@ same edit/render restores the old tempo instead. This isolates a persistence
 defect; the cancellation assertion has not been weakened. Hardware, optional GUI,
 real-provider musical acceptance and retained broad failures remain open. No
 roadmap gate advances.
+
+### Empty automation persistence and runnable desktop (2026-10-15)
+
+Continuing the freeze from `c0ae4b95c`, native project loading reconnected saved
+automation targets through interactive attachment, which seeded a first point
+even when the serialized point map was empty. A fresh-project render preserved a
+tempo edit of 122, while save/load followed by the same edit/render restored the
+old project tempo of 140. Deferred target-ID reconnection now preserves an empty
+point map. Interactive first attachment, explicit single-point automation and
+the native XML format retain their existing behavior; ADR 0003 records the
+restoration distinction.
+
+The extended StudioRenderProcessTest failed on the invented automation points
+before the repair, then passed actual save/load, edit to tempo 122, native
+synthesis/render/analysis and restart with all four notes and three empty global
+curves preserved. The observed WAV contained 173312 frames; the preserved tempo
+was 122. The independent reproducer also changed from 122→140 to 122→122 after
+the repair. No cancellation assertion was removed: the broad process now passes
+its deterministic-provider completion and cancellation scenario.
+
+A separate first-start failure timed out before ready. Its retained native
+sample showed LADSPA discovery inside the OS dynamic loader during engine
+initialization. The test now allows 90 seconds for startup while retaining
+30-second individual-operation checks and timeout stack capture. This explains
+that observed startup wait, not the earlier unexplained instrument-load timeout.
+
+The complete native rebuild and local installation passed. Eight focused native
+executables ran: project save/load, linked-track persistence and the extended
+render process passed; linked-project mixer-route comparison and three curve/
+binding executables still failed with the same assertions/uncaught fixture
+exceptions retained in the preceding full-suite evidence. Interactive initial
+binding scenarios passed within those fixtures. These are not eight passing
+executables or a clean automation suite.
+
+The rebuilt desktop executable launched the demo project and reached its Qt
+event loop. Initial local staging exposed missing Carla runtime dependencies;
+after correcting dependency placement, a separate bundled-executable startup
+listed 55 native plugins including both Carla entries without library-loader
+errors. This is local discovery/startup evidence, not portable distribution,
+Carla audio-host, visual-interaction or physical-output certification. The desktop
+process was left running.
+
+The process fixture now names its sampler after native instrument loading, so
+the resource-name preservation check tests an actual user-assigned name. The
+broad process passes sampler/resource workflows and next fails its Opulenz
+attenuation comparison. That audio discrepancy and retained broad regressions
+remain open. No operation, feature or roadmap gate was added.
+
+The next complete CTest run executed all 193 executables: **120 passed, 73
+failed**, in 271.53 seconds. Effect chain, mixer structure, controller lifecycle
+and pattern executables now passed compared with the preceding full run.
+LfoCatchUpTest failed its live-project PCM comparison after passing the preceding
+run; the same comparison had also failed in an earlier run. That variation is
+retained and unexplained. The suite remains failing, including backend/lifetime
+and uncaught fixture-exception cases.
+
+A separate live run opened the real PortAudio output backend at 44100 Hz with
+256-frame periods and capture disabled. Playback advanced the native timeline
+with the stream running, native error zero, no processing failure and DSP failure
+count zero. It played a short four-note demo at master volume 20 and shut down
+cleanly. This is live native output-stream evidence, not an independently observed
+acoustic receipt or recording-device verification.

@@ -116,8 +116,9 @@ bool AutomationClip::addObject( AutomatableModel * _obj, bool _search_dup )
 		return false;
 	}
 
-	// the automation track is unconnected and there is nothing in the track
-	if (m_objects.empty() && hasAutomation() == false)
+	// Seed interactive attachment, but preserve a serialized empty curve while
+	// reconnecting its deferred target IDs during project/checkpoint loading.
+	if (m_objects.empty() && hasAutomation() == false && m_idsToResolve.empty())
 	{
 		// then initialize first value
 		putValue( TimePos(0), _obj->inverseScaledValue( _obj->value<float>() ), false );

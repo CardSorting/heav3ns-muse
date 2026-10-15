@@ -168,3 +168,22 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   exposed tempo reverting after native project save/load and later rendering.
   This remains open in the [engineering record](../agent-native-architecture.md#native-effect-factory-and-restoration-repair-2026-10-15).
 - Feature development remains frozen; no gate status changes.
+
+### 2026-10-15 — Empty automation persistence and desktop startup
+
+- Preserved empty automation point maps during native target restoration,
+  preventing saved projects/checkpoints from inventing tempo/master automation.
+- The extended native save/load/edit/render/analyze/restart regression passed
+  with tempo 122, four notes and three empty global curves preserved. The
+  complete native rebuild and local installation passed again.
+- The desktop demo reached its Qt event loop. Corrected local dependency
+  placement also allowed bundled startup to discover 55 native plugins without
+  library-loader errors. Visual interaction and physical output remain unverified.
+- The broad process passes cancellation and sampler/resource workflows and now
+  stops at an Opulenz attenuation assertion. Retained automation fixture failures
+  remain open in the [engineering record](../agent-native-architecture.md#empty-automation-persistence-and-runnable-desktop-2026-10-15).
+- The latest complete suite reported **120 passing and 73 failing executables**
+  out of 193; an earlier live-project LFO PCM mismatch reappeared and remains
+  unexplained. A separate actual PortAudio output-only playback advanced the
+  native clock without reported stream/DSP failure; acoustic receipt is unverified.
+- Feature development remains frozen; no gate status changes.

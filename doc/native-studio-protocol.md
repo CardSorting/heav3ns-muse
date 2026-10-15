@@ -300,6 +300,11 @@ inspect empty or unbound native curves. Empty bound-curve evaluation uses its fi
 native target, matching parameter selection; unbound empty curves use the native
 fallback value. Other global automation operations continue selecting a parameter.
 
+Project and checkpoint restoration preserve the saved point map, including an
+empty curve. Reconnecting serialized target IDs does not create an initial point
+or introduce tempo/master-volume/master-pitch automation. Interactive first
+attachment to an unbound empty curve retains its native initial-point behavior.
+
 The following operations accept optional `summary: true` for a bounded
 acknowledgement after their native mutation: `controller.add`,
 `automation.connect`/`.disconnect`, `automation.global.edit`/`.removePoint`/`.clear`,

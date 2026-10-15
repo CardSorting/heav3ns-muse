@@ -1,7 +1,7 @@
 {
   "studio-runtime": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed native effect creation/restoration repair, complete configured rebuild and five passing focused executables. Broad process passes real effect workflow and now exposes a separate tempo persistence defect.",
+    "note": "Reviewed empty automation restoration, extended native save/load/edit/render/restart execution, actual PortAudio output-only playback and latest 120-pass/73-failure suite. Broad Opulenz and retained backend/lifetime failures remain explicit.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -14,7 +14,7 @@
       "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md": "1d449ebbc5dec35ea47b4918ff25d30c7cd7c312ff1a4c36391daf1e7778e181",
       "doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md": "6dd28766601898d4ccfa36febeb9303116a4d731884cf509795ae28243199298",
       "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md": "2a0d81fe064c1eb22364487a5c6285b3aae49f716f0025b7dda52f102538301e",
-      "doc/native-studio-protocol.md": "e0efe8c3cd545fc74ae8f873f3d532bd91372bdcb685fbd09dfe0e0aff2596e9",
+      "doc/native-studio-protocol.md": "fbe590dbdf3d48642a4f3cd78783bdf87ac226ec584fd0bcc863672b3cbf22e1",
       "doc/playbooks/01-provisioning-and-preflight.md": "b851e3522dd3e12da604c314dd384a035e01df56c7df001a8eae50a7569f66fe",
       "doc/roadmap/MILESTONES.md": "7a25d530a81addb597a80e23a2eeb22d79e7c933c9bfda5cc920cd35dedeb0db",
       "doc/runbooks/ci-failure-and-recovery.md": "af99fc0e4df25157a49bca876009119ae2f5b39cd46a8d84cc20558f4e912cd9",
@@ -28,18 +28,18 @@
       "src/core/StudioStdio.cpp": "76478fb8e5e8786388f785f95c64073d48fa6c84e37b50720eeab2773a2f6c61"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "f7778c07fe8e27ed3b28c3dd92abb0452ceacbd9133d834a6c1d6391b57fdcc2"
+      "doc/agent-native-architecture.md": "34f2f14279cb089f9f04fc232649449ac3978e8076fe74187e6afccf8feedeb7"
     }
   },
   "capabilities": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed actual Effect::instantiate chain association against publication guards in effect.add and EffectChain settings restoration, unattached candidate cleanup and foreign/already-published refusal. Native Amplifier add/restore and stereo integration execute.",
+    "note": "Reviewed AutomationClip deferred-ID restoration versus interactive initial-point creation, unchanged native XML/capability signatures and extended process regression. Actual tempo 122 and three empty global curves persist through render/restart.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/adr/0001-native-dsp-model-authority.md": "54842d0c55d43c1522a5ffd0dcace1d02d0448118b8813accacd787356d7e343",
       "doc/maintainers/MAINTAINER_GLOSSARY_AND_LEXICON.md": "6b1ba7b056d59acd8cb1f5435d1bddd9bf663457a7337394cefefd8562793179",
-      "doc/native-studio-protocol.md": "e0efe8c3cd545fc74ae8f873f3d532bd91372bdcb685fbd09dfe0e0aff2596e9",
+      "doc/native-studio-protocol.md": "fbe590dbdf3d48642a4f3cd78783bdf87ac226ec584fd0bcc863672b3cbf22e1",
       "doc/playbooks/02-zero-hesitation-developer-ergonomics.md": "b031753ab00e33f391aa22c0e5d4ef9f7247666e622a82c02a36401ad128f17e",
       "include/StudioCapabilities.h": "86ce7620d618526a274f67e88fc7c227d80d4748a933f88fb88e2ef542ed5042",
       "src/core/NativeClipEdit.cpp": "560885ee5df2be1d26f3f6dd8e56288d7cdd65cda16e22fa6d09899d1d9042a2",
@@ -54,16 +54,16 @@
       "src/core/StudioCapabilities.cpp": "1be02af0354b9e2bcced689d589187ec18c6857365db34608d1ce1d2a4c4e80f"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "f7778c07fe8e27ed3b28c3dd92abb0452ceacbd9133d834a6c1d6391b57fdcc2"
+      "doc/agent-native-architecture.md": "34f2f14279cb089f9f04fc232649449ac3978e8076fe74187e6afccf8feedeb7"
     }
   },
   "agent-coordinator": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed dated effect stabilization evidence, actual-plugin execution, full native build and explicit retained regressions. Feature scope remains frozen with no gate advancement.",
+    "note": "Reviewed dated native desktop, synthesis, persistence, deterministic-provider cancellation and full-suite evidence. Feature scope stays frozen; 73 regressions and Opulenz comparison remain open without gate advancement.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
-      "doc/agent-native-architecture.md": "f7778c07fe8e27ed3b28c3dd92abb0452ceacbd9133d834a6c1d6391b57fdcc2",
+      "doc/agent-native-architecture.md": "34f2f14279cb089f9f04fc232649449ac3978e8076fe74187e6afccf8feedeb7",
       "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md": "97eab677d434664f24941848e9cc3fa698bdda93dab52a56eaef26792032c08e",
       "doc/evidence/README.md": "e8e72f455ca5dc8eaa6fb6da797578e6798c91a55f2e7975a76ae1d848520012",
       "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": "e66e354e92163214f56886ff3f82ac2214c37ae703a4e69ff117e7513a1afe66",
@@ -72,21 +72,21 @@
       "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "f7778c07fe8e27ed3b28c3dd92abb0452ceacbd9133d834a6c1d6391b57fdcc2"
+      "doc/agent-native-architecture.md": "34f2f14279cb089f9f04fc232649449ac3978e8076fe74187e6afccf8feedeb7"
     }
   },
   "inference-adapters": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed bounded native effect evidence with no adapter or declaration additions and no real-provider musical acceptance claim. Deterministic process cancellation assertion exposes a separate native tempo issue.",
+    "note": "Reviewed successful deterministic-provider completion/cancellation after native tempo restoration repair. No adapter changes or real-provider musical acceptance claim; current source and runtime limits remain explicit.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
-      "doc/agent-native-architecture.md": "f7778c07fe8e27ed3b28c3dd92abb0452ceacbd9133d834a6c1d6391b57fdcc2",
+      "doc/agent-native-architecture.md": "34f2f14279cb089f9f04fc232649449ac3978e8076fe74187e6afccf8feedeb7",
       "include/StudioInference.h": "ee6fcff4d167dfdc0f6585b0d9a18c429148507c8488ed8508a7e08ec10f6c1b",
       "src/core/StudioInference.cpp": "7a9a7998f5f7e3fd6005fd5ba1ff74c0e9827a90a9c83160428cffa6bf104942"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "f7778c07fe8e27ed3b28c3dd92abb0452ceacbd9133d834a6c1d6391b57fdcc2"
+      "doc/agent-native-architecture.md": "34f2f14279cb089f9f04fc232649449ac3978e8076fe74187e6afccf8feedeb7"
     }
   },
   "audio-dsp": {
@@ -108,11 +108,11 @@
   },
   "session-durability": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed native effect undo/project restoration and content-preserving XML fixture comparison. Native XML and ADR decisions remain unchanged; newly isolated empty-automation tempo defect remains open.",
+    "note": "Reviewed ADR 0003 empty-automation clarification, serialized target reconnection and observed tempo persistence across project/checkpoint load. Existing explicit-point and interactive binding semantics remain native.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
-      "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": "ebd4f9e14173f3d64ce58d08a0cc02779a764c1359611740f8680fb847fca087",
+      "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": "3229174fc4570e01175c1e6da2a7ae52ed2bfbb7c7e0524598541a37160ddd60",
       "doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md": "c835f8f156d4df3cc26e037009aff2c7f4e30ca5763e31f52963a74039635181",
       "include/StudioAssetStore.h": "40ff2a9766de81ed9d0469f4c402195b9e8e4c9f3aba43463bb72828a62c2aeb",
       "include/StudioAssets.h": "5bb071380f1870d1ab40cfaf22dd88a7a6941d74e207ed3556ef5418faf66e2f",
@@ -126,17 +126,17 @@
       "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "f7778c07fe8e27ed3b28c3dd92abb0452ceacbd9133d834a6c1d6391b57fdcc2"
+      "doc/agent-native-architecture.md": "34f2f14279cb089f9f04fc232649449ac3978e8076fe74187e6afccf8feedeb7"
     }
   },
   "live-capture": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed native protocol changes and bounded effect/mixer evidence without changing recording, capture, hardware or provider guarantees.",
+    "note": "Reviewed output-only PortAudio execution with capture disabled, running native clock and zero reported stream/DSP failure. No acoustic receipt or recording-device acceptance is claimed.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md": "e61907fea24f17777500e148a37e94d93c6303fced3e0589b776b593cfcd053c",
-      "doc/native-studio-protocol.md": "e0efe8c3cd545fc74ae8f873f3d532bd91372bdcb685fbd09dfe0e0aff2596e9",
+      "doc/native-studio-protocol.md": "fbe590dbdf3d48642a4f3cd78783bdf87ac226ec584fd0bcc863672b3cbf22e1",
       "include/StudioAutomationRecording.h": "c75ef5c140283048d7d2c2184f46a25f576ff0b67ecc056c436776c0f4308236",
       "include/StudioMidiLearn.h": "7565ddd2594c6786645f12630db60629be8ff95dbc0c026a1aa30bba3aef4f66",
       "include/StudioMidiRecording.h": "f4c74028711202cce7da7b5e5b9b8a30f392a5e7c565e93acd1e63c04135daa6",
@@ -147,7 +147,7 @@
       "src/core/StudioRecording.cpp": "68e3b7b581975338a567e569a1563452b718525b85bde9d95577b7ec873cd8cb"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "f7778c07fe8e27ed3b28c3dd92abb0452ceacbd9133d834a6c1d6391b57fdcc2"
+      "doc/agent-native-architecture.md": "34f2f14279cb089f9f04fc232649449ac3978e8076fe74187e6afccf8feedeb7"
     }
   }
 }
