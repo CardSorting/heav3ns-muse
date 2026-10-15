@@ -12777,3 +12777,50 @@ executables retain separate failures. The last complete suite remains the
 A separate actual executable probe imported the same format-0 MIDI file used by
 a failing unit fixture and shut down successfully, narrowing that remaining
 investigation to the unit/module boundary without establishing its root cause.
+
+
+### Native unit hosts and playable bank fixture corrections (2026-10-15)
+
+Continuing from `3bf8d34f2`, non-Windows native unit hosts now undo the inherited
+`LMMS_STATIC_DEFINE` visibility setting in their own compilation. They still link
+the same native object library, while their core class declarations retain the
+visibility needed at loaded-module boundaries. With this isolated setting,
+ImportFilterLifecycleTest passed unchanged in 2.22 seconds; the same format-0 MIDI
+file already passed in the actual executable. The subsequent five-executable
+host check passed import lifecycle and Hydrogen import, with remaining failures
+in MIDI import, runtime and Carla. Windows decoration policy is unchanged and
+was not executed here.
+
+Further fixture review corrected the real inputs and assertions at those
+boundaries. The playable GIG writer now assigns libgig's saved coarse/fine bank
+fields rather than the derived bank view, and writes the split wave-pool entry
+in native high-word/file-number then low-word/offset order. Its companion entry
+also carries the native extension string. This was checked against the installed
+4.6.0 headers and the [upstream 4.6.0 source](https://download.linuxsampler.org/packages/libgig-4.6.0.tar.bz2).
+Existing assertions still require program identity, actual 16/24-bit mono/stereo
+PCM, independent accepted companion versions, portability and recovery.
+
+A debugger traced the GIG pending-bank abort to a fixture freeing note plugin
+data explicitly and then letting its stack NotePlayHandle free it again. Both
+GIG energy helpers now use their existing handle destructor as the sole owner.
+A damaged snapshot fixture establishes its read scope before removing a retained
+member, so it exercises damage during an admitted read rather than throwing at
+scope admission. MIDI metadata retirement observes Track::nameChanged, the
+signal actually emitted by native renaming.
+
+Carla discovery tests follow parameter continuation pages and compare common
+parameter fields exactly; separately inspected linked-peer fields are verified
+as such. Runtime resource fixtures assign custom names after native instrument
+loading, respect failed-restoration revision invalidation, allow native sample
+notifications while requiring no late duplicate queued completion, and account
+for one 16-bit quantization step in encoded oscillator input. No product/DSP or
+capability source changed in this tranche.
+
+After rebuilding the affected native targets, the final nine-executable check
+passed **5 and failed 4** in 16.20 seconds. Import lifecycle, MIDI import, Hydrogen
+import, resource snapshots and Carla now passed. GIG resource and pending-bank
+executables reached their later assertions instead of aborting. Runtime has one
+remaining malformed OpulenZ pressure-value refusal; GIG resource polling,
+scripted repair completion and a GIG dialog retirement crash remain. Earlier
+intermediate focused failures are retained. These targeted runs do not replace
+the last complete 155-pass/38-failure count. No feature or roadmap gate advanced.

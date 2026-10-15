@@ -43,7 +43,9 @@ inline bool create(const QString& path, bool split, QString& error, unsigned bit
 		for (int program = 0; program < (alternateProgram ? 2 : 1); ++program)
 		{
 			auto instrument = bank.AddInstrument();
-			instrument->pInfo->Name = program ? "Native alternate bank" : "Native persistent bank"; instrument->MIDIBank = program ? 4 : 2; instrument->MIDIProgram = program ? 11 : 7;
+			instrument->pInfo->Name = program ? "Native alternate bank" : "Native persistent bank";
+			// MIDIBank is a derived view; libgig saves the coarse/fine fields.
+			instrument->MIDIBankCoarse = 0; instrument->MIDIBankFine = program ? 4 : 2; instrument->MIDIProgram = program ? 11 : 7;
 			auto region = instrument->AddRegion(); region->KeyRange.low = 0; region->KeyRange.high = 127;
 			auto dimension = region->pDimensionRegions[0];
 			if (!dimension) { error = "libgig did not create the fixture dimension region"; return false; }
@@ -103,7 +105,9 @@ inline bool create(const QString& path, bool split, QString& error, unsigned bit
 			{
 				error = "libgig fixture requires a one-sample wave table"; return false;
 			}
-			body = body.left(tableHeader + 4) + gigResource::uint32(1);
+			// The 64-bit entry stores the high word first. For small split banks
+			// that word is the companion file number, followed by the pool offset.
+			body = body.left(tableHeader) + gigResource::uint32(1) + body.right(4);
 			chunks += gigResource::chunk("ptbl", body); table = true;
 		}
 		else
@@ -119,8 +123,8 @@ inline bool create(const QString& path, bool split, QString& error, unsigned bit
 	}
 	const auto name = QFileInfo(path).completeBaseName() + ".gx01";
 	const auto encoded = name.toUtf8();
-	if (encoded.size() > 127) { error = "Fixture companion name is too long"; return false; }
-	chunks += gigResource::chunk("xfil", gigResource::uint32(1) + encoded + QByteArray(128 - encoded.size(), '\0') + identifier);
+	if (encoded.size() > 122) { error = "Fixture companion name is too long"; return false; }
+	chunks += gigResource::chunk("xfil", gigResource::uint32(1) + encoded + '\0' + ".gx01" + QByteArray(122 - encoded.size(), '\0') + identifier);
 	if (!write(QFileInfo(path).absoluteDir().filePath(name), gigResource::riff(gigResource::chunk("dlid", identifier) + wavePool))
 		|| !write(path, gigResource::riff(chunks)))
 	{

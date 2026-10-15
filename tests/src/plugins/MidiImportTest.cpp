@@ -742,7 +742,7 @@ private slots:
 	void laterMetadataNotificationCannotRetireAnEarlierTrack()
 	{
 		auto prior = existing(); QPointer<Track> numerator; bool retired = false; std::vector<QMetaObject::Connection> rows;
-		const auto connection = connect(song(), &TrackContainer::trackAdded, this, [&](Track* row) { rows.push_back(connect(row, &Model::dataChanged, this, [&, row] { if (retired) { return; } if (row->name() == "MIDI Time Signature Numerator") { numerator = row; } else if (row->name() == "MIDI Time Signature Denominator" && numerator) { retired = true; delete numerator.data(); } })); }); const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); for (const auto& row : rows) { QObject::disconnect(row); } });
+		const auto connection = connect(song(), &TrackContainer::trackAdded, this, [&](Track* row) { rows.push_back(connect(row, &Track::nameChanged, this, [&, row] { if (retired) { return; } if (row->name() == "MIDI Time Signature Numerator") { numerator = row; } else if (row->name() == "MIDI Time Signature Denominator" && numerator) { retired = true; delete numerator.data(); } })); }); const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); for (const auto& row : rows) { QObject::disconnect(row); } });
 		QVERIFY(!import(smf({melody()}))); QVERIFY(retired); QVERIFY(!numerator); QCOMPARE(song()->tracks().size(), std::size_t(1)); verifyExisting(prior);
 	}
 	void callbackOwnedTracksSurviveCancelledImportCleanup()

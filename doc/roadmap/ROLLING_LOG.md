@@ -228,3 +228,16 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   The last complete suite remains 155 passing and 38 failing out of 193.
 - Feature development and gate statuses remain frozen; see the
   [engineering record](../agent-native-architecture.md#unit-fixture-baselines-and-native-timing-2026-10-15).
+
+
+### 2026-10-15 — Native module test boundary and GIG fixtures
+
+- Corrected native test-host class visibility, saved bank fields and split GIG
+  wave-pool layout; retained actual audio, program, portability and recovery checks.
+- Removed two fixture double frees and corrected snapshot admission, rename
+  notification, parameter paging and existing runtime persistence assertions.
+- The latest nine-executable focused run passed 5 and failed 4. Import lifecycle,
+  MIDI import, Hydrogen import, resource snapshots and Carla now pass; the last
+  complete suite remains 155/193 passing. Remaining failures stay explicit in the
+  [engineering record](../agent-native-architecture.md#native-unit-hosts-and-playable-bank-fixture-corrections-2026-10-15).
+- Feature development remains frozen and no gate status changes.

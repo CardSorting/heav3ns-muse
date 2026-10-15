@@ -1549,6 +1549,10 @@ private slots:
 		QCOMPARE(info.value("writable").toBool(), writable); QCOMPARE(info.value("automatable").toBool(), automatable);
 		QCOMPARE(info.value("kind").toString(), kind);
 		QCOMPARE(info.value("location").toObject().value("track").toInt(-1), 0);
+		QCOMPARE(info.value("linkedParameterCount").toInt(-1), 0); QVERIFY(info.value("linkedParameters").toArray().isEmpty());
+		QVERIFY(!info.value("linkedPage").toObject().value("hasMore").toBool());
+		auto listedInfo = info;
+		for (const auto key : {"linkedParameters", "linkedPage", "linkedParameterCount", "linkedHandleScope"}) { listedInfo.remove(key); }
 		if (policy == 4)
 		{
 			QCOMPARE(info.value("choices").toArray().size(), 3);
@@ -1556,11 +1560,16 @@ private slots:
 		}
 		for (const auto operation : {"parameter.list", "instrument.inspect"})
 		{
-			const auto listed = StudioCapabilities::execute(operation, {{"track", 0}});
-			QVERIFY(listed.value("ok").toBool()); bool found = false;
-			for (const auto& value : listed.value("result").toObject().value("parameters").toArray())
+			bool found = false; int offset = 0;
+			for (;;)
 			{
-				if (value.toObject().value("id").toInt() == id) { QCOMPARE(value.toObject(), info); found = true; }
+				const auto listed = StudioCapabilities::execute(operation, {{"track", 0}, {"offset", offset}, {"choices", true}});
+				QVERIFY(listed.value("ok").toBool()); const auto result = listed.value("result").toObject();
+				for (const auto& value : result.value("parameters").toArray())
+				{ if (value.toObject().value("id").toInt() == id) { QCOMPARE(value.toObject(), listedInfo); found = true; } }
+				const auto page = QString(operation) == "instrument.inspect" ? result.value("parameterPage").toObject() : result;
+				if (!page.value("hasMore").toBool()) { break; }
+				const int next = page.value("nextOffset").toInt(); QVERIFY(next > offset); offset = next;
 			}
 			QVERIFY(found);
 		}

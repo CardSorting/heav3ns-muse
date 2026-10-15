@@ -47,7 +47,8 @@ bool write(const QString& path, const QByteArray& bytes) { QFile file(path); ret
 double energy(GigInstrument* native)
 {
 	const auto frames = Engine::audioEngine()->framesPerPeriod(); std::vector<SampleFrame> pcm(frames); NotePlayHandle voice(native->instrumentTrack(), 0, frames * 4, Note(TimePos(48), TimePos(), 69));
-	const auto cleanup = qScopeGuard([&] { native->deleteNotePluginData(&voice); }); native->playNote(&voice, pcm.data()); double total = 0;
+	// The stack NotePlayHandle releases its native plugin data on destruction.
+	native->playNote(&voice, pcm.data()); double total = 0;
 	for (int period = 0; period < 4; ++period) { native->play(pcm.data()); for (const auto& frame : pcm) { for (int channel = 0; channel < 2; ++channel) { if (!std::isfinite(frame[channel])) { throw std::runtime_error("Nonfinite native GIG output"); } total += std::abs(frame[channel]); } } } return total;
 }
 QJsonObject request(const QString& id, const QString& op, const QJsonObject& args = {}) { return {{"id", id}, {"op", op}, {"args", args}}; }

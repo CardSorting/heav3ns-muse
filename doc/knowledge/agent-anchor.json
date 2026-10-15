@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-15T22:18:37Z",
+  "compiled_at": "2026-10-15T22:27:24Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
@@ -305,7 +305,8 @@
         "src/core/ConfigManager.cpp",
         "src/core/lv2/Lv2Manager.cpp",
         "src/core/lv2/Lv2Options.cpp",
-        "include/Lv2Options.h"
+        "include/Lv2Options.h",
+        "tests/CMakeLists.txt"
       ]
     },
     "capabilities": {

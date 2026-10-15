@@ -19,7 +19,8 @@
         "src/core/ConfigManager.cpp",
         "src/core/lv2/Lv2Manager.cpp",
         "src/core/lv2/Lv2Options.cpp",
-        "include/Lv2Options.h"
+        "include/Lv2Options.h",
+        "tests/CMakeLists.txt"
       ],
       "guides": [
         "doc/DOCUMENTATION_POLICY.md",

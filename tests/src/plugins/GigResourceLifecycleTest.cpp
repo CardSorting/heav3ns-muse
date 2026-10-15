@@ -54,7 +54,7 @@ QJsonObject request(const QString& id, const QString& op, const QJsonObject& arg
 QJsonObject manifest(const QTemporaryDir& directory) { QFile file(directory.filePath("session.json")); return file.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(file.readAll()).object() : QJsonObject{}; }
 double energy(GigInstrument* native)
 {
-	const auto frames = Engine::audioEngine()->framesPerPeriod(); std::vector<SampleFrame> pcm(frames); NotePlayHandle voice(native->instrumentTrack(), 0, frames * 4, Note(TimePos(48), TimePos(), 69)); const auto cleanup = qScopeGuard([&] { native->deleteNotePluginData(&voice); }); native->playNote(&voice, pcm.data()); double total = 0;
+	const auto frames = Engine::audioEngine()->framesPerPeriod(); std::vector<SampleFrame> pcm(frames); NotePlayHandle voice(native->instrumentTrack(), 0, frames * 4, Note(TimePos(48), TimePos(), 69)); native->playNote(&voice, pcm.data()); double total = 0;
 	for (int period = 0; period < 4; ++period) { native->play(pcm.data()); for (const auto& frame : pcm) { for (int channel = 0; channel < 2; ++channel) { if (!std::isfinite(frame[channel])) { throw std::runtime_error("Nonfinite native GIG output"); } total += std::abs(frame[channel]); } } } return total;
 }
 }

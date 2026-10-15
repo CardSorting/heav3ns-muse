@@ -1,7 +1,7 @@
 {
   "studio-runtime": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed existing fixture corrections against durable checkpoint baselines, native sample/export/period timing and unchanged instrument loading operations. Focused 9-pass/5-failure evidence does not replace the last full-suite count or advance a gate.",
+    "note": "Reviewed native test-host visibility and fixture corrections against existing module, paging, persistence, native note ownership and libgig 4.6.0 file contracts. Focused 5-pass/4-failure evidence retains remaining failures and does not replace the full-suite baseline. No feature or gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -31,15 +31,16 @@
       "src/core/StudioStdio.cpp": "76478fb8e5e8786388f785f95c64073d48fa6c84e37b50720eeab2773a2f6c61",
       "src/core/lv2/Lv2Manager.cpp": "c6859d7d46225753b356d21bf4684cdcf6f466adce8928efdece7108b45d88b2",
       "src/core/lv2/Lv2Options.cpp": "e2b100dfd6430c7f77b90b79105a46f2bd1b9167683a4c9bad0e5d4b63a40ea0",
-      "src/core/main.cpp": "931a03ea08459e035dc7695e2f05632e6187cd41787fb1d4a68516fcfa0cc736"
+      "src/core/main.cpp": "931a03ea08459e035dc7695e2f05632e6187cd41787fb1d4a68516fcfa0cc736",
+      "tests/CMakeLists.txt": "ad6dd4e4c289f0166e485a2ae1c02f197c3a18f162b0cd279b55d70899cbc205"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "575b6372235325fe9b8172d5c8c4bdb64cc5342b2e38f8205ae60635be58855e"
+      "doc/agent-native-architecture.md": "46ca36ff6025eb7c1e95e7b009ae182e8457e40e644381aaf5e0b95616cb1a0c"
     }
   },
   "capabilities": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed existing fixture corrections against durable checkpoint baselines, native sample/export/period timing and unchanged instrument loading operations. Focused 9-pass/5-failure evidence does not replace the last full-suite count or advance a gate.",
+    "note": "Reviewed native test-host visibility and fixture corrections against existing module, paging, persistence, native note ownership and libgig 4.6.0 file contracts. Focused 5-pass/4-failure evidence retains remaining failures and does not replace the full-suite baseline. No feature or gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -60,16 +61,16 @@
       "src/core/StudioCapabilities.cpp": "1be02af0354b9e2bcced689d589187ec18c6857365db34608d1ce1d2a4c4e80f"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "575b6372235325fe9b8172d5c8c4bdb64cc5342b2e38f8205ae60635be58855e"
+      "doc/agent-native-architecture.md": "46ca36ff6025eb7c1e95e7b009ae182e8457e40e644381aaf5e0b95616cb1a0c"
     }
   },
   "agent-coordinator": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed existing fixture corrections against durable checkpoint baselines, native sample/export/period timing and unchanged instrument loading operations. Focused 9-pass/5-failure evidence does not replace the last full-suite count or advance a gate.",
+    "note": "Reviewed native test-host visibility and fixture corrections against existing module, paging, persistence, native note ownership and libgig 4.6.0 file contracts. Focused 5-pass/4-failure evidence retains remaining failures and does not replace the full-suite baseline. No feature or gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
-      "doc/agent-native-architecture.md": "575b6372235325fe9b8172d5c8c4bdb64cc5342b2e38f8205ae60635be58855e",
+      "doc/agent-native-architecture.md": "46ca36ff6025eb7c1e95e7b009ae182e8457e40e644381aaf5e0b95616cb1a0c",
       "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md": "97eab677d434664f24941848e9cc3fa698bdda93dab52a56eaef26792032c08e",
       "doc/evidence/README.md": "e8e72f455ca5dc8eaa6fb6da797578e6798c91a55f2e7975a76ae1d848520012",
       "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": "e66e354e92163214f56886ff3f82ac2214c37ae703a4e69ff117e7513a1afe66",
@@ -78,21 +79,21 @@
       "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "575b6372235325fe9b8172d5c8c4bdb64cc5342b2e38f8205ae60635be58855e"
+      "doc/agent-native-architecture.md": "46ca36ff6025eb7c1e95e7b009ae182e8457e40e644381aaf5e0b95616cb1a0c"
     }
   },
   "inference-adapters": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed existing fixture corrections against durable checkpoint baselines, native sample/export/period timing and unchanged instrument loading operations. Focused 9-pass/5-failure evidence does not replace the last full-suite count or advance a gate.",
+    "note": "Reviewed native test-host visibility and fixture corrections against existing module, paging, persistence, native note ownership and libgig 4.6.0 file contracts. Focused 5-pass/4-failure evidence retains remaining failures and does not replace the full-suite baseline. No feature or gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
-      "doc/agent-native-architecture.md": "575b6372235325fe9b8172d5c8c4bdb64cc5342b2e38f8205ae60635be58855e",
+      "doc/agent-native-architecture.md": "46ca36ff6025eb7c1e95e7b009ae182e8457e40e644381aaf5e0b95616cb1a0c",
       "include/StudioInference.h": "ee6fcff4d167dfdc0f6585b0d9a18c429148507c8488ed8508a7e08ec10f6c1b",
       "src/core/StudioInference.cpp": "7a9a7998f5f7e3fd6005fd5ba1ff74c0e9827a90a9c83160428cffa6bf104942"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "575b6372235325fe9b8172d5c8c4bdb64cc5342b2e38f8205ae60635be58855e"
+      "doc/agent-native-architecture.md": "46ca36ff6025eb7c1e95e7b009ae182e8457e40e644381aaf5e0b95616cb1a0c"
     }
   },
   "audio-dsp": {
@@ -114,7 +115,7 @@
   },
   "session-durability": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed existing fixture corrections against durable checkpoint baselines, native sample/export/period timing and unchanged instrument loading operations. Focused 9-pass/5-failure evidence does not replace the last full-suite count or advance a gate.",
+    "note": "Reviewed native test-host visibility and fixture corrections against existing module, paging, persistence, native note ownership and libgig 4.6.0 file contracts. Focused 5-pass/4-failure evidence retains remaining failures and does not replace the full-suite baseline. No feature or gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -136,12 +137,12 @@
       "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "575b6372235325fe9b8172d5c8c4bdb64cc5342b2e38f8205ae60635be58855e"
+      "doc/agent-native-architecture.md": "46ca36ff6025eb7c1e95e7b009ae182e8457e40e644381aaf5e0b95616cb1a0c"
     }
   },
   "live-capture": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed existing fixture corrections against durable checkpoint baselines, native sample/export/period timing and unchanged instrument loading operations. Focused 9-pass/5-failure evidence does not replace the last full-suite count or advance a gate.",
+    "note": "Reviewed native test-host visibility and fixture corrections against existing module, paging, persistence, native note ownership and libgig 4.6.0 file contracts. Focused 5-pass/4-failure evidence retains remaining failures and does not replace the full-suite baseline. No feature or gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
@@ -157,7 +158,7 @@
       "src/core/StudioRecording.cpp": "68e3b7b581975338a567e569a1563452b718525b85bde9d95577b7ec873cd8cb"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "575b6372235325fe9b8172d5c8c4bdb64cc5342b2e38f8205ae60635be58855e"
+      "doc/agent-native-architecture.md": "46ca36ff6025eb7c1e95e7b009ae182e8457e40e644381aaf5e0b95616cb1a0c"
     }
   }
 }

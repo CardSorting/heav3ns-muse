@@ -216,7 +216,7 @@ private slots:
 	}
 	void missingAcceptedGigMemberCannotBeDowngradedToRecoverable()
 	{
-		using namespace test::gigResource; QTemporaryDir directory; const auto source = directory.filePath("bank.gig"); QVERIFY(write(source, root({"pool.gx01"}))); QVERIFY(write(directory.filePath("pool.gx01"), companion())); QString error; const auto accepted = FileResourceSnapshot::captureGig(source, error); QVERIFY(accepted); QVERIFY(QFile::remove(QFileInfo(accepted->path()).absoluteDir().filePath("pool.gx01"))); FileResourceSnapshot::ReadScope reading(source, accepted); auto failure = FileResourceSnapshot::GigCaptureFailure::MissingCompanion; QVERIFY(!FileResourceSnapshot::captureGig(source, error, failure)); QCOMPARE(failure, FileResourceSnapshot::GigCaptureFailure::Other);
+		using namespace test::gigResource; QTemporaryDir directory; const auto source = directory.filePath("bank.gig"); QVERIFY(write(source, root({"pool.gx01"}))); QVERIFY(write(directory.filePath("pool.gx01"), companion())); QString error; const auto accepted = FileResourceSnapshot::captureGig(source, error); QVERIFY(accepted); FileResourceSnapshot::ReadScope reading(source, accepted); QVERIFY(QFile::remove(QFileInfo(accepted->path()).absoluteDir().filePath("pool.gx01"))); auto failure = FileResourceSnapshot::GigCaptureFailure::MissingCompanion; QVERIFY(!FileResourceSnapshot::captureGig(source, error, failure)); QCOMPARE(failure, FileResourceSnapshot::GigCaptureFailure::Other);
 	}
 	void gigCaptureCancellationAndExceptionsCannotReportMissingCompanions_data()
 	{ QTest::addColumn<bool>("exception"); QTest::newRow("cancel") << false; QTest::newRow("exception") << true; }

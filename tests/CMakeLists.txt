@@ -259,6 +259,11 @@ foreach(LMMS_TEST_SRC IN LISTS LMMS_TESTS)
 
 	target_compile_features(${LMMS_TEST_NAME} PRIVATE cxx_std_20)
 	target_compile_definitions(${LMMS_TEST_NAME} PRIVATE LMMS_TESTING)
+	if(NOT WIN32)
+		# These executables can also host native modules. Keep their core
+		# class visibility consistent with lmmsobjs across that boundary.
+		target_compile_options(${LMMS_TEST_NAME} PRIVATE -ULMMS_STATIC_DEFINE)
+	endif()
 endforeach()
 
 set_tests_properties(StudioRuntimeTest PROPERTIES TIMEOUT 300)
