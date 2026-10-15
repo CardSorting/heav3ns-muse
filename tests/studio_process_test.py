@@ -1083,6 +1083,9 @@ def verify_native_opulenz(studio, evidence):
     studio.call("opulenz-isolate", "track.edit", {"track": 0, "muted": True})
     studio.call("opulenz-track", "track.add", {"type": "instrument"})
     studio.call("opulenz-player", "instrument.load", {"track": 9, "instrument": "opulenz"})
+    # OpulenZ scales carrier level by MIDI velocity. Calibrate at full
+    # velocity instead of the default base 63 and 80% note volume (velocity 50).
+    studio.call("opulenz-full-velocity", "midi.configure", {"track": 9, "baseVelocity": 127})
     studio.call("opulenz-name", "track.edit", {"track": 9, "name": "Native OPL calibration"})
     studio.call("opulenz-file", "instrument.resource.set", {"track": 9, "resource": "patch", "path": str(path)})
     native = studio.inspect_parameters("opulenz-discover", "instrument.inspect", {"track": 9})["result"]
@@ -1093,7 +1096,7 @@ def verify_native_opulenz(studio, evidence):
     programs = studio.call("opulenz-programs", "instrument.program.list", {"track": 9, "bank": 0})["result"]
     assert programs["total"] == 128 and [item["program"] for item in programs["programs"]] == list(range(128))
     studio.call("opulenz-clip", "clip.add", {"track": 9, "position": 0})
-    studio.call("opulenz-note", "note.add", {"track": 9, "clip": 0, "position": 0, "length": 96, "key": 69, "volume": 80})
+    studio.call("opulenz-note", "note.add", {"track": 9, "clip": 0, "position": 0, "length": 96, "key": 69, "volume": 100})
 
     def parameter(name, value, identifier):
         parameters = studio.inspect_parameters(identifier + "-discover", "instrument.inspect", {"track": 9})["result"]["parameters"]
@@ -1112,6 +1115,10 @@ def verify_native_opulenz(studio, evidence):
     attenuated = render("opulenz-attenuated-audio")
     assert attenuated["rms"] < fundamental["rms"] / 50
     parameter("Op 2 level", 63, "opulenz-level-restore")
+    # Keep the later preset/restart comparison at the same normal velocity
+    # as its independently created GM instance.
+    studio.call("opulenz-velocity-restore", "midi.configure", {"track": 9, "baseVelocity": 63})
+    studio.call("opulenz-note-volume-restore", "note.edit", {"track": 9, "clip": 0, "note": 0, "volume": 80})
     bad = evidence / "invalid-opl.sbi"
     broken = bytearray(carrier); broken[3] = 0; bad.write_bytes(broken)
     studio.call("opulenz-reject-header", "instrument.resource.set", {"track": 9, "resource": "patch", "path": str(bad)}, ok=False)

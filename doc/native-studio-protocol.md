@@ -861,8 +861,13 @@ XML retains the existing version-1 control fields and adds optional `patchIndex`
 asset dependency. Restoration uses saved controls without opening the SBI file;
 stored GM identity is retained only when its register values match those controls.
 The existing two-operator, nine-voice OPL2 emulator remains authoritative. OPL3,
-complete SBI/project corpus compatibility and actual sound correctness remain
+complete SBI/project corpus compatibility and broader sound correctness remain
 unverified; these changes do not claim additional synthesis or tuning support.
+The native process harness passed its reference SBI pitch/level, GM/preset and
+restart checks during 2026-10-15 macOS arm64/Qt 5 stabilization. The level-range
+check uses MIDI base velocity 127 and note volume 100, then restores normal
+velocities for matched preset/restart comparisons. The legacy velocity scaling
+is part of the native sound; changing velocity also changes the level comparison.
 
 SlicerT stages decoding and native slice analysis before replacing its `sample`;
 failed loading preserves the previous source and boundaries. Empty paths clear

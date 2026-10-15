@@ -12643,3 +12643,41 @@ with the stream running, native error zero, no processing failure and DSP failur
 count zero. It played a short four-note demo at master volume 20 and shut down
 cleanly. This is live native output-stream evidence, not an independently observed
 acoustic receipt or recording-device verification.
+
+### OpulenZ calibration and full native process verification (2026-10-15)
+
+The freeze continues from `fc6926d84`. The remaining OpulenZ level assertion
+compared a carrier at native MIDI velocity 50 with a full-range attenuation
+expectation. The default base velocity 63 and note volume 80 produce that velocity
+through Note::midiVelocity; OpulenZ also applies velocity to its operator level.
+A fresh native probe reproduced the 8.713× RMS ratio without other tracks.
+Calibrating base velocity 127 and note volume 100 produced 232.003× attenuation
+with unchanged DSP. The process fixture keeps its original 50× requirement and
+restores normal velocity before the independent GM/preset/restart comparisons.
+
+`python3 tests/studio_process_test.py --lmms build/native/lmms --output
+build/opulenz-matched-process-evidence` passed the **entire executable process
+harness** in 86.98 seconds on macOS arm64/Qt 5 Debug. Retained traces and the final
+verification artifact cover transport/backends, MIDI/refusal/recovery, native
+track and clip copying, mixer routing/solo/reset/removal, actual effect DSP,
+graphs and Xpressive synthesis, sample/resource/soundbank/Patman/SlicerT/OpulenZ
+audio, tuning, deterministic-provider completion/cancellation and audio
+submission, resource budgets, undo/redo/replay, restart, abrupt-termination
+recovery and native MIDI import. The OpulenZ reference pitch was 439.987 Hz,
+attenuation was 232.003× and the matched GM restart RMS difference was zero.
+
+No C++ DSP, protocol operation or synthesis feature changed in this correction.
+The preceding complete 193-executable run remains the full-suite baseline:
+120 passed and 73 failed before this fixture correction. Its remaining
+backend/lifetime/fixture failures and varying LFO comparison are still retained;
+the successful process harness is not a clean full unit suite or release
+certification. Deterministic inference does not prove real-provider musical
+quality, and acoustic receipt, broad hardware and cross-platform acceptance
+remain separate.
+
+The requested compile/run checkpoint is established for this observed workspace:
+the complete configured native application/plugin/test build passed, the desktop
+demo is running in its Qt event loop, real output-only PortAudio playback
+advanced without reported stream/DSP failure, and the complete native process
+workflow passed. Feature additions remain frozen, and no broader DAW roadmap
+gate is advanced by this checkpoint.

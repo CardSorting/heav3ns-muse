@@ -187,3 +187,19 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   unexplained. A separate actual PortAudio output-only playback advanced the
   native clock without reported stream/DSP failure; acoustic receipt is unverified.
 - Feature development remains frozen; no gate status changes.
+
+### 2026-10-15 — Working compile/run checkpoint
+
+- Calibrated the OpulenZ level fixture at full MIDI velocity while keeping its
+  original 50× attenuation requirement and normal matched preset/restart values.
+  No C++ DSP or capability was added or changed in this correction.
+- The entire native executable process harness passed in 86.98 seconds,
+  including actual audio, assets, effects, tuning, deterministic inference,
+  cancellation, history, restart, abrupt-termination recovery and MIDI import.
+- The complete configured native build, desktop event loop and real output-only
+  PortAudio run establish the requested compile/run checkpoint on macOS arm64/
+  Qt 5 Debug. Feature development remains frozen.
+- The preceding 120-pass/73-failure full-suite baseline remains recorded. This
+  is not a clean full regression suite, real-provider musical acceptance or
+  broader roadmap completion; see the [engineering record](../agent-native-architecture.md#opulenz-calibration-and-full-native-process-verification-2026-10-15).
+  No gate status changes.
