@@ -57,8 +57,8 @@ PatternTrack::PatternTrack(TrackContainer* tc) :
 		s_infoMap[this] = patternNum;
 		setName(tr("Pattern %1").arg(patternNum));
 		store->createClipsForPattern(patternNum);
-		store->setCurrentPattern(patternNum);
 		store->updateComboBox();
+		store->setCurrentPattern(patternNum);
 		connect(this, &Track::nameChanged, store, &PatternStore::updateComboBox);
 	}
 	catch (...)

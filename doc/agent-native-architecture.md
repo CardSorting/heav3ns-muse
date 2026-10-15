@@ -12477,3 +12477,35 @@ desktop processes were left running; GUI interaction and physical audio/MIDI
 delivery remain unverified. No roadmap gate is advanced, and broad stabilization
 remains active. Priorities are the controller owner-retirement crash, pattern
 selection during creation/recovery, and retained backend/lifetime failures.
+
+### Controller retirement and pattern selection stabilization (2026-10-15)
+
+Continuing the freeze from `aeab94ebe`, the native debugger reproduced the
+controller owner-retirement crash. After a controller-removal observer destroyed
+the Song, removeController constructed a new QPointer from the retired owner in
+a notification frame. Removal now stops that continuation when its existing weak
+owner is null. The cleanup guards still complete against surviving weak targets.
+The previously passing result did not prove this unsafe continuation was valid.
+
+PatternTrack construction also selected its new index before refreshing the
+selector's range, clamping selection to the previous last column. Refreshing the
+range first restores intended new-pattern selection and the existing legacy
+project fallback when no saved selection exists. No operation or native XML field
+was added.
+
+The complete native rebuild passed. Focused CTest execution of
+StudioControllerLifecycleTest, StudioControllerDisconnectTest,
+ControllerSettingsLifecycleTest, StudioPatternTest, StudioTrackMoveTest and
+StudioRenderProcessTest passed **6/6 executables** in 17.91 seconds on macOS
+arm64/Qt 5 Debug. Existing native tests cover observer-driven owner destruction,
+controller history/recovery, legacy pattern selection, moves and the actual
+synth/save/render/analyze/restart workflow. The full 193-test suite was not
+repeated after these two repairs; its preceding 116-pass/77-failure observation
+remains the latest complete run.
+
+The broad executable harness then passed recording/MIDI recovery, track movement,
+cloning, clip copying and mixer solo checks. It now fails the mixer's rendered
+audio comparison after a channel move (maximum PCM difference 3750 versus allowed
+3). That audio discrepancy, backend/lifetime failures and broad acceptance remain
+open. GUI interaction, physical audio/MIDI and real-provider musical evaluation
+are not established by these fixtures. No roadmap gate advances.

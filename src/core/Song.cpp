@@ -2131,6 +2131,9 @@ void Song::removeController( Controller * controller )
 	if (!sharedDummy) { target->beginRetirement(); }
 	if (owner && target) { owner->notifyControllerChange(ControllerNotification::Removed, target.data()); }
 	if (owner) { owner->notifyControllerChange(ControllerNotification::Roster); }
+	// Either notification can destroy the Song. Do not construct a new weak
+	// notification frame from the retired this pointer.
+	if (!owner) { return; }
 	ControllerNotificationFrame destruction(this);
 	retire();
 	if (owner) { owner->setModified(); }

@@ -128,3 +128,17 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   recording refusal and MIDI recovery. The [engineering record](../agent-native-architecture.md#native-checkpoint-midi-repair-2026-10-15)
   retains limits and next defects. Feature development remains frozen; no gate
   status changes follow from this run.
+
+### 2026-10-15 — Controller retirement and pattern selection repairs
+
+- Reproduced a controller-removal use-after-free in the native debugger and
+  stopped the continuation after a callback destroys its Song owner.
+- Corrected new-pattern selection by refreshing the selector range before
+  selecting the new column, including legacy project recovery behavior.
+- The complete native rebuild passed; six focused controller, pattern,
+  track-move and synthesis/render/restart executables passed. The previous
+  116-pass/77-failure run remains the latest complete suite observation.
+- The broad process now reaches a rendered-audio mismatch after mixer channel
+  movement. This and retained failures remain open in the
+  [engineering record](../agent-native-architecture.md#controller-retirement-and-pattern-selection-stabilization-2026-10-15).
+  Features remain frozen; no gate status changes.

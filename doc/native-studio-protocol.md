@@ -5863,8 +5863,9 @@ rotation, interleaved tracks, 7/8 meter, clip/model identity, malformed inputs,
 sparse pattern data, reentry/thread affinity, native automation playback and
 precedence, checkpoint history, project round trips and recovery/replay. The
 executable harness also checks owner/content mapping, XML order and rollback.
-None has compiled or run; GUI regression, rendered audio and full-system behavior
-remain unverified.
+StudioTrackMoveTest passed on macOS arm64/Qt 5 during 2026-10-15 stabilization.
+This focused execution does not certify GUI regression, rendered audio or
+full-system behavior.
 
 ## Pattern coordinates and selection recovery
 
@@ -5890,6 +5891,8 @@ Native project saves and recovery checkpoints now store `currentpattern` on the
 project's `head` element. Loading applies a valid zero-based selection after all
 patterns have been constructed. Malformed or out-of-range saved values select
 zero; projects without the attribute retain native constructor selection behavior.
+Construction refreshes the selector range before selecting the new pattern, so
+the new column is selected instead of being clamped to the previous last column.
 `transport.inspect.pattern` reports the current selection. Undo/redo and reopening
 therefore recover the selection captured by the corresponding project checkpoint.
 This does not save live playback or uncheckpointed transport changes.
@@ -5899,9 +5902,10 @@ different columns/meters, native playback ticks, signed and looping arrangement
 offsets, meter changes, deletion at different positions, sparse data, ownership
 notifications, legacy/invalid selection fields, ordinary project loading and
 history/recovery. The process harness additionally checks selection across a
-pattern move, undo/redo, rejected-edit rollback and native XML saving. None has
-compiled or run; GUI regression, rendered output and project ecosystem
-compatibility remain unverified.
+pattern move, undo/redo, rejected-edit rollback and native XML saving.
+StudioPatternTest passed on macOS arm64/Qt 5 during 2026-10-15 stabilization,
+including legacy projects without a saved selection. GUI regression, rendered
+pattern output and project ecosystem compatibility remain unverified.
 
 ## Native copies between tracks and pattern cells
 
@@ -7699,6 +7703,8 @@ retiring target is refused. A weak cleanup guard completes targeted deletion whe
 a removal observer throws or deletes the target itself. An independently running
 destructor retains responsibility for its own completion. Removing the process
 shared dummy preserves that singleton; an ordinary custom dummy remains owned.
+If a removal or roster observer destroys the Song, the old removal continuation
+stops before creating another notification frame from that retired owner.
 Direct controller destruction prunes matching raw roster entries and emits a
 roster notification. These hooks use a separate QObject context that is destroyed
 at the start of Song destruction, before Song members or base-owned tracks die.
@@ -7740,9 +7746,11 @@ blocked direct destruction/cache retirement, destructor-driven row removal,
 creation callbacks/current indices/nesting, inspection interference, rename
 retirement/faults, cancellation before mutation and after construction, shared and
 custom dummy ownership, owner retirement and teardown hook ordering, busy reads,
-peak type admission, and session undo/redo/reopen/replay/recovery. All are
-uncompiled/unrun. The peak admission case uses only a native base-controller type
-tag and supplies no evidence of real peak-effect plugin execution.
+peak type admission, and session undo/redo/reopen/replay/recovery. The original
+source-only step did not execute these cases. The complete fixture passed on
+macOS arm64/Qt 5 during 2026-10-15 stabilization after the returned-owner guard
+repair. The peak admission case uses only a native base-controller type tag and
+supplies no evidence of real peak-effect plugin execution.
 
 The retirement signal and context add native layout/MOC and callback-order
 changes requiring a complete rebuild and native/GUI/plugin/project/DSP regression
