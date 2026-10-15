@@ -1273,7 +1273,7 @@ void AutomationClip::saveSettings( QDomDocument & _doc, QDomElement & _this )
 
 	_this.setAttribute( "pos", startPosition() );
 	_this.setAttribute( "len", length() );
-	_this.setAttribute( "name", name() );
+	_this.setAttribute( "name", Clip::name() );
 	_this.setAttribute( "prog", QString::number( static_cast<int>(progressionType()) ) );
 	_this.setAttribute( "tens", QString::number( getTension() ) );
 	saveControlSettings(_doc, _this, "mute");

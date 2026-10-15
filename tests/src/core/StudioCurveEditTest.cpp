@@ -180,9 +180,10 @@ private slots:
 		instrument = new InstrumentTrack(Engine::getSong()); clip = static_cast<AutomationClip*>((new AutomationTrack(Engine::getSong()))->createClip(0));
 		QVERIFY(clip->addObject(instrument->volumeModel())); clip->setAutoResize(false); clip->changeLength(192); clip->putValue(0, 10, false);
 		QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 123}})).value("ok").toBool());
-		const auto connection = connect(clip.data(), &Clip::dataChanged, this, [] { throw std::runtime_error("fixture runtime curve"); });
+		bool injected = false;
+		const auto connection = connect(clip.data(), &Clip::dataChanged, this, [&] { if (!injected) { injected = true; throw std::runtime_error("fixture runtime curve"); } });
 		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); }); const auto command = request("reject", "automation.point", args());
-		const auto response = runtime.process(command); QVERIFY(!response.value("ok").toBool()); auto replayed = runtime.process(command); QVERIFY(replayed.take("replayed").toBool()); QCOMPARE(replayed, response);
+		const auto response = runtime.process(command); QVERIFY(injected); QVERIFY(!response.value("ok").toBool()); auto replayed = runtime.process(command); QVERIFY(replayed.take("replayed").toBool()); QCOMPARE(replayed, response);
 		clip = static_cast<AutomationClip*>(Engine::getSong()->tracks().at(1)->getClips().at(0));
 		QVERIFY(!clip->getTimeMap().contains(13)); QCOMPARE(clip->valueAt(0), 10.f); QVERIFY(!runtime.stopping());
 	}

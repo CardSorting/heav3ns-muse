@@ -203,6 +203,7 @@ Lv2Manager::Lv2Manager() :
 
 Lv2Manager::~Lv2Manager()
 {
+	Lv2Options::clearSupportedOptions();
 	lilv_world_free(m_world);
 }
 

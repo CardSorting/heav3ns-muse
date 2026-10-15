@@ -251,7 +251,7 @@ void Clip::saveControlSettings(QDomDocument& document, QDomElement& element, con
 	element.setAttribute(muteKey, m_mutedModel.storedValue());
 	element.setAttribute("solo", m_soloModel.storedValue());
 	for (const auto key : {muteKey, QString("solo"), QString("connection")})
-	{ auto node = element.firstChildElement(key); if (!node.isNull()) { node.setAttribute("metadata", 1); } }
+	{ auto node = element.firstChildElement(key); if (!node.isNull()) { node.setAttribute("metadata", 1); node.setAttribute("native_state", 1); } }
 }
 
 void Clip::loadControlSettings(const QDomElement& element, const QString& muteKey)
@@ -282,7 +282,7 @@ void Clip::saveCopyControlSettings(QDomDocument& document, QDomElement& element,
 	if (const auto midi = dynamic_cast<MidiClip*>(this))
 	{
 		if (midi->notes().size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) { throw std::invalid_argument("Native inline control copy has too many note indices"); }
-		auto controls = document.createElement("nativeInlineControls"); controls.setAttribute("metadata", 1); controls.setAttribute("version", 1); controls.setAttribute("count", static_cast<int>(midi->notes().size()));
+		auto controls = document.createElement("nativeInlineControls"); controls.setAttribute("metadata", 1); controls.setAttribute("native_state", 1); controls.setAttribute("version", 1); controls.setAttribute("count", static_cast<int>(midi->notes().size()));
 		for (std::size_t index = 0; index < midi->notes().size(); ++index)
 		{
 			const auto note = midi->notes().at(index); if (!note || !note->detuning()) { continue; }

@@ -1026,12 +1026,12 @@ int main( int argc, char * * argv )
 	}
 
 	const int ret = app->exec();
-	delete app;
 
 	if( destroyEngine )
 	{
 		Engine::destroy();
 	}
+	delete app;
 
 	// ProjectRenderer::updateConsoleProgress() doesn't return line after render
 	if( coreOnly )

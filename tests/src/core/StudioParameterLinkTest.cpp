@@ -21,6 +21,7 @@
 #include "StudioAgent.h"
 #include "StudioCapabilities.h"
 #include "StudioRuntime.h"
+#include "NativeReplayTestAccess.h"
 #include "ValueBuffer.h"
 
 using namespace lmms;
@@ -170,7 +171,7 @@ private slots:
 			QVERIFY(runtime.process(request("undo", "session.undo", {{"summary", true}})).value("ok").toBool()); track = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0)); QVERIFY(!track->volumeModel()->isLinked());
 			QVERIFY(runtime.process(request("redo", "session.redo", {{"summary", true}})).value("ok").toBool()); track = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0)); QVERIFY(track->volumeModel()->isLinkedToModel(track->panningModel())); QCOMPARE(track->volumeModel()->storedValue(), 25.f);
 		}
-		StudioRuntime reopened(directory.path()); QVERIFY2(reopened.open(error), qPrintable(error)); QCOMPARE(reopened.process(linkRequest), receipt); auto track = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0)); QVERIFY(track->volumeModel()->isLinkedToModel(track->panningModel()));
+		StudioRuntime reopened(directory.path()); QVERIFY2(reopened.open(error), qPrintable(error)); VERIFY_NATIVE_REPLAY(reopened.process(linkRequest), receipt); auto track = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0)); QVERIFY(track->volumeModel()->isLinkedToModel(track->panningModel()));
 		QVERIFY(reopened.process(request("unlink", "parameter.unlink", detach(track->volumeModel()))).value("ok").toBool()); QCOMPARE(track->volumeModel()->storedValue(), 25.f); QVERIFY(!track->volumeModel()->isLinked());
 		QVERIFY(reopened.process(request("undo-unlink", "session.undo", {{"summary", true}})).value("ok").toBool()); track = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0)); QVERIFY(track->volumeModel()->isLinkedToModel(track->panningModel()));
 	}

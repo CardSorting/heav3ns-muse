@@ -62,6 +62,7 @@ ConfigManager * ConfigManager::s_instanceOfMe = nullptr;
 
 
 ConfigManager::ConfigManager() :
+	QObject(QCoreApplication::instance()),
 	m_version(defaultVersion()),
 	m_configVersion( UPGRADE_METHODS.size() )
 {
@@ -97,7 +98,7 @@ ConfigManager::ConfigManager() :
 
 ConfigManager::~ConfigManager()
 {
-	saveConfigFile();
+	s_instanceOfMe = nullptr;
 }
 
 

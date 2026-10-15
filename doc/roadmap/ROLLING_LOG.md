@@ -203,3 +203,17 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   is not a clean full regression suite, real-provider musical acceptance or
   broader roadmap completion; see the [engineering record](../agent-native-architecture.md#opulenz-calibration-and-full-native-process-verification-2026-10-15).
   No gate status changes.
+
+
+### 2026-10-15 — Existing unit-suite stabilization
+
+- Preserved persisted clip/inline controls during actual native file writing,
+  while still removing temporary journals; retained empty automation custom names.
+- Corrected configuration ownership and LV2 registration cleanup across engine
+  lifetimes. Fixtures now use the existing replay/plan contracts, one-shot
+  recoverable faults and acknowledged checkpoint baselines.
+- The complete configured native build passed. The next complete suite improved
+  from 120/193 to **155/193 passing**, with **38 failures** retained. Both native
+  executable process tests passed (94.31 seconds and 5.89 seconds).
+- Feature development remains frozen. This is not a clean suite or a gate change;
+  see the [engineering record](../agent-native-architecture.md#unit-suite-stabilization-native-files-and-engine-restarts-2026-10-15).

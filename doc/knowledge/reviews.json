@@ -1,12 +1,12 @@
 {
   "studio-runtime": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed the complete passing native executable process harness after OpulenZ fixture calibration, including recovery/restart and current compile/run checkpoint. Known full-unit-suite failures remain separately recorded.",
+    "note": "Reviewed frozen-feature unit stabilization: native control file retention, configuration/LV2 engine lifetimes, unchanged replay/plan contracts and 155-pass/38-failure full-suite evidence. Remaining failures and hardware limits stay explicit; no roadmap gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/DOCUMENTATION_POLICY.md": "30728aa988e8eac734c04989a68775cf675f11b4c9624f2950a77c3b2bf31ce6",
-      "doc/adr/0002-in-process-qcoreapplication-headless-studio.md": "52142280b5dbe2c00460ce00a4578e779e3ed9b946924cb3f6ede2dba104ecf0",
+      "doc/adr/0002-in-process-qcoreapplication-headless-studio.md": "6dae7a003e325f3eabc448f8c71e3e2c042a778b84cb1d89c18e7471e030cf18",
       "doc/maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md": "3482ca3b9207474ddf495525e6e53fa03c9aef4d46b4c43763f73d3b76ef8f85",
       "doc/maintainers/DAY_1_TO_30_ONBOARDING_ROADMAP.md": "39f04fea29b3300c64b0b117e66b9dae4521c460305a29eac22e0b030bc0a92c",
       "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md": "7eede7c87895a5a2955580f5d47734afe6e609862f67eefbbd23507e8060127b",
@@ -14,32 +14,38 @@
       "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md": "1d449ebbc5dec35ea47b4918ff25d30c7cd7c312ff1a4c36391daf1e7778e181",
       "doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md": "6dd28766601898d4ccfa36febeb9303116a4d731884cf509795ae28243199298",
       "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md": "2a0d81fe064c1eb22364487a5c6285b3aae49f716f0025b7dda52f102538301e",
-      "doc/native-studio-protocol.md": "b059359d472460d0e927361a9c1376dd84463b1f740655498d801b752e84e28c",
+      "doc/native-studio-protocol.md": "f21e374b37d020e0be4eb9ba3e07ebd24872f6a47912acc89146db2846593fc8",
       "doc/playbooks/01-provisioning-and-preflight.md": "b851e3522dd3e12da604c314dd384a035e01df56c7df001a8eae50a7569f66fe",
       "doc/roadmap/MILESTONES.md": "7a25d530a81addb597a80e23a2eeb22d79e7c933c9bfda5cc920cd35dedeb0db",
       "doc/runbooks/ci-failure-and-recovery.md": "af99fc0e4df25157a49bca876009119ae2f5b39cd46a8d84cc20558f4e912cd9",
       "doc/runbooks/knowledge-maintenance.md": "b6df1999d933a3630065ea3c4afda3fcfc3da7ef5f00d2b7a9df06fe1d2a56e8",
       "doc/runbooks/weekly-knowledge-audit.md": "d5ef71a8fa870a15e584043681e1cc662e34f7f417e80b646e0f0dfa7bec9ceb",
+      "include/Lv2Options.h": "dc47dedfcc90e87f7a7139bac2c6e1ffe6b4b7ef6bc29f77f051a61ee82b5fe4",
       "include/StudioRuntime.h": "4e71c40cd19c8d6ece47c714cb46a99145328e79f4c7eeb8b68b7d1e0965b2dc",
       "include/StudioSignals.h": "abb09a7a673b5b118526198089d26d568e102521afc5138f18855aacf86f4d47",
       "include/StudioStdio.h": "43e8ac4d47efea1635386b6365ccf93df5f2e64f9e73b83080d69c58219789dd",
+      "src/core/ConfigManager.cpp": "2bac3f5b26ed65e96955b71d7456283f3e595e49aaa0091bb4b95b1a55525748",
+      "src/core/Engine.cpp": "08064c0b736b16eb18888db8c5b8d98597d7515521b13245ce8922efa28ef271",
       "src/core/StudioRuntime.cpp": "e65e2fb5ae27c8c0046fe1d816cb85848c46a40bba97d21617c180fd620c8b4e",
       "src/core/StudioSignals.cpp": "04d9645a301c9041ba09118b5819193e16524fb2a910d33f6b3d57e7f038191a",
-      "src/core/StudioStdio.cpp": "76478fb8e5e8786388f785f95c64073d48fa6c84e37b50720eeab2773a2f6c61"
+      "src/core/StudioStdio.cpp": "76478fb8e5e8786388f785f95c64073d48fa6c84e37b50720eeab2773a2f6c61",
+      "src/core/lv2/Lv2Manager.cpp": "c6859d7d46225753b356d21bf4684cdcf6f466adce8928efdece7108b45d88b2",
+      "src/core/lv2/Lv2Options.cpp": "e2b100dfd6430c7f77b90b79105a46f2bd1b9167683a4c9bad0e5d4b63a40ea0",
+      "src/core/main.cpp": "931a03ea08459e035dc7695e2f05632e6187cd41787fb1d4a68516fcfa0cc736"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "9c7a53533e1db8cba484336ec58d57e9e1eb2dd910a9bbc72736fcf17e8ae819"
+      "doc/agent-native-architecture.md": "5e7f582f2f13e7ce66a81b6b0057d0b996fb4418f2637529a157870ce0fd2170"
     }
   },
   "capabilities": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed Note MIDI velocity mapping and unchanged OpulenZ operator scaling against full-velocity and matched-restart measurements. Native schema is source-identical to the feature-freeze baseline; this correction changes test data only.",
+    "note": "Reviewed frozen-feature unit stabilization: native control file retention, configuration/LV2 engine lifetimes, unchanged replay/plan contracts and 155-pass/38-failure full-suite evidence. Remaining failures and hardware limits stay explicit; no roadmap gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/adr/0001-native-dsp-model-authority.md": "54842d0c55d43c1522a5ffd0dcace1d02d0448118b8813accacd787356d7e343",
       "doc/maintainers/MAINTAINER_GLOSSARY_AND_LEXICON.md": "6b1ba7b056d59acd8cb1f5435d1bddd9bf663457a7337394cefefd8562793179",
-      "doc/native-studio-protocol.md": "b059359d472460d0e927361a9c1376dd84463b1f740655498d801b752e84e28c",
+      "doc/native-studio-protocol.md": "f21e374b37d020e0be4eb9ba3e07ebd24872f6a47912acc89146db2846593fc8",
       "doc/playbooks/02-zero-hesitation-developer-ergonomics.md": "b031753ab00e33f391aa22c0e5d4ef9f7247666e622a82c02a36401ad128f17e",
       "include/StudioCapabilities.h": "86ce7620d618526a274f67e88fc7c227d80d4748a933f88fb88e2ef542ed5042",
       "src/core/NativeClipEdit.cpp": "560885ee5df2be1d26f3f6dd8e56288d7cdd65cda16e22fa6d09899d1d9042a2",
@@ -54,16 +60,16 @@
       "src/core/StudioCapabilities.cpp": "1be02af0354b9e2bcced689d589187ec18c6857365db34608d1ce1d2a4c4e80f"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "9c7a53533e1db8cba484336ec58d57e9e1eb2dd910a9bbc72736fcf17e8ae819"
+      "doc/agent-native-architecture.md": "5e7f582f2f13e7ce66a81b6b0057d0b996fb4418f2637529a157870ce0fd2170"
     }
   },
   "agent-coordinator": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed working compile/run checkpoint with full native process execution, real output-only PortAudio and running desktop evidence. Feature additions stay frozen; full DAW roadmap and retained unit failures are not certified.",
+    "note": "Reviewed frozen-feature unit stabilization: native control file retention, configuration/LV2 engine lifetimes, unchanged replay/plan contracts and 155-pass/38-failure full-suite evidence. Remaining failures and hardware limits stay explicit; no roadmap gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
-      "doc/agent-native-architecture.md": "9c7a53533e1db8cba484336ec58d57e9e1eb2dd910a9bbc72736fcf17e8ae819",
+      "doc/agent-native-architecture.md": "5e7f582f2f13e7ce66a81b6b0057d0b996fb4418f2637529a157870ce0fd2170",
       "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md": "97eab677d434664f24941848e9cc3fa698bdda93dab52a56eaef26792032c08e",
       "doc/evidence/README.md": "e8e72f455ca5dc8eaa6fb6da797578e6798c91a55f2e7975a76ae1d848520012",
       "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": "e66e354e92163214f56886ff3f82ac2214c37ae703a4e69ff117e7513a1afe66",
@@ -72,21 +78,21 @@
       "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "9c7a53533e1db8cba484336ec58d57e9e1eb2dd910a9bbc72736fcf17e8ae819"
+      "doc/agent-native-architecture.md": "5e7f582f2f13e7ce66a81b6b0057d0b996fb4418f2637529a157870ce0fd2170"
     }
   },
   "inference-adapters": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed successful deterministic-provider completion, cancellation and actual native audio submission within the full process harness. No adapter additions or real-provider musical quality claim.",
+    "note": "Reviewed frozen-feature unit stabilization: native control file retention, configuration/LV2 engine lifetimes, unchanged replay/plan contracts and 155-pass/38-failure full-suite evidence. Remaining failures and hardware limits stay explicit; no roadmap gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
-      "doc/agent-native-architecture.md": "9c7a53533e1db8cba484336ec58d57e9e1eb2dd910a9bbc72736fcf17e8ae819",
+      "doc/agent-native-architecture.md": "5e7f582f2f13e7ce66a81b6b0057d0b996fb4418f2637529a157870ce0fd2170",
       "include/StudioInference.h": "ee6fcff4d167dfdc0f6585b0d9a18c429148507c8488ed8508a7e08ec10f6c1b",
       "src/core/StudioInference.cpp": "7a9a7998f5f7e3fd6005fd5ba1ff74c0e9827a90a9c83160428cffa6bf104942"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "9c7a53533e1db8cba484336ec58d57e9e1eb2dd910a9bbc72736fcf17e8ae819"
+      "doc/agent-native-architecture.md": "5e7f582f2f13e7ce66a81b6b0057d0b996fb4418f2637529a157870ce0fd2170"
     }
   },
   "audio-dsp": {
@@ -108,17 +114,21 @@
   },
   "session-durability": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed passing complete process history, project/preset restore, receipt replay, restart and abrupt-termination recovery evidence. Native XML and ADR decisions remain unchanged in this test-only correction.",
+    "note": "Reviewed frozen-feature unit stabilization: native control file retention, configuration/LV2 engine lifetimes, unchanged replay/plan contracts and 155-pass/38-failure full-suite evidence. Remaining failures and hardware limits stay explicit; no roadmap gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
-      "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": "3229174fc4570e01175c1e6da2a7ae52ed2bfbb7c7e0524598541a37160ddd60",
+      "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": "efd9d2065cf8b51c21e744c4366adebac535e2e86b5447a8b59bbbcc730a9b98",
       "doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md": "c835f8f156d4df3cc26e037009aff2c7f4e30ca5763e31f52963a74039635181",
       "include/StudioAssetStore.h": "40ff2a9766de81ed9d0469f4c402195b9e8e4c9f3aba43463bb72828a62c2aeb",
       "include/StudioAssets.h": "5bb071380f1870d1ab40cfaf22dd88a7a6941d74e207ed3556ef5418faf66e2f",
       "include/StudioProjectResources.h": "2be67fe7eaed780e1f1bebafa72ab158c78c88b83c07cb88da5694fb94cf4c9b",
       "include/StudioResources.h": "d6954a72163916641ee4a4adacdbb545e3748e4f267efda54841035cd7bbc4ef",
       "include/StudioStorage.h": "58b10fb1bf3e469438fda17d8c5655f1f697b8def2b02963586fb6854706e9e4",
+      "src/core/AutomationClip.cpp": "280da96493a9ba67e832a1e36a5eed53f1e12be9554c999050ebe0547dd71457",
+      "src/core/Clip.cpp": "11b61e2efeb289981bc8f7674eeac89bc1ee71a7f3699e7531abfacdd55f7f6d",
+      "src/core/DataFile.cpp": "e451990b3daff71a0ea16dcc0bed5a7454edb86600e4c5f183b7ec794a8271cb",
+      "src/core/InlineAutomation.cpp": "b9a6fb3b07925bc24c6609880cdd9c44cef75129192e4c8bc7e8d0e05182d731",
       "src/core/StudioAssetStore.cpp": "3b048b401847ce083f43190318304716f98f36bcb476e0c54ffe005276b1db28",
       "src/core/StudioAssets.cpp": "d7164af431c3dc32221d553e9ed166a391c7fb840d4fe4732f3beff1e4a028e2",
       "src/core/StudioProjectResources.cpp": "65f2ff523c4f6e9df880466026251d66cb084c4081a7c4d5274a2d0b8abffe08",
@@ -126,17 +136,17 @@
       "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "9c7a53533e1db8cba484336ec58d57e9e1eb2dd910a9bbc72736fcf17e8ae819"
+      "doc/agent-native-architecture.md": "5e7f582f2f13e7ce66a81b6b0057d0b996fb4418f2637529a157870ce0fd2170"
     }
   },
   "live-capture": {
     "reviewer": "Build Stabilization",
-    "note": "Reviewed matched MIDI velocity setup in the native process fixture and bounded output observations without changing capture contracts or claiming physical recording/acoustic receipt.",
+    "note": "Reviewed frozen-feature unit stabilization: native control file retention, configuration/LV2 engine lifetimes, unchanged replay/plan contracts and 155-pass/38-failure full-suite evidence. Remaining failures and hardware limits stay explicit; no roadmap gate advanced.",
     "reviewed_at": "2026-10-15",
     "review_by": "2026-11-14",
     "files": {
       "doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md": "e61907fea24f17777500e148a37e94d93c6303fced3e0589b776b593cfcd053c",
-      "doc/native-studio-protocol.md": "b059359d472460d0e927361a9c1376dd84463b1f740655498d801b752e84e28c",
+      "doc/native-studio-protocol.md": "f21e374b37d020e0be4eb9ba3e07ebd24872f6a47912acc89146db2846593fc8",
       "include/StudioAutomationRecording.h": "c75ef5c140283048d7d2c2184f46a25f576ff0b67ecc056c436776c0f4308236",
       "include/StudioMidiLearn.h": "7565ddd2594c6786645f12630db60629be8ff95dbc0c026a1aa30bba3aef4f66",
       "include/StudioMidiRecording.h": "f4c74028711202cce7da7b5e5b9b8a30f392a5e7c565e93acd1e63c04135daa6",
@@ -147,7 +157,7 @@
       "src/core/StudioRecording.cpp": "68e3b7b581975338a567e569a1563452b718525b85bde9d95577b7ec873cd8cb"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "9c7a53533e1db8cba484336ec58d57e9e1eb2dd910a9bbc72736fcf17e8ae819"
+      "doc/agent-native-architecture.md": "5e7f582f2f13e7ce66a81b6b0057d0b996fb4418f2637529a157870ce0fd2170"
     }
   }
 }

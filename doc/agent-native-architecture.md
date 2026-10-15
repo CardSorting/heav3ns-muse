@@ -12681,3 +12681,68 @@ demo is running in its Qt event loop, real output-only PortAudio playback
 advanced without reported stream/DSP failure, and the complete native process
 workflow passed. Feature additions remain frozen, and no broader DAW roadmap
 gate is advanced by this checkpoint.
+
+
+### Unit-suite stabilization: native files and engine restarts (2026-10-15)
+
+Feature development remains frozen from `bc741e610`; this tranche starts from
+`48a2c1fe9` and addresses existing failures. Native file writing removed every
+`metadata` node, including clip control connections and inline detuning controls.
+Those persistent nodes now also carry `native_state=1`; temporary journal nodes
+are still removed recursively. Automation saves retain the explicit custom name,
+including emptiness, instead of saving a derived attachment/target label.
+Project/template/preset file-write regression scenarios check both retention and
+journal removal. Existing linked clip/inline tests exercise actual files,
+checkpoint history, refusal rollback and reopening.
+
+A native debugger traced repeated-engine crashes to the configuration singleton
+being deleted without clearing its pointer. Configuration now belongs to the
+application; engine teardown still saves it and preserves it for subsequent
+initialization. A second observed abort came from LV2 supported option entries
+surviving their manager. Manager destruction now clears those entries. A native
+fixture verifies configuration identity and values through successive engines.
+
+Fixtures now check the required replay flag and compare every original receipt
+field after removing only that flag (54 assertions). Eighteen scripted plans now
+supply the existing required `decisions` array. Three recoverable curve fault
+injections throw once and verify that injection occurred, avoiding a second
+unsupported exception during rollback destruction. A persistence test now reads
+an existing mixer send without calling its mutating create/update method. Two
+rollback fixtures explicitly checkpoint native edits before expecting them to
+survive a refused operation; uncommitted direct edits are not durable history.
+
+The initial targeted 23-executable run after replay/fault changes passed 3 and
+failed 20. After the first persistence/restart repairs, a 35-executable run passed
+8 and failed 27 in 26.38 seconds; it exposed the LV2 registration abort and invalid
+scripted plans. These observations remain failed evidence, not completion claims.
+The complete native rebuild then passed on macOS arm64 / Qt 5.15.19 Debug with
+AppleClang 21. The subsequent complete suite result is recorded below.
+
+The complete run executed all 193 executables: **155 passed, 38 failed**, in
+320.05 seconds. All note-selection editing, step operations, capability
+preflight, track lifecycle/solo, clip editing/selection copy, linked project/
+track/clip/inline persistence and automation edit/erase/binding executables now
+passed. Backend-selection, recording, PortAudio callback and MIDI retirement
+executables progressed past their previous engine-reinitialization crashes.
+The complete native process harness passed in 94.31 seconds and the focused
+save/load/render/restart process test passed in 5.89 seconds. The capability
+schema function remains byte-identical to the freeze baseline.
+
+The remaining 38 failures are retained, including later backend assertions,
+recording/notification ownership, import fixtures, resource/plugin lifecycle,
+MIDI, scripted asset workflows and GUI lifetime cases. The LFO catch-up test
+passed this run; its earlier varying live-project PCM comparison remains
+unexplained and is not certified resolved. Optional real JACK server cases
+remain skipped without a configured server. This is progress toward a clean
+suite, not full regression completion or a broader roadmap gate.
+
+Review of application teardown also found that the legacy command-line render
+path destroyed the application before its engine. Core-only engine teardown now
+runs before application destruction so application-owned configuration remains
+valid through that cleanup. Desktop teardown retains its existing editor-before-
+engine order. The already-running desktop was left open.
+
+The rebuilt legacy CLI render path also exited successfully with isolated
+configuration and nonzero stereo PCM: 173312 frames at 44100 Hz, 16-bit, peak
+0.398987. This directly exercises its corrected teardown order; it is not a
+hardware-output or acoustic observation.

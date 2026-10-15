@@ -119,12 +119,13 @@ void Engine::destroy()
 #endif
 	deleteHelper( &s_ladspaManager );
 
-	//delete ConfigManager::inst();
 	deleteHelper( &s_projectJournal );
 
 	deleteHelper( &s_song );
 
-	delete ConfigManager::inst();
+	// Configuration belongs to the application, which can host successive
+	// engine lifetimes. Persist it here without invalidating its singleton.
+	ConfigManager::inst()->saveConfigFile();
 
 	// The oscillator FFT plans remain throughout the application lifecycle
 	// due to being expensive to create, and being used whenever a userwave form is changed

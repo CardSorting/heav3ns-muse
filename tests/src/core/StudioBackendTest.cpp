@@ -114,6 +114,18 @@ private slots:
 		QCOMPARE(ConfigManager::inst()->value("audioengine", "audiodev"), QString("unavailable diagnostic audio factory"));
 	}
 
+	void configurationOutlivesSuccessiveEngineLifetimes()
+	{
+		const QPointer<ConfigManager> configuration(ConfigManager::inst());
+		configuration->setValue("test", "engine-restart", "retained");
+		for (int iteration = 0; iteration < 2; ++iteration)
+		{
+			Engine::init(true); Engine::destroy();
+			QVERIFY(configuration); QCOMPARE(ConfigManager::inst(), configuration.data());
+			QCOMPARE(configuration->value("test", "engine-restart"), QString("retained"));
+		}
+	}
+
 	void failedProtocolOutputStopsNativeRuntimeBeforeInputPolling()
 	{
 		Engine::init(true); const auto cleanup = qScopeGuard([] { Engine::destroy(); }); QTemporaryDir session;

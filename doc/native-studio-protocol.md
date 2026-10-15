@@ -1761,7 +1761,12 @@ All four tracked clip types now serialize native mute/solo model controls,
 including stored values and controller connections, instead of only a evaluated
 mute scalar. Scalar attributes remain for older readers, and control/connection
 nodes carry the native metadata flag so older MIDI-clip readers skip them rather
-than treating them as notes. Solo is owned by its clip and participates in native
+than treating them as notes. Persisted control nodes also carry `native_state=1`
+so file serialization retains them while removing temporary journal metadata.
+This includes inline note controls and their linked-model references. An
+automation clip saves its explicit custom name; an empty name remains empty so
+the native target/attachment display label can still be derived after loading.
+Solo is owned by its clip and participates in native
 control discovery. Complete projects can restore cross-clip/track groups.
 
 Tracked native `clone`, `copyTo` and `copyStateTo` entries check complete clip

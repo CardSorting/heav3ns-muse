@@ -52,6 +52,11 @@ void Lv2Options::supportOption(LV2_URID key)
 	Q_ASSERT(result.second);
 }
 
+void Lv2Options::clearSupportedOptions()
+{
+	s_supportedOptions.clear();
+}
+
 
 
 

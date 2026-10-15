@@ -77,7 +77,7 @@ void InlineAutomation::saveControlSettings(QDomDocument& document, QDomElement& 
 
 void InlineAutomation::saveControlSettingsImpl(QDomDocument& document, QDomElement& parent, bool curveControls)
 {
-	auto state = document.createElement("inlinecontrol"); state.setAttribute("metadata", 1); state.setAttribute("version", 1);
+	auto state = document.createElement("inlinecontrol"); state.setAttribute("metadata", 1); state.setAttribute("native_state", 1); state.setAttribute("version", 1);
 	state.setAttribute("hasCurve", m_autoClip ? 1 : 0); FloatModel::saveSettings(document, state, "value");
 	if (curveControls && m_autoClip)
 	{ auto curve = document.createElement("curve"); m_autoClip->saveControlSettings(document, curve, "mute"); state.appendChild(curve); }

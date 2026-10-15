@@ -22,3 +22,17 @@ We introduce an in-process studio mode selected by the `studio` command line arg
 - **Positive**: Zero display server dependencies. The studio runs in minimal headless Docker containers, CI pipelines, and remote SSH sessions.
 - **Positive**: Strict stdio stream isolation: protocol JSON frames are written to `stdout`, while C++ logs and warnings are directed to `stderr`.
 - **Trade-off**: Real audio playback requires explicitly providing `--studio-live` and a hardware driver name.
+
+## Configuration lifetime clarification — 2026-10-15
+
+**Supersedes:** deleting the process configuration singleton during each
+`Engine::destroy()` call. The in-process studio decision above is unchanged.
+
+Configuration is owned by the application QObject lifetime. Engine teardown
+still saves configuration, but leaves it available for a subsequent engine
+initialization in the same application. Application destruction releases the
+singleton and clears its pointer. This avoids use of a freed configuration
+object and preserves the selected configuration across engine lifetimes.
+LV2 supported option registrations are cleared when their manager is destroyed,
+so a new manager registers the new engine's URIDs without retaining the previous
+manager's entries.

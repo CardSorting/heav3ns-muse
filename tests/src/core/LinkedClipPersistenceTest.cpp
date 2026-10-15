@@ -197,6 +197,7 @@ private slots:
 		QVERIFY(runtime.process(request("redo", "session.redo", {{"summary", true}})).value("ok").toBool()); track = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0));
 		auto source = track->getClip(0), copy = track->getClip(1); QVERIFY(copy->mutedModel()->isLinkedToModel(copy->soloModel())); QVERIFY(!copy->mutedModel()->isLinkedToModel(source->mutedModel()));
 		QVERIFY(source->mutedModel()->linkToModel(copy->mutedModel()));
+		QVERIFY(runtime.process(request("linked-baseline", "song.set", {{"tempo", 124}})).value("ok").toBool());
 		QVERIFY(!runtime.process(request("bad-copy", "clip.clone", {{"track", 0}, {"clip", 0}, {"position", 768}})).value("ok").toBool());
 		track = static_cast<InstrumentTrack*>(Engine::getSong()->tracks().at(0)); QCOMPARE(track->numOfClips(), 2); QVERIFY(track->getClip(0)->mutedModel()->isLinkedToModel(track->getClip(1)->mutedModel()));
 		QVERIFY(!runtime.stopping()); QVERIFY(!Engine::getSong()->hasErrors());

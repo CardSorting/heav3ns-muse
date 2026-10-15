@@ -56,6 +56,27 @@ private slots:
 	void cleanupTestCase() { Engine::projectJournal()->setJournalling(journalling); Engine::destroy(); NotePlayHandleManager::free(); }
 	void init() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); Engine::getSong()->clearErrors(); Engine::projectJournal()->setJournalling(false); }
 	void cleanup() { Engine::getSong()->stop(); Engine::getSong()->clearProject(); }
+	void fileWriterRetainsNativeControlsAndDropsJournalMetadata_data()
+	{
+		QTest::addColumn<int>("type");
+		QTest::newRow("project") << int(DataFile::Type::SongProject);
+		QTest::newRow("template") << int(DataFile::Type::SongProjectTemplate);
+		QTest::newRow("preset") << int(DataFile::Type::InstrumentTrackSettings);
+	}
+	void fileWriterRetainsNativeControlsAndDropsJournalMetadata()
+	{
+		QFETCH(int, type); DataFile document(static_cast<DataFile::Type>(type)); auto root = document.content();
+		for (const auto& tag : {QString("inlinecontrol"), QString("muted"), QString("solo"), QString("connection"), QString("nativeInlineControls")})
+		{
+			auto state = document.createElement(tag); state.setAttribute("metadata", 1); state.setAttribute("native_state", 1); state.setAttribute("value", 3);
+			auto journal = document.createElement("journal"); journal.setAttribute("metadata", 1); state.appendChild(journal); root.appendChild(state);
+		}
+		auto temporary = document.createElement("temporary"); temporary.setAttribute("metadata", 1); root.appendChild(temporary);
+		QString xml; QTextStream stream(&xml); document.write(stream); stream.flush(); QDomDocument restored; QVERIFY(restored.setContent(xml));
+		const auto content = restored.documentElement().firstChildElement(root.tagName()); QVERIFY(!content.isNull()); QCOMPARE(content.childNodes().size(), 5);
+		for (auto state = content.firstChildElement(); !state.isNull(); state = state.nextSiblingElement())
+		{ QCOMPARE(state.attribute("value"), QString("3")); QVERIFY(state.firstChild().isNull()); }
+	}
 
 	void nativeProjectRoundTripIncludesUnparentedHelpersAndCurves()
 	{

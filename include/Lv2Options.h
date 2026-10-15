@@ -65,6 +65,8 @@ public:
 	static bool isOptionSupported(LV2_URID key);
 	//! Mark option as supported
 	static void supportOption(LV2_URID key);
+	//! Release the current manager's URIDs before another engine is created.
+	static void clearSupportedOptions();
 
 	//! Initialize an option
 	template<typename Opt, typename Arg>

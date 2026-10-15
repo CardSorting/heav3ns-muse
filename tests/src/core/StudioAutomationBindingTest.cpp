@@ -302,8 +302,9 @@ private slots:
 	{
 		QFETCH(bool, connected); QTemporaryDir directory; QString error; StudioRuntime runtime(directory.path()); QVERIFY(runtime.open(error)); seed();
 		QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 123}})).value("ok").toBool()); const auto command = request("reject", operation(connected), args(connected));
-		const auto connection = connect(clip.data(), &Clip::dataChanged, this, [] { throw std::runtime_error("fixture session binding"); });
-		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); }); const auto receipt = runtime.process(command); QVERIFY(!receipt.value("ok").toBool()); replay(runtime, command, receipt);
+		bool injected = false;
+		const auto connection = connect(clip.data(), &Clip::dataChanged, this, [&] { if (!injected) { injected = true; throw std::runtime_error("fixture session binding"); } });
+		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); }); const auto receipt = runtime.process(command); QVERIFY(injected); QVERIFY(!receipt.value("ok").toBool()); replay(runtime, command, receipt);
 		clip = static_cast<AutomationClip*>(Engine::getSong()->tracks().at(1)->getClips().at(0)); QCOMPARE(clip->objects().size(), std::size_t(1));
 		QCOMPARE(clip->getTimeMap().value(96).getOutTangent(), -0.375f); QVERIFY(!runtime.stopping());
 	}

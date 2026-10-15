@@ -13,7 +13,13 @@
         "src/core/StudioSignals.*",
         "include/StudioRuntime.h",
         "include/StudioStdio.h",
-        "include/StudioSignals.h"
+        "include/StudioSignals.h",
+        "src/core/main.cpp",
+        "src/core/Engine.cpp",
+        "src/core/ConfigManager.cpp",
+        "src/core/lv2/Lv2Manager.cpp",
+        "src/core/lv2/Lv2Options.cpp",
+        "include/Lv2Options.h"
       ],
       "guides": [
         "doc/DOCUMENTATION_POLICY.md",
@@ -124,7 +130,11 @@
         "include/StudioAssets.h",
         "include/StudioAssetStore.h",
         "include/StudioResources.h",
-        "include/StudioProjectResources.h"
+        "include/StudioProjectResources.h",
+        "src/core/DataFile.cpp",
+        "src/core/Clip.cpp",
+        "src/core/InlineAutomation.cpp",
+        "src/core/AutomationClip.cpp"
       ],
       "guides": [
         "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md",

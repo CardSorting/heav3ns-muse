@@ -30,6 +30,7 @@
 #include "StudioAgent.h"
 #include "StudioCapabilities.h"
 #include "StudioRuntime.h"
+#include "NativeReplayTestAccess.h"
 
 using namespace lmms;
 namespace
@@ -178,10 +179,11 @@ private slots:
 			receipt = runtime.process(copy); QVERIFY2(receipt.value("ok").toBool(), qPrintable(receipt.value("error").toString())); QVERIFY(runtime.process(request("undo", "session.undo", {{"summary", true}})).value("ok").toBool()); QCOMPARE(Engine::getSong()->tracks().at(1)->numOfClips(), 0);
 			QVERIFY(runtime.process(request("redo", "session.redo", {{"summary", true}})).value("ok").toBool()); QCOMPARE(Engine::getSong()->tracks().at(1)->numOfClips(), 2);
 			auto source = Engine::getSong()->tracks().at(0); auto outside = source->createClip(768); QVERIFY(source->getClip(0)->mutedModel()->linkToModel(outside->soloModel()));
+			QVERIFY(runtime.process(request("linked-baseline", "song.set", {{"tempo", 124}})).value("ok").toBool());
 			QVERIFY(!runtime.process(request("bad", "clip.selection.copy", {{"items", items()}})).value("ok").toBool()); source = Engine::getSong()->tracks().at(0);
 			QCOMPARE(source->numOfClips(), 3); QVERIFY(source->getClip(0)->mutedModel()->isLinkedToModel(source->getClip(2)->soloModel())); QVERIFY(!runtime.stopping()); QVERIFY(!Engine::getSong()->hasErrors());
 		}
-		StudioRuntime reopened(directory.path()); QVERIFY2(reopened.open(error), qPrintable(error)); QCOMPARE(reopened.process(copy), receipt); auto target = Engine::getSong()->tracks().at(1); QCOMPARE(target->numOfClips(), 2); QVERIFY(target->getClip(0)->mutedModel()->isLinkedToModel(target->getClip(1)->soloModel()));
+		StudioRuntime reopened(directory.path()); QVERIFY2(reopened.open(error), qPrintable(error)); VERIFY_NATIVE_REPLAY(reopened.process(copy), receipt); auto target = Engine::getSong()->tracks().at(1); QCOMPARE(target->numOfClips(), 2); QVERIFY(target->getClip(0)->mutedModel()->isLinkedToModel(target->getClip(1)->soloModel()));
 	}
 
 	void nestedSelectorsFollowEverySourceAndDestination_data()

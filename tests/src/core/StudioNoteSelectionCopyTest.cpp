@@ -27,6 +27,7 @@
 #include "StudioAgent.h"
 #include "StudioCapabilities.h"
 #include "StudioRuntime.h"
+#include "NativeReplayTestAccess.h"
 using namespace lmms;
 namespace
 {
@@ -106,8 +107,8 @@ private slots:
 	void runtimeUndoRedoReopeningAndReceiptsPreserveCopies()
 	{
 		QTemporaryDir directory; QString error; const auto command = request("copy", "note.selection.copy", arguments()); QJsonObject receipt;
-		{ StudioRuntime runtime(directory.path()); QVERIFY(runtime.open(error)); seed(); QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 123}})).value("ok").toBool()); receipt = runtime.process(command); QVERIFY(receipt.value("ok").toBool()); QCOMPARE(runtime.process(command), receipt); QCOMPARE(midi(1)->notes().size(), std::size_t{2}); QVERIFY(runtime.process(request("undo", "session.undo", {{"summary", true}})).value("ok").toBool()); QVERIFY(midi(1)->notes().empty()); QVERIFY(runtime.process(request("redo", "session.redo", {{"summary", true}})).value("ok").toBool()); QVERIFY(linked(midi(1)->notes()[0], midi(1)->notes()[1])); }
-		StudioRuntime reopened(directory.path()); QVERIFY2(reopened.open(error), qPrintable(error)); QCOMPARE(reopened.process(command), receipt); QCOMPARE(midi(1)->notes().size(), std::size_t{2}); QVERIFY(linked(midi(1)->notes()[0], midi(1)->notes()[1]));
+		{ StudioRuntime runtime(directory.path()); QVERIFY(runtime.open(error)); seed(); QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 123}})).value("ok").toBool()); receipt = runtime.process(command); QVERIFY(receipt.value("ok").toBool()); VERIFY_NATIVE_REPLAY(runtime.process(command), receipt); QCOMPARE(midi(1)->notes().size(), std::size_t{2}); QVERIFY(runtime.process(request("undo", "session.undo", {{"summary", true}})).value("ok").toBool()); QVERIFY(midi(1)->notes().empty()); QVERIFY(runtime.process(request("redo", "session.redo", {{"summary", true}})).value("ok").toBool()); QVERIFY(linked(midi(1)->notes()[0], midi(1)->notes()[1])); }
+		StudioRuntime reopened(directory.path()); QVERIFY2(reopened.open(error), qPrintable(error)); VERIFY_NATIVE_REPLAY(reopened.process(command), receipt); QCOMPARE(midi(1)->notes().size(), std::size_t{2}); QVERIFY(linked(midi(1)->notes()[0], midi(1)->notes()[1]));
 	}
 	void runtimeRestoresAfterInsertionFailureOrRetirement_data()
 	{ QTest::addColumn<int>("failure"); QTest::newRow("throwing-notification") << 0; QTest::newRow("retired-result-note") << 1; QTest::newRow("retired-from-song-notification") << 2; }
@@ -118,7 +119,7 @@ private slots:
 		if (failure == 2) { NativeSongTestAccess::setModified(Engine::getSong(), false); }
 		const auto connection = failure == 2 ? QObject::connect(Engine::getSong(), &Song::modified, this, changed, Qt::DirectConnection) : QObject::connect(target, &MidiClip::dataChanged, this, changed, Qt::DirectConnection);
 		const auto cleanup = qScopeGuard([&] { QObject::disconnect(connection); });
-		const auto result = runtime.process(request("reject", "note.selection.copy", arguments())); QVERIFY(!result.value("ok").toBool()); QVERIFY(done); QVERIFY(midi(1)->notes().empty()); QVERIFY(linked(midi()->notes()[0], midi()->notes()[1])); QCOMPARE(runtime.process(request("reject", "note.selection.copy", arguments())), result); QVERIFY(!runtime.stopping());
+		const auto result = runtime.process(request("reject", "note.selection.copy", arguments())); QVERIFY(!result.value("ok").toBool()); QVERIFY(done); QVERIFY(midi(1)->notes().empty()); QVERIFY(linked(midi()->notes()[0], midi()->notes()[1])); VERIFY_NATIVE_REPLAY(runtime.process(request("reject", "note.selection.copy", arguments())), result); QVERIFY(!runtime.stopping());
 	}
 	void queuedSelectionsTrackEachNoteAndBothClipOwners_data()
 	{ QTest::addColumn<int>("change"); QTest::newRow("remove-source-note") << 0; QTest::newRow("replace-source-note") << 1; QTest::newRow("replace-destination-clip") << 2; QTest::newRow("replace-source-clip") << 3; QTest::newRow("same-object-assignment") << 4; }
@@ -133,7 +134,7 @@ private slots:
 	void scriptedNativeAgentPlansCopiesAndInspectsNotes_data() { protocols(); }
 	void scriptedNativeAgentPlansCopiesAndInspectsNotes()
 	{
-		QFETCH(QString, protocol); QFETCH(bool, catalog); QTemporaryDir directory; QString error; StudioRuntime runtime(directory.path(), [&](const QJsonObject&, const QJsonObject&, const StudioInference::Cancelled&) { return decision(protocol, {call("plan", "agent.plan.set", {{"goal", "Repeat the linked phrase"}, {"steps", QJsonArray{"Copy selected notes", "Inspect detuning"}}}), call("copy", "note.selection.copy", arguments(), catalog), call("inspect", "note.detuning.inspect", {{"track", 1}, {"clip", 0}, {"note", 0}}), call("finish", "agent.finish", {{"status", "complete"}, {"summary", "Native phrase copied"}, {"evidence", QJsonArray{"copy", "inspect"}}})}); }); QVERIFY(runtime.open(error)); seed(); QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 123}})).value("ok").toBool()); QVERIFY(runtime.process(request("provider", "session.provider.set", provider(protocol))).value("ok").toBool()); QVERIFY(runtime.process(request("chat", "session.chat", {{"text", "Repeat the selected phrase and retain its detuning relationships."}})).value("ok").toBool()); for (int index = 0; index < 6; ++index) { runtime.advanceAgent(); } QCOMPARE(job(directory).value("status").toString(), QString("complete")); QVERIFY(record(directory, "copy").value("ok").toBool()); QVERIFY(record(directory, "inspect").value("ok").toBool()); QVERIFY(linked(midi(1)->notes()[0], midi(1)->notes()[1]));
+		QFETCH(QString, protocol); QFETCH(bool, catalog); QTemporaryDir directory; QString error; StudioRuntime runtime(directory.path(), [&](const QJsonObject&, const QJsonObject&, const StudioInference::Cancelled&) { return decision(protocol, {call("plan", "agent.plan.set", {{"goal", "Repeat the linked phrase"}, {"steps", QJsonArray{"Copy selected notes", "Inspect detuning"}}, {"decisions", QJsonArray{}}}), call("copy", "note.selection.copy", arguments(), catalog), call("inspect", "note.detuning.inspect", {{"track", 1}, {"clip", 0}, {"note", 0}}), call("finish", "agent.finish", {{"status", "complete"}, {"summary", "Native phrase copied"}, {"evidence", QJsonArray{"copy", "inspect"}}})}); }); QVERIFY(runtime.open(error)); seed(); QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 123}})).value("ok").toBool()); QVERIFY(runtime.process(request("provider", "session.provider.set", provider(protocol))).value("ok").toBool()); QVERIFY(runtime.process(request("chat", "session.chat", {{"text", "Repeat the selected phrase and retain its detuning relationships."}})).value("ok").toBool()); for (int index = 0; index < 6; ++index) { runtime.advanceAgent(); } QCOMPARE(job(directory).value("status").toString(), QString("complete")); QVERIFY(record(directory, "copy").value("ok").toBool()); QVERIFY(record(directory, "inspect").value("ok").toBool()); QVERIFY(linked(midi(1)->notes()[0], midi(1)->notes()[1]));
 	}
 	void staleQueuedCopiesAreSkippedAndReplanned_data()
 	{

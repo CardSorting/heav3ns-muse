@@ -27,6 +27,7 @@
 #include "StudioAgent.h"
 #include "StudioCapabilities.h"
 #include "StudioRuntime.h"
+#include "NativeReplayTestAccess.h"
 
 using namespace lmms;
 namespace
@@ -209,7 +210,7 @@ private slots:
 		{
 			StudioRuntime runtime(directory.path()); QVERIFY(runtime.open(error)); const auto tracks = seed(); tracks.first->setSolo(true);
 			QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 123}})).value("ok").toBool());
-			receipt = runtime.process(command); QVERIFY(receipt.value("ok").toBool()); QCOMPARE(runtime.process(command), receipt);
+			receipt = runtime.process(command); QVERIFY(receipt.value("ok").toBool()); VERIFY_NATIVE_REPLAY(runtime.process(command), receipt);
 			QCOMPARE(Engine::getSong()->countTracks(), 2); QVERIFY(!row(0)->isMutedByModel());
 			QVERIFY(runtime.process(request("undo", "session.undo", {{"summary", true}})).value("ok").toBool());
 			QCOMPARE(Engine::getSong()->countTracks(), 3); QVERIFY(row(0)->isSolo()); QVERIFY(row(0)->isMutedBeforeSolo()); QVERIFY(row(1)->isMutedByModel());
@@ -217,7 +218,7 @@ private slots:
 			QCOMPARE(Engine::getSong()->countTracks(), 2); QVERIFY(!row(0)->isMutedByModel());
 		}
 		StudioRuntime reopened(directory.path()); QVERIFY2(reopened.open(error), qPrintable(error));
-		QCOMPARE(reopened.process(command), receipt); QCOMPARE(Engine::getSong()->countTracks(), 2);
+		VERIFY_NATIVE_REPLAY(reopened.process(command), receipt); QCOMPARE(Engine::getSong()->countTracks(), 2);
 	}
 	void sessionRecoversPreTeardownNotificationFailures_data()
 	{
@@ -241,7 +242,7 @@ private slots:
 		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
 		const auto command = request("reject", failure >= 2 ? "track.clone" : "track.remove", {{"track", 0}});
 		const auto response = runtime.process(command); QVERIFY(invoked); QVERIFY(!response.value("ok").toBool());
-		QCOMPARE(runtime.process(command), response); QCOMPARE(Engine::getSong()->countTracks(), 3);
+		VERIFY_NATIVE_REPLAY(runtime.process(command), response); QCOMPARE(Engine::getSong()->countTracks(), 3);
 		QVERIFY(row(0)->isSolo()); QVERIFY(row(1)->isMutedByModel()); QVERIFY(!runtime.stopping());
 	}
 	void scriptedAgentsCloneThenRemoveThroughNativeTools_data() { protocols(); }
@@ -249,7 +250,7 @@ private slots:
 	{
 		QFETCH(QString, protocol); QFETCH(bool, catalog); QTemporaryDir directory; QString error;
 		StudioRuntime runtime(directory.path(), [&](const QJsonObject&, const QJsonObject&, const StudioInference::Cancelled&) {
-			return decision(protocol, {call("plan", "agent.plan.set", {{"goal", "Duplicate then remove the duplicate"}, {"steps", QJsonArray{"Clone native track", "Remove its returned row"}}}),
+			return decision(protocol, {call("plan", "agent.plan.set", {{"goal", "Duplicate then remove the duplicate"}, {"steps", QJsonArray{"Clone native track", "Remove its returned row"}}, {"decisions", QJsonArray{}}}),
 				call("clone", "track.clone", {{"track", 0}}, catalog), call("remove", "track.remove", {{"track", 3}}, catalog),
 				call("finish", "agent.finish", {{"status", "complete"}, {"summary", "Native clone removed"}, {"evidence", QJsonArray{"clone", "remove"}}})});
 		});

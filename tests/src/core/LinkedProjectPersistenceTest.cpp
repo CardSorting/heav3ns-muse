@@ -69,7 +69,7 @@ private slots:
 		QDomDocument document; QVERIFY(document.setContent(read(path))); QVERIFY(!graph(document).isNull()); QCOMPARE(graph(document).attribute("version"), QString("1"));
 		QVERIFY(load(path)); QVERIFY2(!song->hasErrors(), qPrintable(song->errorSummary()));
 		if (kind == "tracks") { a = track()->volumeModel(); b = static_cast<InstrumentTrack*>(song->tracks().at(1))->volumeModel(); }
-		else if (kind == "mixer") { a = &Engine::mixer()->mixerChannel(1)->m_volumeModel; b = Engine::mixer()->createChannelSend(1, 0)->amount(); }
+		else if (kind == "mixer") { a = &Engine::mixer()->mixerChannel(1)->m_volumeModel; b = Engine::mixer()->channelSendModel(1, 0); }
 		else { a = &song->tempoModel(); b = &Engine::mixer()->mixerChannel(0)->m_volumeModel; }
 		QVERIFY(a->isLinkedToModel(b)); QCOMPARE(a->storedValue(), av); QCOMPARE(b->storedValue(), bv); QCOMPARE(a->countLinks(), std::size_t{1});
 	}

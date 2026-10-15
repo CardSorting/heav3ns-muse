@@ -23,6 +23,7 @@
 #include "StudioAgent.h"
 #include "StudioCapabilities.h"
 #include "StudioRuntime.h"
+#include "NativeReplayTestAccess.h"
 
 using namespace lmms;
 namespace
@@ -205,7 +206,7 @@ private slots:
 		{
 			StudioRuntime runtime(directory.path()); QVERIFY(runtime.open(error)); seed();
 			QVERIFY(runtime.process(request("baseline", "song.set", {{"tempo", 123}})).value("ok").toBool());
-			receipt = runtime.process(command); QVERIFY(receipt.value("ok").toBool()); QCOMPARE(runtime.process(command), receipt);
+			receipt = runtime.process(command); QVERIFY(receipt.value("ok").toBool()); VERIFY_NATIVE_REPLAY(runtime.process(command), receipt);
 			QVERIFY(row(0)->isSolo()); QVERIFY(row(1)->isMutedByModel());
 			QVERIFY(runtime.process(request("undo", "session.undo", {{"summary", true}})).value("ok").toBool());
 			QVERIFY(!row(0)->isSolo()); QVERIFY(row(0)->isMutedByModel()); QVERIFY(!row(1)->isMutedByModel());
@@ -213,7 +214,7 @@ private slots:
 			QVERIFY(row(0)->isSolo()); QVERIFY(row(0)->isMutedBeforeSolo()); QVERIFY(row(1)->isMutedByModel());
 		}
 		StudioRuntime reopened(directory.path()); QVERIFY2(reopened.open(error), qPrintable(error));
-		QCOMPARE(reopened.process(command), receipt); QVERIFY(row(0)->isSolo()); QVERIFY(row(1)->isMutedByModel());
+		VERIFY_NATIVE_REPLAY(reopened.process(command), receipt); QVERIFY(row(0)->isSolo()); QVERIFY(row(1)->isMutedByModel());
 		row(0)->setSolo(false); QVERIFY(row(0)->isMutedByModel()); QVERIFY(!row(1)->isMutedByModel());
 	}
 	void sessionRecoversTrackRetirementAndNativeExceptions_data()
@@ -234,7 +235,7 @@ private slots:
 		QJsonObject args{{"track", 0}, {"solo", true}};
 		if (failure == 0) { args.insert("name", "Retire"); } if (failure == 1) { args.insert("to", 1); }
 		const auto command = request("reject", "track.edit", args); const auto response = runtime.process(command);
-		QVERIFY(invoked); QVERIFY(!response.value("ok").toBool()); QCOMPARE(runtime.process(command), response);
+		QVERIFY(invoked); QVERIFY(!response.value("ok").toBool()); VERIFY_NATIVE_REPLAY(runtime.process(command), response);
 		QCOMPARE(row(0)->name(), originalName); QVERIFY(!row(0)->isSolo()); QVERIFY(row(0)->isMutedByModel());
 		QVERIFY(!row(1)->isMutedByModel()); QVERIFY(!runtime.stopping());
 	}
@@ -243,7 +244,7 @@ private slots:
 	{
 		QFETCH(QString, protocol); QFETCH(bool, catalog); QTemporaryDir directory; QString error;
 		StudioRuntime runtime(directory.path(), [&](const QJsonObject&, const QJsonObject&, const StudioInference::Cancelled&) {
-			return decision(protocol, {call("plan", "agent.plan.set", {{"goal", "Isolate the first track"}, {"steps", QJsonArray{"Select native solo"}}}),
+			return decision(protocol, {call("plan", "agent.plan.set", {{"goal", "Isolate the first track"}, {"steps", QJsonArray{"Select native solo"}}, {"decisions", QJsonArray{}}}),
 				call("solo", "track.edit", {{"track", 0}, {"solo", true}}, catalog),
 				call("finish", "agent.finish", {{"status", "complete"}, {"summary", "Native solo selected"}, {"evidence", QJsonArray{"solo"}}})});
 		});
@@ -252,7 +253,7 @@ private slots:
 		QVERIFY(runtime.process(request("provider", "session.provider.set", provider(protocol))).value("ok").toBool());
 		QVERIFY(runtime.process(request("chat", "session.chat", {{"text", "Solo the first track."}})).value("ok").toBool());
 		for (int index = 0; index < 6; ++index) { runtime.advanceAgent(); }
-		QVERIFY(record(directory, "solo").value("ok").toBool()); QVERIFY(row(0)->isSolo());
+		QVERIFY2(record(directory, "solo").value("ok").toBool(), qPrintable(record(directory, "solo").value("error").toString() + "; " + job(directory).value("lastError").toString())); QVERIFY(row(0)->isSolo());
 		QVERIFY(!row(0)->isMutedByModel()); QVERIFY(row(1)->isMutedByModel());
 		QCOMPARE(job(directory).value("status").toString(), QString("complete"));
 	}

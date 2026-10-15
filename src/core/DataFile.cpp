@@ -872,7 +872,11 @@ void DataFile::cleanMetaNodes( QDomElement _de )
 	{
 		if( node.isElement() )
 		{
-			if( node.toElement().attribute( "metadata" ).toInt() )
+			// Native control state also uses metadata so older MIDI-clip readers
+			// do not interpret its elements as notes. Only journal metadata is
+			// disposable; persisted controls must survive file serialization.
+			if( node.toElement().attribute( "metadata" ).toInt()
+				&& !node.toElement().attribute("native_state").toInt() )
 			{
 				QDomNode ns = node.nextSibling();
 				_de.removeChild( node );

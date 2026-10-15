@@ -56,3 +56,19 @@ point. Interactive attachment still initializes a previously unbound empty curve
 using its target value. This distinction prevents an empty saved global curve
 from turning into active automation that overrides a later tempo or master
 control edit during playback/rendering. The native XML format is unchanged.
+
+## Persisted native control metadata clarification — 2026-10-15
+
+**Supersedes:** treating every `metadata` element as disposable during native
+file serialization. The manifest, lock and receipt decisions remain unchanged.
+
+Clip and inline-note controls retain the legacy `metadata=1` skip marker so older
+MIDI-clip readers do not mistake them for notes. Those persistent elements also
+write `native_state=1`, which exempts them from temporary metadata removal while
+still removing nested journal elements. Their values, controller connections and
+linked-control references must survive actual project/template/preset file
+writing, not only in-memory DOM copies. Files previously written without those
+controls cannot reconstruct the lost values from their remaining graph alone.
+
+Automation clips persist the explicit custom name, including emptiness, rather
+than materializing a derived target/attachment label into a custom name.
