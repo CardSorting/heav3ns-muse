@@ -1,5 +1,7 @@
 # HEAV3NS LMMS engineering record
 
+<!-- docs-scope: operational-record -->
+
 The deliverable is the complete LMMS application with persistent conversational
 agency and optional graphical presentation. Native project models and DSP remain
 authoritative. Structured commands, a rendered song, or an interoperability server

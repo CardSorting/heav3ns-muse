@@ -1,0 +1,93 @@
+{
+  "studio-runtime": {
+    "reviewer": "Studio Runtime Maintainers",
+    "note": "Baseline architecture review for in-process studio runtime and headless lifecycle",
+    "reviewed_at": "2026-10-15",
+    "review_by": "2026-11-15",
+    "files": {
+      "doc/DOCUMENTATION_POLICY.md": "30728aa988e8eac734c04989a68775cf675f11b4c9624f2950a77c3b2bf31ce6",
+      "doc/adr/0002-in-process-qcoreapplication-headless-studio.md": "52142280b5dbe2c00460ce00a4578e779e3ed9b946924cb3f6ede2dba104ecf0",
+      "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
+      "include/StudioRuntime.h": "4e71c40cd19c8d6ece47c714cb46a99145328e79f4c7eeb8b68b7d1e0965b2dc",
+      "src/core/StudioRuntime.cpp": "e65e2fb5ae27c8c0046fe1d816cb85848c46a40bba97d21617c180fd620c8b4e",
+      "src/core/StudioSignals.cpp": "5277706db0da09c14906077c9d5deef291dd8911b3d58eb7276b46828980ac66",
+      "src/core/StudioStdio.cpp": "76478fb8e5e8786388f785f95c64073d48fa6c84e37b50720eeab2773a2f6c61"
+    },
+    "evidence": {
+      "src/core/StudioRuntime.cpp": "e65e2fb5ae27c8c0046fe1d816cb85848c46a40bba97d21617c180fd620c8b4e"
+    }
+  },
+  "capabilities": {
+    "reviewer": "Capabilities Maintainers",
+    "note": "Baseline review of native DAW C++ capability dispatch and schema definitions",
+    "reviewed_at": "2026-10-15",
+    "review_by": "2026-11-15",
+    "files": {
+      "doc/adr/0001-native-dsp-model-authority.md": "54842d0c55d43c1522a5ffd0dcace1d02d0448118b8813accacd787356d7e343",
+      "doc/native-studio-protocol.md": "69a2e21f5c4e059f8bbc52d3b5dbb9220ce67ee7622c941c870a748aea59131e",
+      "include/StudioCapabilities.h": "86ce7620d618526a274f67e88fc7c227d80d4748a933f88fb88e2ef542ed5042",
+      "src/core/StudioCapabilities.cpp": "3704f9595c4f538e5bd3ed54216120c2e7920d527000119ede2c7c6e04b04efd"
+    },
+    "evidence": {
+      "src/core/StudioCapabilities.cpp": "3704f9595c4f538e5bd3ed54216120c2e7920d527000119ede2c7c6e04b04efd"
+    }
+  },
+  "agent-coordinator": {
+    "reviewer": "Agent Systems Maintainers",
+    "note": "Baseline review for agent planning, job budgets and context compaction",
+    "reviewed_at": "2026-10-15",
+    "review_by": "2026-11-15",
+    "files": {
+      "doc/agent-native-architecture.md": "56b264decd910f24e842416305739738fb8d8bc2d9f46876fce07febf283fab1",
+      "include/StudioAgent.h": "0d4af7772e9ca062be7a66999e4b795ff754ac92c896a3ee53788e59494b3212",
+      "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
+    },
+    "evidence": {
+      "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
+    }
+  },
+  "inference-adapters": {
+    "reviewer": "AI Inference Maintainers",
+    "note": "Baseline review of OpenAI and Anthropic HTTP inference clients",
+    "reviewed_at": "2026-10-15",
+    "review_by": "2026-11-15",
+    "files": {
+      "doc/agent-native-architecture.md": "56b264decd910f24e842416305739738fb8d8bc2d9f46876fce07febf283fab1",
+      "include/StudioInference.h": "ee6fcff4d167dfdc0f6585b0d9a18c429148507c8488ed8508a7e08ec10f6c1b",
+      "src/core/StudioInference.cpp": "7a9a7998f5f7e3fd6005fd5ba1ff74c0e9827a90a9c83160428cffa6bf104942"
+    },
+    "evidence": {
+      "src/core/StudioInference.cpp": "7a9a7998f5f7e3fd6005fd5ba1ff74c0e9827a90a9c83160428cffa6bf104942"
+    }
+  },
+  "audio-dsp": {
+    "reviewer": "Audio DSP Maintainers",
+    "note": "Baseline review for offline audio render and technical analysis routines",
+    "reviewed_at": "2026-10-15",
+    "review_by": "2026-11-15",
+    "files": {
+      "doc/adr/0004-two-stage-audio-understanding.md": "1b087da411eff38d677fa4752c3848c4a2d4554f8218f879579f4fd6ff03c17e",
+      "include/StudioAudio.h": "b1f1d3692cae577cee08f7baf3c41d2005f3b06b2c1e3c0e8cb26f1b9964cfae",
+      "src/core/StudioAudio.cpp": "9722f580612fef4edd10dd4f4f6312457299cbef84da8106ff964e7a3f0c0f4a"
+    },
+    "evidence": {
+      "src/core/StudioAudio.cpp": "9722f580612fef4edd10dd4f4f6312457299cbef84da8106ff964e7a3f0c0f4a"
+    }
+  },
+  "session-durability": {
+    "reviewer": "Session Storage Maintainers",
+    "note": "Baseline review of single-writer locks, manifest commits and idempotency receipts",
+    "reviewed_at": "2026-10-15",
+    "review_by": "2026-11-15",
+    "files": {
+      "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": "06f0f80ffef901c2ef1659567be42b4ff07a5d5c0f62df7f4ee6d2c01138490f",
+      "include/StudioStorage.h": "58b10fb1bf3e469438fda17d8c5655f1f697b8def2b02963586fb6854706e9e4",
+      "src/core/StudioAssetStore.cpp": "3b048b401847ce083f43190318304716f98f36bcb476e0c54ffe005276b1db28",
+      "src/core/StudioAssets.cpp": "a15c0f540c2553ab0d0eccfb1b9e76a11d41032b01a65bdfce74d9ecb5090ec7",
+      "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208"
+    },
+    "evidence": {
+      "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208"
+    }
+  }
+}

@@ -1,5 +1,7 @@
 # Native studio development interface
 
+<!-- docs-scope: current-guide -->
+
 This interface is an in-process LMMS implementation under development. It exposes
 native execution and persistence for the larger conversational DAW transformation.
 The source now includes configurable conversational inference, durable production

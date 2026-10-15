@@ -1,0 +1,228 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "path": "doc/CATALOG.md",
+      "title": "Complete Documentation Catalog",
+      "scope": "current-guide",
+      "kind": "navigation",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/DOCUMENTATION_POLICY.md",
+      "title": "Documentation authority and maintenance",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "policy",
+        "authority",
+        "scope",
+        "maintainers"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/adr/0001-native-dsp-model-authority.md",
+      "title": "ADR 0001: Native LMMS C++ Models as Authoritative State",
+      "scope": "decision-record",
+      "kind": "decision",
+      "domains": [
+        "capabilities"
+      ],
+      "curation": "assigned",
+      "keywords": [],
+      "decision": {
+        "status": "accepted",
+        "delivery": "verified",
+        "domain": "capabilities",
+        "owner": "Studio Runtime Maintainers",
+        "date": "2026-10-12",
+        "evidence": [
+          "src/core/StudioCapabilities.cpp"
+        ]
+      }
+    },
+    {
+      "path": "doc/adr/0002-in-process-qcoreapplication-headless-studio.md",
+      "title": "ADR 0002: In-Process QCoreApplication for Headless Studio Execution",
+      "scope": "decision-record",
+      "kind": "decision",
+      "domains": [
+        "studio-runtime"
+      ],
+      "curation": "assigned",
+      "keywords": [],
+      "decision": {
+        "status": "accepted",
+        "delivery": "verified",
+        "domain": "studio-runtime",
+        "owner": "Studio Runtime Maintainers",
+        "date": "2026-10-12",
+        "evidence": [
+          "src/core/StudioRuntime.cpp",
+          "src/core/StudioStdio.cpp"
+        ]
+      }
+    },
+    {
+      "path": "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md",
+      "title": "ADR 0003: Atomic Manifests, File Locks, and Request Idempotency",
+      "scope": "decision-record",
+      "kind": "decision",
+      "domains": [
+        "session-durability"
+      ],
+      "curation": "assigned",
+      "keywords": [],
+      "decision": {
+        "status": "accepted",
+        "delivery": "verified",
+        "domain": "session-durability",
+        "owner": "Session Storage Maintainers",
+        "date": "2026-10-13",
+        "evidence": [
+          "src/core/StudioStorage.cpp"
+        ]
+      }
+    },
+    {
+      "path": "doc/adr/0004-two-stage-audio-understanding.md",
+      "title": "ADR 0004: Two-Stage Audio Understanding (DSP Analysis + Perceptual Critique)",
+      "scope": "decision-record",
+      "kind": "decision",
+      "domains": [
+        "audio-dsp"
+      ],
+      "curation": "assigned",
+      "keywords": [],
+      "decision": {
+        "status": "accepted",
+        "delivery": "verified",
+        "domain": "audio-dsp",
+        "owner": "Audio DSP Maintainers",
+        "date": "2026-10-14",
+        "evidence": [
+          "src/core/StudioAudio.cpp"
+        ]
+      }
+    },
+    {
+      "path": "doc/adr/README.md",
+      "title": "Architectural Decision Records (ADR) Catalog",
+      "scope": "current-guide",
+      "kind": "navigation",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/agent-native-architecture.md",
+      "title": "HEAV3NS LMMS engineering record",
+      "scope": "operational-record",
+      "kind": "evidence",
+      "domains": [
+        "agent-coordinator",
+        "inference-adapters"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "architecture",
+        "invariants",
+        "gates",
+        "subsystems"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/how-to/change-with-documentation.md",
+      "title": "Maintain knowledge with a change",
+      "scope": "current-guide",
+      "kind": "how-to",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [
+        "workflow",
+        "impact",
+        "attestation",
+        "adr"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/knowledge/DECISIONS.md",
+      "title": "Decision lifecycle register",
+      "scope": "current-guide",
+      "kind": "navigation",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/knowledge/DOMAINS.md",
+      "title": "Knowledge domains",
+      "scope": "current-guide",
+      "kind": "navigation",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/knowledge/README.md",
+      "title": "Knowledgebase Governance & Operations",
+      "scope": "current-guide",
+      "kind": "navigation",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/native-studio-protocol.md",
+      "title": "Native studio development interface",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [
+        "studio-runtime",
+        "capabilities"
+      ],
+      "curation": "assigned",
+      "keywords": [
+        "protocol",
+        "json-lines",
+        "schema",
+        "operations"
+      ],
+      "decision": null
+    },
+    {
+      "path": "doc/roadmap/OPEN_ITEMS.md",
+      "title": "Active Roadmap Actions & Open Gates",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    },
+    {
+      "path": "doc/roadmap/ROLLING_LOG.md",
+      "title": "Rolling Roadmap Progress Log",
+      "scope": "current-guide",
+      "kind": "reference",
+      "domains": [],
+      "curation": "unreviewed",
+      "keywords": [],
+      "decision": null
+    }
+  ]
+}

@@ -1,0 +1,265 @@
+{
+  "version": 1,
+  "initiative": "HEAV3NS-MUSE Agent-Native DAW",
+  "active_horizon": "H2",
+  "last_updated": "2026-10-15T17:47:37Z",
+  "horizons": {
+    "H0": {
+      "title": "Foundation & Headless Wire Protocol",
+      "status": "completed",
+      "completion_percentage": 100,
+      "description": "Establish in-process C++ StudioRuntime, headless QCoreApplication initialization, single-writer file locking, line-delimited JSON IPC, and request idempotency."
+    },
+    "H1": {
+      "title": "DAW Capability Coverage & Compositional Agency",
+      "status": "completed",
+      "completion_percentage": 100,
+      "description": "Expose over 60 native LMMS C++ operations covering piano roll, beat sequencing, synth inspection, Scala microtuning, mixer sends, and offline audio rendering."
+    },
+    "H2": {
+      "title": "Production Hardening, Multimodal Audio & Hardware",
+      "status": "open",
+      "completion_percentage": 0,
+      "description": "Real-time multimodal audio critique loop, hardware audio/MIDI hot-swapping, VST3/CLAP hosting via Carla, and automated mastering compliance."
+    },
+    "H3": {
+      "title": "Autonomous Studio Mesh & Timbral Synthesis",
+      "status": "deferred",
+      "completion_percentage": 0,
+      "description": "Multi-agent stem jam sessions, zero-latency WebSocket studio relays, and neural timbre diffusion models."
+    }
+  },
+  "gates": [
+    {
+      "id": "GATE-001",
+      "horizon": "H0",
+      "title": "In-Process StudioRuntime & QCoreApplication Headless Mode",
+      "owner": "Studio Runtime Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-12",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioRuntime.cpp",
+      "criterion": "Application boots headlessly without display server or GUI automation; stdio stream isolation redirects protocol to stdout and diagnostics to stderr."
+    },
+    {
+      "id": "GATE-002",
+      "horizon": "H0",
+      "title": "Line-Delimited JSON-Lines Wire Protocol",
+      "owner": "Studio Runtime Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-12",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioStdio.cpp",
+      "criterion": "1 MiB frame bounds enforced; JSON request parsing and event notification frames ('ready', 'agent', 'shutdown') verified."
+    },
+    {
+      "id": "GATE-003",
+      "horizon": "H0",
+      "title": "Atomic Manifests and Single-Writer File Locking",
+      "owner": "Session Storage Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-13",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioStorage.cpp",
+      "criterion": "Single-writer lock (.lock) prevents multi-process corruption; .mmp checkpoints committed atomically via manifest.json swap."
+    },
+    {
+      "id": "GATE-004",
+      "horizon": "H0",
+      "title": "Request Idempotency & SHA-256 Receipt Caching",
+      "owner": "Session Storage Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-13",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioRuntime.cpp",
+      "criterion": "Mutating requests fingerprinted via SHA-256; duplicate request IDs return cached response with replayed: true."
+    },
+    {
+      "id": "GATE-005",
+      "horizon": "H1",
+      "title": "Arrangement & Track Organization Capabilities",
+      "owner": "Capabilities Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-13",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "track.add, track.edit, track.clone, track.remove, clip.add, clip.edit, clip.split, clip.clone, and clip.selection.copy verified."
+    },
+    {
+      "id": "GATE-006",
+      "horizon": "H1",
+      "title": "Piano Roll Batch Editing & Microtonal Detuning",
+      "owner": "Capabilities Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-14",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "Batch insertion of up to 4096 notes, selection shift, quantize, reverse, length, glue, knife line cut, and per-note detuning curves."
+    },
+    {
+      "id": "GATE-007",
+      "horizon": "H1",
+      "title": "BeatMatrix Step Sequencer Operations",
+      "owner": "Capabilities Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-14",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "step.set, step.resize, and step.clone mutate native beat-and-bassline patterns with unified undo boundaries."
+    },
+    {
+      "id": "GATE-008",
+      "horizon": "H1",
+      "title": "Bundled Instrument Loading & Slicer Integration",
+      "owner": "Capabilities Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-14",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "Loading and inspection for TripleOscillator, ZynAddSubFX, AudioFileProcessor, SlicerT, Patman, and FluidSynth soundbanks."
+    },
+    {
+      "id": "GATE-009",
+      "horizon": "H1",
+      "title": "Scala Microtonal Tuning (.scl) & Keyboard Mapping (.kbm)",
+      "owner": "Capabilities Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-14",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "Loading, programmatic setting, and frequency inspection for Scala .scl and .kbm files."
+    },
+    {
+      "id": "GATE-010",
+      "horizon": "H1",
+      "title": "Mixer Routing, Sends & Cycle Detection",
+      "owner": "Audio DSP Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-14",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "Mixer channel creation, fader/mute/solo adjustments, send routing with cycle prevention, and ordered effect inserts."
+    },
+    {
+      "id": "GATE-011",
+      "horizon": "H1",
+      "title": "Automation & Controller Rack Modulation",
+      "owner": "Capabilities Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-14",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "Automation curves (discrete, linear, Hermite cubic), LFO controllers, and hardware MIDI CC learn binding."
+    },
+    {
+      "id": "GATE-012",
+      "horizon": "H1",
+      "title": "Offline Multi-Codec Audio Rendering & Technical DSP Analysis",
+      "owner": "Audio DSP Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-14",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "src/core/StudioAudio.cpp",
+      "criterion": "Rendering to WAV, FLAC, OGG, and MP3 with audio.analyze reporting peak dBFS, RMS, silence, and clipping."
+    },
+    {
+      "id": "GATE-013",
+      "horizon": "H1",
+      "title": "End-to-End Process Integration Test Harness",
+      "owner": "Testing Maintainers",
+      "status": "completed",
+      "completed_at": "2026-10-15",
+      "verification": "python3 tests/studio_process_test.py",
+      "evidence": "tests/studio_process_test.py",
+      "criterion": "2600-line Python test suite exercises headless process lifecycle, protocol boundaries, signal interruption, and sound rendering."
+    },
+    {
+      "id": "GATE-014",
+      "horizon": "H2",
+      "title": "Live Multimodal Audio Critique & Revision Loop",
+      "owner": "AI Inference Maintainers",
+      "status": "in-progress",
+      "completed_at": null,
+      "verification": "tests/studio_process_test.py",
+      "evidence": "src/core/StudioInference.cpp",
+      "criterion": "audio.listen submits rendered PCM to multimodal audio model and incorporates aesthetic feedback into revised composition."
+    },
+    {
+      "id": "GATE-015",
+      "horizon": "H2",
+      "title": "Hardware Audio/MIDI Backend Hot-Swapping & Fault Recovery",
+      "owner": "Hardware Maintainers",
+      "status": "in-progress",
+      "completed_at": null,
+      "verification": "tests/studio_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "Dynamic backend switching between PortAudio, ALSA, and JACK while running without crashing or corrupting timeline state."
+    },
+    {
+      "id": "GATE-016",
+      "horizon": "H2",
+      "title": "Multi-Track Stem Export & Automated Loudness Compliance",
+      "owner": "Audio DSP Maintainers",
+      "status": "open",
+      "completed_at": null,
+      "verification": "tests/studio_process_test.py",
+      "evidence": "src/core/StudioAudio.cpp",
+      "criterion": "Simultaneous multi-stem rendering with automated LUFS integrated loudness and true-peak compliance checking."
+    },
+    {
+      "id": "GATE-017",
+      "horizon": "H2",
+      "title": "Third-Party VST3 & CLAP Hosting via Carla Bridge",
+      "owner": "Plugin Host Maintainers",
+      "status": "open",
+      "completed_at": null,
+      "verification": "tests/studio_vst_process_test.py",
+      "evidence": "src/core/StudioCapabilities.cpp",
+      "criterion": "Host VST3/CLAP plugins headlessly with parameter inspection and automation modulation."
+    },
+    {
+      "id": "GATE-018",
+      "horizon": "H2",
+      "title": "Cross-Session Musical Preference & Palette Memory",
+      "owner": "Agent Systems Maintainers",
+      "status": "open",
+      "completed_at": null,
+      "verification": "tests/studio_process_test.py",
+      "evidence": "src/core/StudioStorage.cpp",
+      "criterion": "session.memory.set preserves compositional rules, favorite instruments, and sound palettes across studio restarts."
+    },
+    {
+      "id": "GATE-019",
+      "horizon": "H3",
+      "title": "Multi-Agent Jam Session & Stems Collaboration Mesh",
+      "owner": "Agent Systems Maintainers",
+      "status": "deferred",
+      "completed_at": null,
+      "verification": null,
+      "evidence": null,
+      "criterion": "Multiple autonomous agents collaborate on separate tracks with shared tempo clock and stem listening."
+    },
+    {
+      "id": "GATE-020",
+      "horizon": "H3",
+      "title": "Real-Time Neural Timbre Diffusion Synthesis",
+      "owner": "Audio DSP Maintainers",
+      "status": "deferred",
+      "completed_at": null,
+      "verification": null,
+      "evidence": null,
+      "criterion": "Native C++ bridge to real-time neural diffusion models for acoustic timbre transformation."
+    },
+    {
+      "id": "GATE-021",
+      "horizon": "H3",
+      "title": "Zero-Latency WebSocket Remote Studio Relay",
+      "owner": "Studio Runtime Maintainers",
+      "status": "deferred",
+      "completed_at": null,
+      "verification": null,
+      "evidence": null,
+      "criterion": "WebSocket transport allowing browser and mobile agents to drive in-process studio runtime across networks."
+    }
+  ]
+}

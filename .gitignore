@@ -16,3 +16,4 @@ compile_commands.json
 .vs/
 __pycache__/
 *.py[cod]
+.dietcode/

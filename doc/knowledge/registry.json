@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "require_domain_reviews": true,
+  "require_review_evidence": true,
+  "managed_adr_from": 1,
+  "domains": {
+    "studio-runtime": {
+      "title": "Studio Runtime & Process Lifecycle",
+      "owner": "Studio Runtime Maintainers",
+      "sources": [
+        "src/core/StudioRuntime.*",
+        "src/core/StudioStdio.*",
+        "src/core/StudioSignals.*",
+        "include/StudioRuntime.h"
+      ],
+      "guides": [
+        "doc/DOCUMENTATION_POLICY.md",
+        "doc/native-studio-protocol.md",
+        "doc/adr/0002-in-process-qcoreapplication-headless-studio.md"
+      ],
+      "checks": [
+        "python3 tests/studio_process_test.py"
+      ]
+    },
+    "capabilities": {
+      "title": "Native DAW Capabilities & Operation Dispatch",
+      "owner": "Capabilities Maintainers",
+      "sources": [
+        "src/core/StudioCapabilities.*",
+        "include/StudioCapabilities.h"
+      ],
+      "guides": [
+        "doc/native-studio-protocol.md",
+        "doc/adr/0001-native-dsp-model-authority.md"
+      ],
+      "checks": [
+        "python3 tests/studio_process_test.py"
+      ]
+    },
+    "agent-coordinator": {
+      "title": "Agent Execution & Job Lifecycle",
+      "owner": "Agent Systems Maintainers",
+      "sources": [
+        "src/core/StudioAgent.*",
+        "include/StudioAgent.h"
+      ],
+      "guides": [
+        "doc/agent-native-architecture.md"
+      ],
+      "checks": [
+        "python3 tests/studio_process_test.py"
+      ]
+    },
+    "inference-adapters": {
+      "title": "Conversational & Multimodal Inference Adapters",
+      "owner": "AI Inference Maintainers",
+      "sources": [
+        "src/core/StudioInference.*",
+        "include/StudioInference.h"
+      ],
+      "guides": [
+        "doc/agent-native-architecture.md"
+      ],
+      "checks": [
+        "python3 tests/studio_process_test.py"
+      ]
+    },
+    "audio-dsp": {
+      "title": "Audio Synthesis, Rendering & Technical Analysis",
+      "owner": "Audio DSP Maintainers",
+      "sources": [
+        "src/core/StudioAudio.*",
+        "include/StudioAudio.h"
+      ],
+      "guides": [
+        "doc/adr/0004-two-stage-audio-understanding.md"
+      ],
+      "checks": [
+        "python3 tests/studio_process_test.py"
+      ]
+    },
+    "session-durability": {
+      "title": "Session Durability, Manifests & Storage",
+      "owner": "Session Storage Maintainers",
+      "sources": [
+        "src/core/StudioStorage.*",
+        "src/core/StudioAssets.*",
+        "src/core/StudioAssetStore.*",
+        "include/StudioStorage.h"
+      ],
+      "guides": [
+        "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md"
+      ],
+      "checks": [
+        "python3 tests/studio_process_test.py"
+      ]
+    }
+  },
+  "documents": {
+    "doc/DOCUMENTATION_POLICY.md": {
+      "kind": "reference",
+      "keywords": ["policy", "authority", "scope", "maintainers"]
+    },
+    "doc/agent-native-architecture.md": {
+      "kind": "evidence",
+      "keywords": ["architecture", "invariants", "gates", "subsystems"]
+    },
+    "doc/native-studio-protocol.md": {
+      "kind": "reference",
+      "keywords": ["protocol", "json-lines", "schema", "operations"]
+    },
+    "doc/how-to/change-with-documentation.md": {
+      "kind": "how-to",
+      "keywords": ["workflow", "impact", "attestation", "adr"]
+    }
+  },
+  "runbooks": [],
+  "decisions": {
+    "doc/adr/0001-native-dsp-model-authority.md": {
+      "status": "accepted",
+      "delivery": "verified",
+      "domain": "capabilities",
+      "owner": "Studio Runtime Maintainers",
+      "date": "2026-10-12",
+      "evidence": ["src/core/StudioCapabilities.cpp"]
+    },
+    "doc/adr/0002-in-process-qcoreapplication-headless-studio.md": {
+      "status": "accepted",
+      "delivery": "verified",
+      "domain": "studio-runtime",
+      "owner": "Studio Runtime Maintainers",
+      "date": "2026-10-12",
+      "evidence": ["src/core/StudioRuntime.cpp", "src/core/StudioStdio.cpp"]
+    },
+    "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": {
+      "status": "accepted",
+      "delivery": "verified",
+      "domain": "session-durability",
+      "owner": "Session Storage Maintainers",
+      "date": "2026-10-13",
+      "evidence": ["src/core/StudioStorage.cpp"]
+    },
+    "doc/adr/0004-two-stage-audio-understanding.md": {
+      "status": "accepted",
+      "delivery": "verified",
+      "domain": "audio-dsp",
+      "owner": "Audio DSP Maintainers",
+      "date": "2026-10-14",
+      "evidence": ["src/core/StudioAudio.cpp"]
+    }
+  }
+}
