@@ -32,14 +32,14 @@
 #include "AutomationClip.h"
 #include "AutomatableModel.h"
 #include "Controller.h"
-#include "AutomationTrack.h"
+#include "AutomationTrack.h"  // IWYU pragma: keep
 #include "AudioFileDevice.h"
 #include "Engine.h"
 #include "FileResourceIO.h"
 #include "RemotePlugin.h"
 #include "Track.h"
 #include "TrackRenderScope.h"
-#include "PatternStore.h"
+#include "PatternStore.h"  // IWYU pragma: keep
 #include "SampleClip.h"
 #include "SampleRecordingBuffer.h"
 #include "SampleRecordHandle.h"
@@ -50,7 +50,6 @@
 
 #include "AudioEngineWorkerThread.h"
 #include "AudioBusHandle.h"
-#include "Hardware.h"
 #include "Mixer.h"
 #include "Song.h"
 #include "EnvelopeAndLfoParameters.h"
@@ -58,21 +57,43 @@
 #include "ConfigManager.h"
 
 // platform-specific audio-interface-classes
+#ifdef LMMS_HAVE_ALSA
 #include "AudioAlsa.h"
+#endif
+#ifdef LMMS_HAVE_JACK
 #include "AudioJack.h"
+#endif
+#ifdef LMMS_HAVE_SNDIO
 #include "AudioSndio.h"
+#endif
+#ifdef LMMS_HAVE_PORTAUDIO
 #include "AudioPortAudio.h"
+#endif
+#ifdef LMMS_HAVE_PULSEAUDIO
 #include "AudioPulseAudio.h"
+#endif
+#ifdef LMMS_HAVE_SDL
 #include "AudioSdl.h"
+#endif
 #include "AudioDummy.h"
 
 // platform-specific midi-interface-classes
+#ifdef LMMS_HAVE_ALSA
 #include "MidiAlsaRaw.h"
 #include "MidiAlsaSeq.h"
+#endif
+#ifdef LMMS_HAVE_JACK
 #include "MidiJack.h"
+#endif
+#ifdef LMMS_HAVE_SNDIO
 #include "MidiSndio.h"
+#endif
+#ifdef LMMS_HAVE_WINMM
 #include "MidiWinMM.h"
+#endif
+#ifdef LMMS_BUILD_APPLE
 #include "MidiApple.h"
+#endif
 #include "MidiDummy.h"
 
 #include "BufferManager.h"
@@ -299,7 +320,7 @@ void AudioEngine::initDevices()
 
 bool AudioEngine::criticalXRuns() const
 {
-	return cpuLoad() >= 99 && Engine::getSong()->isExporting() == false;
+	return cpuLoad() >= 99 && !Engine::getSong()->isExporting();
 }
 
 
@@ -1088,7 +1109,10 @@ bool AudioEngine::addPlayHandle( PlayHandle* handle )
 	{
 		NotePlayHandleManager::release( (NotePlayHandle*)handle );
 	}
-	else delete handle;
+	else
+	{
+		delete handle;
+	}
 
 	return false;
 }

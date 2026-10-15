@@ -66,7 +66,7 @@
 #endif // SYNC_WITH_SHM_FIFO
 
 #else // BUILD_REMOTE_PLUGIN_CLIENT
-#include "lmms_export.h"
+#include "lmms_export.h"  // IWYU pragma: keep
 #include <QString>
 
 #ifndef SYNC_WITH_SHM_FIFO
@@ -278,7 +278,7 @@ private:
 			return;
 		}
 		if (!validPointers()) { invalidate(); unlock(); memset(_buf, 0, _len); return; }
-		while( isInvalid() == false &&
+		while( !isInvalid() &&
 				_len > m_data->endPtr - m_data->startPtr )
 		{
 			if (!validPointers()) { invalidate(); break; }

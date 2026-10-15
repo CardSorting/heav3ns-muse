@@ -27,6 +27,10 @@
 
 #if __has_include("lmmsconfig.h")
 #include "lmmsconfig.h"
+#elif __has_include("include/lmmsconfig.h")
+#include "include/lmmsconfig.h"
+#elif __has_include("../include/lmmsconfig.h")
+#include "../include/lmmsconfig.h"
 #endif
 #include "LmmsTypes.h"
 

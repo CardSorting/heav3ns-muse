@@ -725,8 +725,7 @@ else()
 	set(STRIP_COMMAND "${NOOP_COMMAND}")
 endif()
 
-# people simply updating git will still have this and mess up build with it
-FILE(REMOVE include/lmmsconfig.h)
+# Fallback include/lmmsconfig.h delegates to ${CMAKE_BINARY_DIR}/lmmsconfig.h when built
 
 FILE(GLOB LMMS_INCLUDES "${CMAKE_SOURCE_DIR}/include/*.h")
 LIST(SORT LMMS_INCLUDES)
