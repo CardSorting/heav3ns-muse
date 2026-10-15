@@ -125,11 +125,13 @@ private slots:
 	void synchronizedTempoFailuresReturnAfterLaterObservers()
 	{
 		QFETCH(bool, nonstandard); QFETCH(bool, unchanged); QFETCH(bool, enabled); Sync synced; synced.setSyncMode(Sync::SyncMode::QuarterNote); synced.setJournalling(enabled);
-		ModelValueNotificationProbe fault(&synced, [&] { fail(nonstandard); }, true); QSignalSpy laterSong(Engine::getSong(), &Song::tempoChanged);
+		ModelValueNotificationProbe fault(&synced, [&] { fail(nonstandard); }, true); int laterSong = 0;
+		const auto connection = connect(Engine::getSong(), &Song::tempoChanged, this, [&] { ++laterSong; }, Qt::DirectConnection);
+		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
 		QSignalSpy laterModel(&Engine::getSong()->tempoModel(), unchanged ? &Model::dataUnchanged : &Model::dataChanged); int caught = 0;
 		try { Engine::getSong()->setTempo(unchanged ? 91 : 123); }
 		catch (const std::runtime_error&) { caught = 1; } catch (int value) { QCOMPARE(value, 319); caught = 2; }
-		QCOMPARE(caught, nonstandard ? 2 : 1); QCOMPARE(laterSong.size(), 1); QCOMPARE(laterModel.size(), 1); QCOMPARE(synced.isJournalling(), enabled);
+		QCOMPARE(caught, nonstandard ? 2 : 1); QCOMPARE(laterSong, 1); QCOMPARE(laterModel.size(), 1); QCOMPARE(synced.isJournalling(), enabled);
 		fault.reset(); Engine::getSong()->setTempo(97); QVERIFY(std::abs(synced.storedValue() - 60000.f / 97) < .001f); QCOMPARE(synced.isJournalling(), enabled);
 		QVERIFY(std::abs(Engine::framesPerTick() - Engine::audioEngine()->outputSampleRate() * 60.f / 48 / 97) < .01f);
 	}
@@ -230,12 +232,14 @@ private slots:
 		const auto receiver = [&] { QVERIFY(NativeValueNotification::report(fault)); };
 		const auto connection = scale ? connect(&synced, &Sync::scaleChanged, this, receiver, Qt::DirectConnection)
 			: connect(&synced, &Sync::syncModeChanged, this, receiver, Qt::DirectConnection);
-		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); });
-		QSignalSpy later(&synced, scale ? SIGNAL(scaleChanged(float)) : SIGNAL(syncModeChanged(lmms::TempoSyncKnobModel::SyncMode)));
+		int later = 0; const auto observer = [&] { ++later; };
+		const auto laterConnection = scale ? connect(&synced, &Sync::scaleChanged, this, observer, Qt::DirectConnection)
+			: connect(&synced, &Sync::syncModeChanged, this, observer, Qt::DirectConnection);
+		const auto disconnect = qScopeGuard([&] { QObject::disconnect(connection); QObject::disconnect(laterConnection); });
 		std::exception_ptr received; try { if (scale) { synced.setScale(2000); } else { synced.setSyncMode(Sync::SyncMode::QuarterNote); } }
 		catch (...) { received = std::current_exception(); }
-		QVERIFY(received == fault); QCOMPARE(later.size(), 1); QObject::disconnect(connection);
-		if (scale) { synced.setScale(3000); } else { synced.setSyncMode(Sync::SyncMode::QuarterNote); } QCOMPARE(later.size(), 2);
+		QVERIFY(received == fault); QCOMPARE(later, 1); QObject::disconnect(connection);
+		if (scale) { synced.setScale(3000); } else { synced.setSyncMode(Sync::SyncMode::QuarterNote); } QCOMPARE(later, 2);
 	}
 
 	void runtimeTempoFailureRestoresHistoryAndSurvivesReopen_data()
