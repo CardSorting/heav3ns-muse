@@ -26,13 +26,13 @@
 #define LMMS_CONSTANTS_H
 
 #if __has_include("lmmsconfig.h")
-#include "lmmsconfig.h"
+#include "lmmsconfig.h"  // IWYU pragma: keep
 #elif __has_include("include/lmmsconfig.h")
-#include "include/lmmsconfig.h"
+#include "include/lmmsconfig.h"  // IWYU pragma: keep
 #elif __has_include("../include/lmmsconfig.h")
-#include "../include/lmmsconfig.h"
+#include "../include/lmmsconfig.h"  // IWYU pragma: keep
 #endif
-#include "LmmsTypes.h"
+#include "LmmsTypes.h"  // IWYU pragma: keep
 
 namespace lmms
 {

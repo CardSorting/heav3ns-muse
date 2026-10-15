@@ -46,7 +46,7 @@
 
 #include "MixHelpers.h"
 
-#include "lmmsconfig.h"
+#include "lmmsconfig.h"  // IWYU pragma: keep
 
 #include "AudioEngineWorkerThread.h"
 #include "AudioBusHandle.h"

@@ -37,7 +37,7 @@
 #include <cstring>
 #include <string>
 
-#include "lmmsconfig.h"
+#include "lmmsconfig.h"  // IWYU pragma: keep
 
 #if !(defined(LMMS_HAVE_SYS_IPC_H) && defined(LMMS_HAVE_SEMAPHORE_H))
 #define SYNC_WITH_SHM_FIFO

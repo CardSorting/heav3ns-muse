@@ -28,11 +28,11 @@
 #include <QString>
 
 #if __has_include("lmms_export.h")
-#include "lmms_export.h"
+#include "lmms_export.h"  // IWYU pragma: keep
 #elif __has_include("include/lmms_export.h")
-#include "include/lmms_export.h"
+#include "include/lmms_export.h"  // IWYU pragma: keep
 #elif __has_include("../include/lmms_export.h")
-#include "../include/lmms_export.h"
+#include "../include/lmms_export.h"  // IWYU pragma: keep
 #else
 #ifndef LMMS_EXPORT
 #define LMMS_EXPORT
