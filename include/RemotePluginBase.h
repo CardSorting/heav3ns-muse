@@ -41,15 +41,15 @@
 
 #if !(defined(LMMS_HAVE_SYS_IPC_H) && defined(LMMS_HAVE_SEMAPHORE_H))
 #define SYNC_WITH_SHM_FIFO
+#endif
 
-#ifdef LMMS_HAVE_PROCESS_H
+#if defined(LMMS_HAVE_PROCESS_H) || __has_include(<process.h>)
 #include <process.h>
 #endif
-#else // !(LMMS_HAVE_SYS_IPC_H && LMMS_HAVE_SEMAPHORE_H)
-#ifdef LMMS_HAVE_UNISTD_H
+
+#if defined(LMMS_HAVE_UNISTD_H) || __has_include(<unistd.h>)
 #include <unistd.h>
 #endif
-#endif // !(LMMS_HAVE_SYS_IPC_H && LMMS_HAVE_SEMAPHORE_H)
 
 #ifdef LMMS_HAVE_PTHREAD_H
 #include <pthread.h>

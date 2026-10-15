@@ -508,7 +508,7 @@ void AudioEngine::renderNextBuffer(PlanarBufferView<float> dst, std::span<const 
 		{ throw std::invalid_argument("Native bus destination requires stereo audio and matching frame counts"); }
 		validate(bus.output);
 	}
-	renderNextBuffer<PlanarBufferView<float>>(dst, buses);
+	renderBufferInternal(dst, buses);
 }
 
 void AudioEngine::copyBusOutputs(std::span<const BusDestination> buses, f_cnt_t sourceOffset, f_cnt_t outputOffset, f_cnt_t frames)

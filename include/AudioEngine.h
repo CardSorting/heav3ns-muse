@@ -29,6 +29,7 @@
 #include <functional>
 #include <exception>
 #include <algorithm>
+#include <span>
 
 #include <QThread>
 #include <QStringList>
@@ -359,10 +360,10 @@ public:
 	 *
 	 * @param dst An audio buffer view to write into. Both interleaved and planar overloads are provided.
 	 */
-	void renderNextBuffer(InterleavedBufferView<float> dst) { renderNextBuffer<InterleavedBufferView<float>>(dst); }
+	void renderNextBuffer(InterleavedBufferView<float> dst) { renderBufferInternal(dst); }
 
 	//! @copydoc renderNextBuffer(InterleavedBufferView<float>)
-	void renderNextBuffer(PlanarBufferView<float> dst) { renderNextBuffer<PlanarBufferView<float>>(dst); }
+	void renderNextBuffer(PlanarBufferView<float> dst) { renderBufferInternal(dst); }
 
 	struct BusDestination
 	{
@@ -411,7 +412,8 @@ private:
 	static void silenceBusOutputs(std::span<const BusDestination> buses);
 	std::uint64_t refreshOutputFailure();
 
-	void renderNextBuffer(AudioBufferView<float> auto dst, std::span<const BusDestination> buses = {})
+	template<AudioBufferView<float> BufferView>
+	void renderBufferInternal(BufferView dst, std::span<const BusDestination> buses = {})
 	{
 		const auto failures = refreshOutputFailure();
 		for (auto offset = f_cnt_t{0}; offset < dst.frames(); )

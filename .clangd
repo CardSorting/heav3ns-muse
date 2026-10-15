@@ -1,0 +1,22 @@
+CompileFlags:
+  Add:
+    - -std=c++20
+    - -Wno-deprecated
+    - -Wno-implicit-function-declaration
+    - -Iinclude
+    - -Isrc
+    - -Ibuild
+    - -Ibuild/src
+    - -Ibuild/include
+    - -I/opt/homebrew/opt/qt/include
+    - -I/opt/homebrew/opt/qt/include/QtCore
+    - -I/opt/homebrew/opt/qt/include/QtGui
+    - -I/opt/homebrew/opt/qt/include/QtWidgets
+    - -I/opt/homebrew/opt/qt/include/QtXml
+    - -I/opt/homebrew/opt/qt/include/QtSvg
+    - -I/opt/homebrew/include
+    - -I/usr/include/qt5
+    - -I/usr/include/qt5/QtCore
+    - -I/usr/include/x86_64-linux-gnu/qt5
+    - -I/usr/include/x86_64-linux-gnu/qt5/QtCore
+    - -DLMMS_EXPORT=
