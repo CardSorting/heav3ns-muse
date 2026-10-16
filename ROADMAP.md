@@ -13,7 +13,7 @@ Machine authority: [register.json](doc/roadmap/register.json) • [Open actions]
 ```text
 [████████████████████] 100%  H0: Foundation & Headless Wire Protocol (completed)
 [████████████████████] 100%  H1: DAW Capability Coverage & Compositional Agency (completed)
-[░░░░░░░░░░░░░░░░░░░░]   0%  H2: Production Hardening, Multimodal Audio & Hardware (in-progress)
+[████░░░░░░░░░░░░░░░░]  20%  H2: Production Hardening, Multimodal Audio & Hardware (in-progress)
 [░░░░░░░░░░░░░░░░░░░░]   0%  H3: Autonomous Studio Mesh & Timbral Synthesis (deferred)
 ```
 
@@ -33,7 +33,7 @@ Expose over 60 native LMMS C++ operations covering piano roll, beat sequencing, 
 
 ### H2: Production Hardening, Multimodal Audio & Hardware
 
-**Status: in-progress (0% complete)**
+**Status: in-progress (20% complete)**
 
 Real-time multimodal audio critique loop, hardware audio/MIDI hot-swapping, VST3/CLAP hosting via Carla, and automated mastering compliance.
 
@@ -64,7 +64,7 @@ Multi-agent stem jam sessions, zero-latency WebSocket studio relays, and neural 
 | `GATE-015` | H2 | Hardware Audio/MIDI Backend Hot-Swapping & Fault Recovery | `in-progress` | python3 tests/studio_process_test.py | [src/core/StudioCapabilities.cpp](src/core/StudioCapabilities.cpp) |
 | `GATE-016` | H2 | Multi-Track Stem Export & Automated Loudness Compliance | `open` | python3 tests/studio_process_test.py | [src/core/StudioAudio.cpp](src/core/StudioAudio.cpp) |
 | `GATE-017` | H2 | Third-Party VST3 & CLAP Hosting via Carla Bridge | `open` | python3 tests/studio_vst_process_test.py | [src/core/StudioCapabilities.cpp](src/core/StudioCapabilities.cpp) |
-| `GATE-018` | H2 | Cross-Session Musical Preference & Palette Memory | `open` | python3 tests/studio_process_test.py | [src/core/StudioStorage.cpp](src/core/StudioStorage.cpp) |
+| `GATE-018` | H2 | Cross-Session Musical Preference & Palette Memory | `completed` | python3 tests/studio_memory_process_test.py --lmms build/native/lmms --output build/studio-memory-evidence | [doc/evidence/test-runs/20261016-gate018-memory-restart.json](doc/evidence/test-runs/20261016-gate018-memory-restart.json) |
 | `GATE-019` | H3 | Multi-Agent Jam Session & Stems Collaboration Mesh | `deferred` | N/A | Future planning |
 | `GATE-020` | H3 | Real-Time Neural Timbre Diffusion Synthesis | `deferred` | N/A | Future planning |
 | `GATE-021` | H3 | Zero-Latency WebSocket Remote Studio Relay | `deferred` | N/A | Future planning |

@@ -716,23 +716,36 @@ Every studio session directory is a self-contained, fully auditable package.
 
 ```text
 my-studio-session/
-├── .lock                     # Single-writer mutual exclusion file lock
-├── manifest.json             # Atomic master session manifest & revision pointer
+├── session.lock              # QLockFile single-writer session lock
+├── session.json              # Atomic manifest, request ledger, preferences & agent state
 ├── checkpoints/              # Immutable LMMS song snapshots
 │   ├── a8b3f120-....mmp      # Snapshot for revision 1
 │   └── 3c91d4e0-....mmp      # Snapshot for revision 2
-├── receipts/                 # SHA-256 idempotency receipts for client calls
-│   ├── e4f1092a-....json     # Execution outcome & response for request ID
+├── receipts/                 # Larger request receipts, created as needed
+│   ├── e4f1092a-....json     # Archived execution outcome & response
 │   └── 90bcf312-....json
-├── memory/                   # Retained cross-session musical preferences & state
-└── archives/                 # Compacted agent conversation context histories
+├── conversations/            # Archived conversation pages, created as needed
+├── tool-results/             # Larger native tool records, created as needed
+├── contexts/                 # Compacted agent inference contexts, created as needed
+└── jobs/                     # Archived agent jobs, created as needed
 ```
 
-### Crash Recovery Guarantees
+Musical preference memory lives in `session.json`. Read it with `session.inspect`
+and replace it with `session.memory.set`; the operation accepts one `memory`
+object. Preserve existing keys when constructing a replacement, or explicitly
+clear memory with `{"memory":{}}`. Preferences are scoped to this session
+directory and remain separate from native project undo/redo and `.mmp` export.
+See the [memory contract](doc/native-studio-protocol.md#musical-preference-memory)
+for examples, replay behavior and recovery guidance.
 
-- **Single-Writer Mutual Exclusion**: A POSIX/Win32 file lock (`.lock`) guarantees that multiple concurrent agents or IDE instances cannot corrupt the same project directory.
-- **Atomic Two-Phase Commits**: New `.mmp` song checkpoints are written to temporary staging files, verified for well-formedness, and committed only when `manifest.json` is atomically swapped.
-- **Orphan File Scrubbing**: Crashes mid-render leave temporary files that are safely detected and garbage-collected upon the next studio startup without user intervention.
+### Persistence and Recovery Behavior
+
+- **Single writer**: `session.lock` rejects another cooperating studio process opening the same session directory.
+- **Acknowledged state**: Native checkpoints precede publication of `session.json` through `QSaveFile`. Recovery validates referenced checkpoints and request records before restoring the project.
+- **Bounded cleanup**: The committed retirement queue supports bounded cleanup of owned obsolete artifacts. It does not establish universal orphan cleanup, power-loss durability or protection from arbitrary external file modification.
+
+Dated platform observations and practical limits are retained in the
+[engineering record](doc/agent-native-architecture.md).
 
 [⬆ Back to Top](#-heav3ns-muse)
 
@@ -782,6 +795,18 @@ Tests external plugin discovery, parameter modulation, and Carla patchbay connec
 python tests/studio_vst_process_test.py --lmms ./build/lmms --output ./build/vst-evidence
 ```
 
+### 5. Musical Preference Memory Restart Harness
+
+Verify explicit palettes, scale preferences and compositional rules across clean
+and abrupt native process restarts, including session isolation and request replay:
+
+```sh
+python3 tests/studio_memory_process_test.py --lmms ./build/lmms --output ./build/studio-memory-evidence
+```
+
+The harness retains local protocol traces and prints public-safe fixture
+observations. It does not evaluate inferred taste or a model's musical judgment.
+
 [⬆ Back to Top](#-heav3ns-muse)
 
 ---
@@ -830,20 +855,13 @@ Yes! Ensure Carla and LV2 dependencies are installed. You can scan plugins with 
 
 ## 🗺️ Implementation Status & Auto-Rolling Roadmap
 
-HEAV3NS-MUSE uses an **evidence-backed auto-rolling roadmap** where milestone completion requires executing physical verification commands and passing automated criteria:
-
-| Subsystem / Gate | Horizon | Implementation Status | Verification Evidence |
-| :--- | :---: | :---: | :--- |
-| **Headless Studio Lifecycle** | `H0` | ✅ Complete | Verified in `tests/studio_process_test.py` across Linux/macOS/Windows |
-| **Line-Delimited JSON Protocol** | `H0` | ✅ Complete | Stream isolation, 1 MiB framing, error propagation verified |
-| **Authoritative LMMS C++ Mutators** | `H1` | ✅ Complete | Over 60 operations implemented in `StudioCapabilities.cpp` |
-| **Piano Roll & Microtuning** | `H1` | ✅ Complete | Batch note insertion, quantization, Scala `.scl`/`.kbm` support |
-| **Synthesizer & Sampler Engines** | `H1` | ✅ Complete | TripleOscillator, AudioFileProcessor, SlicerT, Patman, SF2Player |
-| **Session Persistence & Recovery** | `H0` | ✅ Complete | Atomic manifests, SHA-256 receipts, single-writer lock |
-| **Inference Provider Adapters** | `H1` | ✅ Complete | OpenAI Chat Completions & Anthropic protocols implemented |
-| **Two-Stage Audio Understanding** | `H2` | 🟡 Active (In Flight) | DSP analysis complete; live multimodal evaluation in testing |
-| **Live Audio/MIDI Hardware** | `H2` | 🟡 Active (In Flight) | Hot-swapping backends implemented; hardware edge cases ongoing |
-| **Extended VST3 / CLAP Hosting** | `H2` | 🔵 In Progress | Carla VST2/LV2 supported; native VST3/CLAP roadmap planned |
+HEAV3NS-MUSE uses an **evidence-backed auto-rolling roadmap**. The generated
+[roadmap](ROADMAP.md) owns current horizon and gate status; its
+[open actions](doc/roadmap/OPEN_ITEMS.md) retain the unmet closure criteria.
+The [engineering record](doc/agent-native-architecture.md) owns dated native
+build, memory-restart and audio observations, including platform limits and
+earlier failures. Source presence and fixture passes do not establish
+cross-platform, physical hardware or real-provider musical acceptance.
 
 ### Maintainer Governance & Architectural Records
 

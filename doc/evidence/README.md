@@ -54,3 +54,13 @@ Then use `roadmap-sync.py roll --status completed --receipt` with that registere
 receipt and a criterion review note. A successful register update cannot replace
 the real-provider audio, revised project, hardware, or reference-audio evidence
 required by the relevant gate.
+
+## 4. Receipt-validated gate closures
+
+| Date | Gate | Observed platform | Retained receipt | Scope |
+| :--- | :--- | :--- | :--- | :--- |
+| 2026-10-16 | GATE-018 | macOS arm64 / Qt 5.15.19 Debug | [Memory restart receipt](test-runs/20261016-gate018-memory-restart.json) | Explicit palettes and preferences across seven native process starts and two independent sessions; clean/abrupt restart, replacement, clearing and replay. No inferred taste or cross-platform acceptance. |
+
+See the [engineering record](../agent-native-architecture.md#native-musical-preference-memory-restart-acceptance-2026-10-16)
+for the commands, counts and limits. These artifacts use the completion-receipt
+policy introduced on 2026-10-16; they do not recertify the earlier historical table.

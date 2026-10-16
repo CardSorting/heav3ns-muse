@@ -2,7 +2,7 @@
   "version": 1,
   "initiative": "HEAV3NS-MUSE Agent-Native DAW",
   "active_horizon": "H2",
-  "last_updated": "2026-10-16T15:24:29Z",
+  "last_updated": "2026-10-16T15:28:25Z",
   "horizons": {
     "H0": {
       "title": "Foundation & Headless Wire Protocol",
@@ -19,7 +19,7 @@
     "H2": {
       "title": "Production Hardening, Multimodal Audio & Hardware",
       "status": "in-progress",
-      "completion_percentage": 0,
+      "completion_percentage": 20,
       "description": "Real-time multimodal audio critique loop, hardware audio/MIDI hot-swapping, VST3/CLAP hosting via Carla, and automated mastering compliance."
     },
     "H3": {
@@ -226,12 +226,13 @@
       "horizon": "H2",
       "title": "Cross-Session Musical Preference & Palette Memory",
       "owner": "Agent Systems Maintainers",
-      "status": "open",
-      "completed_at": null,
-      "verification": "python3 tests/studio_process_test.py",
-      "evidence": "src/core/StudioStorage.cpp",
+      "status": "completed",
+      "completed_at": "2026-10-16",
+      "verification": "python3 tests/studio_memory_process_test.py --lmms build/native/lmms --output build/studio-memory-evidence",
+      "evidence": "src/core/StudioRuntime.cpp",
       "criterion": "session.memory.set preserves compositional rules, favorite instruments, sound palettes, scale preferences and stylistic heuristics across studio restarts. Retain a multi-session restart test asserting recalled memory.",
-      "target_date": "2026-11-20"
+      "target_date": "2026-11-20",
+      "completion_receipt": "doc/evidence/test-runs/20261016-gate018-memory-restart.json"
     },
     {
       "id": "GATE-019",

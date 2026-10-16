@@ -3090,6 +3090,37 @@ Session operations are handled by StudioRuntime itself:
 | `session.redo` | Optional `summary` boolean | Restore the next complete native project checkpoint |
 | `session.shutdown` | `{}` | Pause active work, acknowledge, then close the native session |
 
+### Musical preference memory
+
+`session.memory.set` replaces the complete stored JSON object. Use
+`session.inspect` to read current `memory`, merge any preferences the caller
+wants to retain, then submit the replacement with a fresh request ID. Memory
+contains explicit user context such as favorite instruments, sound palettes,
+scale preferences, compositional rules and stylistic heuristics; storing a
+preference does not apply an instrument preset or change native tuning.
+
+```json
+{"id":"palette-v1","op":"session.memory.set","args":{"memory":{"favoriteInstruments":["tripleoscillator"],"soundPalette":[{"name":"Warm lead","instrument":"tripleoscillator"}],"scalePreferences":{"name":"19-EDO","divisions":19},"compositionalRules":["Leave space around the lead"],"stylisticHeuristics":{"density":"sparse"}}}}
+```
+
+The operation accepts exactly one `memory` object; arrays, absent memory and
+extra arguments are rejected. `{"memory":{}}` explicitly clears it. Successful
+acknowledgment follows the native session manifest commit. Memory is scoped to
+the studio session directory, survives process restarts, and is included in the
+agent's reasoning observation. Native project undo/redo operates on project
+checkpoints; it does not roll back the current preference object. Ordinary
+`.mmp` export is a project interchange operation, not a session-memory export.
+
+An identical acknowledged request ID returns its original response with
+`replayed: true`. After replacing memory, replaying an older setter does not
+reapply that older object. Reusing the ID with different content is rejected;
+use a fresh ID for an intentional update and inspect current state after errors.
+See the [restart verification harness](../tests/studio_memory_process_test.py)
+for native process coverage. Dated execution evidence and platform limits belong
+in the [engineering record](agent-native-architecture.md).
+
+### Agent job lifecycle
+
 Each job transitions through queued/running and complete/paused/cancelled states.
 Unsolicited `event: "agent"` messages report transitions alongside request-ID
 responses; clients must handle both. Successful native operations commit their

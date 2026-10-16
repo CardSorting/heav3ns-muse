@@ -73,6 +73,15 @@
       "sha256": "3e7da532e32784cd164fd17274d3a92db9cdd4b171b9be997c7952b4c234f787",
       "status": "verified",
       "note": "Nineteen roadmap governance fixture tests passed; no native or milestone completion claim."
+    },
+    "doc/evidence/test-runs/20261016-gate018-memory-restart.json": {
+      "gate": "GATE-018",
+      "recorded_at": "2026-10-16T15:28:25Z",
+      "command": "python3 tests/studio_memory_process_test.py --lmms build/native/lmms --output build/studio-memory-evidence",
+      "platform": "macOS arm64 / Qt 5.15.19 Debug",
+      "sha256": "e41d01c6a099856b408c67de5add147b92f00c2530005a3867ab6f154c7619ec",
+      "status": "verified",
+      "note": "Verified explicit musical palette and preference persistence through seven native starts, clean and abrupt recovery, isolation and replay; no inferred-taste or cross-platform acceptance."
     }
   }
 }

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-16T15:24:29Z",
+  "compiled_at": "2026-10-16T15:29:22Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
@@ -85,7 +85,7 @@
     "H2": {
       "title": "Production Hardening, Multimodal Audio & Hardware",
       "status": "in-progress",
-      "completion_percentage": 0
+      "completion_percentage": 20
     },
     "H3": {
       "title": "Autonomous Studio Mesh & Timbral Synthesis",
@@ -217,8 +217,8 @@
       "id": "GATE-018",
       "horizon": "H2",
       "title": "Cross-Session Musical Preference & Palette Memory",
-      "status": "open",
-      "evidence": "src/core/StudioStorage.cpp"
+      "status": "completed",
+      "evidence": "src/core/StudioRuntime.cpp"
     },
     {
       "id": "GATE-019",
@@ -280,6 +280,12 @@
       "sha256": ""
     },
     {
+      "gate": "GATE-018",
+      "artifact": "doc/evidence/test-runs/20261016-gate018-memory-restart.json",
+      "command": "python3 tests/studio_memory_process_test.py --lmms build/native/lmms --output build/studio-memory-evidence",
+      "sha256": "e41d01c6a099"
+    },
+    {
       "gate": "roadmap-governance",
       "artifact": "doc/evidence/test-runs/20261016-roadmap-governance.json",
       "command": "python3 tests/test_roadmap_sync.py",
@@ -296,7 +302,7 @@
     "studio-runtime": {
       "title": "Studio Runtime & Process Lifecycle",
       "status": "reviewed",
-      "reviewer": "Roadmap Governance Review",
+      "reviewer": "Native Memory Acceptance Review",
       "review_by": "2026-11-15",
       "guides_count": 15,
       "sources_patterns": [
@@ -323,7 +329,7 @@
     "capabilities": {
       "title": "Native DAW Capabilities & Operation Dispatch",
       "status": "reviewed",
-      "reviewer": "Roadmap Governance Review",
+      "reviewer": "Native Memory Acceptance Review",
       "review_by": "2026-11-15",
       "guides_count": 4,
       "sources_patterns": [
@@ -347,7 +353,7 @@
     "agent-coordinator": {
       "title": "Agent Execution & Job Lifecycle",
       "status": "reviewed",
-      "reviewer": "Roadmap Governance Review",
+      "reviewer": "Native Memory Acceptance Review",
       "review_by": "2026-11-15",
       "guides_count": 5,
       "sources_patterns": [
@@ -358,7 +364,7 @@
     "inference-adapters": {
       "title": "Conversational & Multimodal Inference Adapters",
       "status": "reviewed",
-      "reviewer": "Roadmap Governance Review",
+      "reviewer": "Native Memory Acceptance Review",
       "review_by": "2026-11-15",
       "guides_count": 1,
       "sources_patterns": [
@@ -369,7 +375,7 @@
     "audio-dsp": {
       "title": "Audio Synthesis, Rendering & Technical Analysis",
       "status": "reviewed",
-      "reviewer": "Roadmap Governance Review",
+      "reviewer": "Native Memory Acceptance Review",
       "review_by": "2026-11-15",
       "guides_count": 4,
       "sources_patterns": [
@@ -399,7 +405,7 @@
     "session-durability": {
       "title": "Session Durability, Manifests & Storage",
       "status": "reviewed",
-      "reviewer": "Roadmap Governance Review",
+      "reviewer": "Native Memory Acceptance Review",
       "review_by": "2026-11-15",
       "guides_count": 2,
       "sources_patterns": [
@@ -417,13 +423,14 @@
         "src/core/Clip.cpp",
         "src/core/InlineAutomation.cpp",
         "src/core/AutomationClip.cpp",
-        "tests/src/core/StudioAssetsTest.cpp"
+        "tests/src/core/StudioAssetsTest.cpp",
+        "tests/studio_memory_process_test.py"
       ]
     },
     "roadmap-governance": {
       "title": "Roadmap Transitions & Completion Evidence",
       "status": "reviewed",
-      "reviewer": "Roadmap Governance Review",
+      "reviewer": "Native Memory Acceptance Review",
       "review_by": "2026-11-15",
       "guides_count": 3,
       "sources_patterns": [
@@ -434,7 +441,7 @@
     "live-capture": {
       "title": "Live Recording, MIDI Ingestion & Automation Capture",
       "status": "reviewed",
-      "reviewer": "Roadmap Governance Review",
+      "reviewer": "Native Memory Acceptance Review",
       "review_by": "2026-11-15",
       "guides_count": 2,
       "sources_patterns": [

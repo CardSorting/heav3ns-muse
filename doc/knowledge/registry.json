@@ -164,7 +164,8 @@
         "src/core/Clip.cpp",
         "src/core/InlineAutomation.cpp",
         "src/core/AutomationClip.cpp",
-        "tests/src/core/StudioAssetsTest.cpp"
+        "tests/src/core/StudioAssetsTest.cpp",
+        "tests/studio_memory_process_test.py"
       ],
       "guides": [
         "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md",

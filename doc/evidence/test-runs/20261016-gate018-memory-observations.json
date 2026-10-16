@@ -1,0 +1,519 @@
+{
+  "status": "passed",
+  "gate": "GATE-018",
+  "applicationType": "QCoreApplication",
+  "platform": "Darwin arm64",
+  "binarySha256": "401ed4e2f5bef2a20a7fdc43c38a3d8af99152f3aa227219c3cfd82400e3da2c",
+  "processStarts": 7,
+  "independentSessions": 2,
+  "gracefulExits": 6,
+  "abruptExitCode": -9,
+  "memoryAssertions": 18,
+  "projectPreserved": true,
+  "durationSeconds": 7.46,
+  "observations": [
+    {
+      "case": "a-initially-empty",
+      "observedMemory": {},
+      "manifestMatches": true,
+      "revision": 0
+    },
+    {
+      "case": "a-acknowledged-initial-palette",
+      "observedMemory": {
+        "compositionalRules": [
+          "Leave space around the lead",
+          "Keep bass below the melody"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator",
+          "audiofileprocessor"
+        ],
+        "notes": "Préfère des couleurs chaudes — 音楽 🎹",
+        "retiredRule": "Replace this preference explicitly later",
+        "scalePreferences": {
+          "divisions": 19,
+          "name": "19-EDO",
+          "rootMidi": 60,
+          "stepsCents": [
+            0,
+            63.1578947368,
+            126.3157894737
+          ]
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 12,
+              "detuneCents": 3.5
+            },
+            "instrument": "tripleoscillator",
+            "name": "Warm lead"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "sparse",
+          "swing": 0.12
+        }
+      },
+      "manifestMatches": true,
+      "revision": 5
+    },
+    {
+      "case": "b-does-not-inherit-a",
+      "observedMemory": {},
+      "manifestMatches": true,
+      "revision": 0
+    },
+    {
+      "case": "b-acknowledged-independent-palette",
+      "observedMemory": {
+        "favoriteInstruments": [
+          "patman"
+        ],
+        "notes": "Separate session, separate taste"
+      },
+      "manifestMatches": true,
+      "revision": 0
+    },
+    {
+      "case": "a-first-clean-restart",
+      "observedMemory": {
+        "compositionalRules": [
+          "Leave space around the lead",
+          "Keep bass below the melody"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator",
+          "audiofileprocessor"
+        ],
+        "notes": "Préfère des couleurs chaudes — 音楽 🎹",
+        "retiredRule": "Replace this preference explicitly later",
+        "scalePreferences": {
+          "divisions": 19,
+          "name": "19-EDO",
+          "rootMidi": 60,
+          "stepsCents": [
+            0,
+            63.1578947368,
+            126.3157894737
+          ]
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 12,
+              "detuneCents": 3.5
+            },
+            "instrument": "tripleoscillator",
+            "name": "Warm lead"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "sparse",
+          "swing": 0.12
+        }
+      },
+      "manifestMatches": true,
+      "revision": 6
+    },
+    {
+      "case": "a-replayed-original-request",
+      "observedMemory": {
+        "compositionalRules": [
+          "Leave space around the lead",
+          "Keep bass below the melody"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator",
+          "audiofileprocessor"
+        ],
+        "notes": "Préfère des couleurs chaudes — 音楽 🎹",
+        "retiredRule": "Replace this preference explicitly later",
+        "scalePreferences": {
+          "divisions": 19,
+          "name": "19-EDO",
+          "rootMidi": 60,
+          "stepsCents": [
+            0,
+            63.1578947368,
+            126.3157894737
+          ]
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 12,
+              "detuneCents": 3.5
+            },
+            "instrument": "tripleoscillator",
+            "name": "Warm lead"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "sparse",
+          "swing": 0.12
+        }
+      },
+      "manifestMatches": true,
+      "revision": 6
+    },
+    {
+      "case": "a-invalid-memory-0-preserved",
+      "observedMemory": {
+        "compositionalRules": [
+          "Leave space around the lead",
+          "Keep bass below the melody"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator",
+          "audiofileprocessor"
+        ],
+        "notes": "Préfère des couleurs chaudes — 音楽 🎹",
+        "retiredRule": "Replace this preference explicitly later",
+        "scalePreferences": {
+          "divisions": 19,
+          "name": "19-EDO",
+          "rootMidi": 60,
+          "stepsCents": [
+            0,
+            63.1578947368,
+            126.3157894737
+          ]
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 12,
+              "detuneCents": 3.5
+            },
+            "instrument": "tripleoscillator",
+            "name": "Warm lead"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "sparse",
+          "swing": 0.12
+        }
+      },
+      "manifestMatches": true,
+      "revision": 6
+    },
+    {
+      "case": "a-invalid-memory-1-preserved",
+      "observedMemory": {
+        "compositionalRules": [
+          "Leave space around the lead",
+          "Keep bass below the melody"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator",
+          "audiofileprocessor"
+        ],
+        "notes": "Préfère des couleurs chaudes — 音楽 🎹",
+        "retiredRule": "Replace this preference explicitly later",
+        "scalePreferences": {
+          "divisions": 19,
+          "name": "19-EDO",
+          "rootMidi": 60,
+          "stepsCents": [
+            0,
+            63.1578947368,
+            126.3157894737
+          ]
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 12,
+              "detuneCents": 3.5
+            },
+            "instrument": "tripleoscillator",
+            "name": "Warm lead"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "sparse",
+          "swing": 0.12
+        }
+      },
+      "manifestMatches": true,
+      "revision": 6
+    },
+    {
+      "case": "a-invalid-memory-2-preserved",
+      "observedMemory": {
+        "compositionalRules": [
+          "Leave space around the lead",
+          "Keep bass below the melody"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator",
+          "audiofileprocessor"
+        ],
+        "notes": "Préfère des couleurs chaudes — 音楽 🎹",
+        "retiredRule": "Replace this preference explicitly later",
+        "scalePreferences": {
+          "divisions": 19,
+          "name": "19-EDO",
+          "rootMidi": 60,
+          "stepsCents": [
+            0,
+            63.1578947368,
+            126.3157894737
+          ]
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 12,
+              "detuneCents": 3.5
+            },
+            "instrument": "tripleoscillator",
+            "name": "Warm lead"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "sparse",
+          "swing": 0.12
+        }
+      },
+      "manifestMatches": true,
+      "revision": 6
+    },
+    {
+      "case": "a-acknowledged-replacement",
+      "observedMemory": {
+        "compositionalRules": [
+          "Use three-note voicings"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator"
+        ],
+        "notes": "A revised palette; the old rule must be absent",
+        "scalePreferences": {
+          "divisions": 12,
+          "name": "12-EDO",
+          "rootMidi": 57
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 180,
+              "detuneCents": -2.25
+            },
+            "instrument": "tripleoscillator",
+            "name": "Glass pad"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "open",
+          "swing": 0
+        }
+      },
+      "manifestMatches": true,
+      "revision": 6
+    },
+    {
+      "case": "a-conflicting-id-preserved",
+      "observedMemory": {
+        "compositionalRules": [
+          "Use three-note voicings"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator"
+        ],
+        "notes": "A revised palette; the old rule must be absent",
+        "scalePreferences": {
+          "divisions": 12,
+          "name": "12-EDO",
+          "rootMidi": 57
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 180,
+              "detuneCents": -2.25
+            },
+            "instrument": "tripleoscillator",
+            "name": "Glass pad"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "open",
+          "swing": 0
+        }
+      },
+      "manifestMatches": true,
+      "revision": 6
+    },
+    {
+      "case": "a-native-undo-preserves-current-memory",
+      "observedMemory": {
+        "compositionalRules": [
+          "Use three-note voicings"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator"
+        ],
+        "notes": "A revised palette; the old rule must be absent",
+        "scalePreferences": {
+          "divisions": 12,
+          "name": "12-EDO",
+          "rootMidi": 57
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 180,
+              "detuneCents": -2.25
+            },
+            "instrument": "tripleoscillator",
+            "name": "Glass pad"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "open",
+          "swing": 0
+        }
+      },
+      "manifestMatches": true,
+      "revision": 8
+    },
+    {
+      "case": "a-after-abrupt-restart",
+      "observedMemory": {
+        "compositionalRules": [
+          "Use three-note voicings"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator"
+        ],
+        "notes": "A revised palette; the old rule must be absent",
+        "scalePreferences": {
+          "divisions": 12,
+          "name": "12-EDO",
+          "rootMidi": 57
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 180,
+              "detuneCents": -2.25
+            },
+            "instrument": "tripleoscillator",
+            "name": "Glass pad"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "open",
+          "swing": 0
+        }
+      },
+      "manifestMatches": true,
+      "revision": 9
+    },
+    {
+      "case": "a-stale-replay-does-not-overwrite-current-memory",
+      "observedMemory": {
+        "compositionalRules": [
+          "Use three-note voicings"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator"
+        ],
+        "notes": "A revised palette; the old rule must be absent",
+        "scalePreferences": {
+          "divisions": 12,
+          "name": "12-EDO",
+          "rootMidi": 57
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 180,
+              "detuneCents": -2.25
+            },
+            "instrument": "tripleoscillator",
+            "name": "Glass pad"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "open",
+          "swing": 0
+        }
+      },
+      "manifestMatches": true,
+      "revision": 9
+    },
+    {
+      "case": "b-retains-independent-palette-after-a-recovery",
+      "observedMemory": {
+        "favoriteInstruments": [
+          "patman"
+        ],
+        "notes": "Separate session, separate taste"
+      },
+      "manifestMatches": true,
+      "revision": 1
+    },
+    {
+      "case": "a-second-clean-restart",
+      "observedMemory": {
+        "compositionalRules": [
+          "Use three-note voicings"
+        ],
+        "favoriteInstruments": [
+          "tripleoscillator"
+        ],
+        "notes": "A revised palette; the old rule must be absent",
+        "scalePreferences": {
+          "divisions": 12,
+          "name": "12-EDO",
+          "rootMidi": 57
+        },
+        "soundPalette": [
+          {
+            "hints": {
+              "attackMs": 180,
+              "detuneCents": -2.25
+            },
+            "instrument": "tripleoscillator",
+            "name": "Glass pad"
+          }
+        ],
+        "stylisticHeuristics": {
+          "avoidClipping": true,
+          "density": "open",
+          "swing": 0
+        }
+      },
+      "manifestMatches": true,
+      "revision": 10
+    },
+    {
+      "case": "a-explicit-clear",
+      "observedMemory": {},
+      "manifestMatches": true,
+      "revision": 10
+    },
+    {
+      "case": "a-clear-survives-clean-restart",
+      "observedMemory": {},
+      "manifestMatches": true,
+      "revision": 11
+    }
+  ],
+  "limitations": "Local headless persistence only; no inferred taste, real-provider reasoning, physical hardware, power-loss or cross-platform acceptance."
+}

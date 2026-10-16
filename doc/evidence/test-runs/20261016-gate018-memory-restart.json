@@ -1,0 +1,39 @@
+{
+  "gate": "GATE-018",
+  "command": "python3 tests/studio_memory_process_test.py --lmms build/native/lmms --output build/studio-memory-evidence",
+  "criterion": "session.memory.set preserves compositional rules, favorite instruments, sound palettes, scale preferences and stylistic heuristics across studio restarts. Retain a multi-session restart test asserting recalled memory.",
+  "executed_at": "2026-10-16T15:27:18Z",
+  "exit_code": 0,
+  "platform": "macOS arm64, Qt 5.15.19 Debug, Python 3.14.7",
+  "revision": "f1caaea916d0bf588ad2ea53ffcecc5d740432b9",
+  "working_tree_sources": {
+    "tests/studio_memory_process_test.py": "58a398f834e5210d69cb016d5b9f92897cd77678783230805c8d160b84446129",
+    "tests/studio_process_test.py": "d6b593b8ed7fdeddca8c5f9bca6d3533536856150064bf94eb1ce8c2a654de26",
+    "tests/CMakeLists.txt": "9077eecf6902b8aad742203362120a1b969d77656a2bd20184d2ae57854dd564",
+    "src/core/StudioRuntime.cpp": "e65e2fb5ae27c8c0046fe1d816cb85848c46a40bba97d21617c180fd620c8b4e",
+    "src/core/StudioStorage.cpp": "540cbc11c1cae86d4df18dd8095dbb975b111a9fcc5abb5d26b7c9fdb7b38208",
+    "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
+  },
+  "binary_sha256": "401ed4e2f5bef2a20a7fdc43c38a3d8af99152f3aa227219c3cfd82400e3da2c",
+  "scope": "Native QCoreApplication executable: seven process starts, two independent session directories, eighteen exact memory/manifest comparisons, six clean exits and one deliberate SIGKILL recovery. Rich palettes, scales, compositional rules and style heuristics recalled across repeated restarts. Existing operation and persistence contract; no native feature change.",
+  "limitations": "Observed macOS arm64 headless Debug build only. No power-loss durability, arbitrary file tamper recovery, automatic taste inference, real-provider musical acceptance, physical audio/MIDI, cross-platform or full 194-test suite claim. Revision identifies the base commit; source hashes identify the tested working-tree fixture and unchanged native sources.",
+  "verified_invariants": [
+    "Explicit favorite instruments, nested sound palettes, scale preferences, compositional rules, style heuristics and Unicode notes exactly match session.inspect and the independently read committed manifest.",
+    "Preferences survive clean restarts and an abrupt kill after acknowledged replacement; native tempo and note data survive alongside the memory.",
+    "Separate session directories remain isolated, including reuse of the same request ID in each session.",
+    "Setter replaces the whole object, rejected malformed inputs preserve memory, and an explicitly empty object stays cleared after restart.",
+    "Replayed acknowledged requests return their old response without overwriting newer memory; conflicting request-ID content is rejected.",
+    "Native project undo preserves the current preference object."
+  ],
+  "output": {
+    "path": "doc/evidence/test-runs/20261016-gate018-memory-observations.json",
+    "sha256": "87496d6ced0d911454f05edaaf46c27614b355a729f0e5028ace643712f54864"
+  },
+  "additional_verification": {
+    "command": "ctest --test-dir build/native --output-on-failure -R '^StudioMemoryProcessTest$'",
+    "exit_code": 0,
+    "tests_passed": 1,
+    "tests_failed": 0,
+    "duration_seconds": 6.46
+  }
+}

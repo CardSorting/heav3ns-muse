@@ -729,6 +729,10 @@ if(Python3_Interpreter_FOUND AND NOT LMMS_MINIMAL)
 		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/studio_render_process_test.py"
 			--lmms $<TARGET_FILE:lmms> --output "${CMAKE_BINARY_DIR}/studio-render-evidence")
 	set_tests_properties(StudioRenderProcessTest PROPERTIES TIMEOUT 120 LABELS "headless;render;instruments;recovery")
+	add_test(NAME StudioMemoryProcessTest
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/studio_memory_process_test.py"
+			--lmms $<TARGET_FILE:lmms> --output "${CMAKE_BINARY_DIR}/studio-memory-evidence")
+	set_tests_properties(StudioMemoryProcessTest PROPERTIES TIMEOUT 300 LABELS "headless;session;memory;recovery")
 	if(TARGET VstNativeWorkerTest AND TARGET vsteffect)
 		add_custom_target(StudioVstProcessFixtures DEPENDS lmms vsteffect VstNativeFixture0 VstNativeFixture1 VstNativeFixture2 VstNativeFixture3)
 		if(LMMS_BUILD_LINUX)

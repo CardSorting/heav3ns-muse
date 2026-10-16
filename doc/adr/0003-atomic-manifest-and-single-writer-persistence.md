@@ -72,3 +72,25 @@ controls cannot reconstruct the lost values from their remaining graph alone.
 
 Automation clips persist the explicit custom name, including emptiness, rather
 than materializing a derived target/attachment label into a custom name.
+
+## Session memory and filename clarification — 2026-10-16
+
+**Supersedes:** the `.lock` and `manifest.json` names in decision entries 1–2
+above and any implication that session preferences live in a separate memory
+directory. The single-writer, atomic-publication and request-replay decisions
+remain unchanged.
+
+StudioRuntime uses `QLockFile` at `session.lock` and publishes the session
+manifest as `session.json` through `QSaveFile`. Explicit preference memory is
+the manifest's `memory` object. `session.memory.set` replaces that object;
+the caller must retain any existing keys it wants to preserve. A successful
+response follows commit, and startup reads the committed object independently
+of the native project history cursor. Undo/redo restores project checkpoints
+without reverting current memory. An acknowledged request replay returns its
+old response without reapplying that older memory over a newer replacement.
+
+These are existing implementation contracts. The dedicated native process
+harness verifies clean/abrupt restarts, replacement, clearing and session
+isolation on the observed platform; see the [engineering record](../agent-native-architecture.md)
+for dated results. That observation does not establish power-loss durability,
+arbitrary file-tamper recovery or inferred musical taste.

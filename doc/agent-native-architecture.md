@@ -13125,3 +13125,49 @@ native build, external-provider acceptance or physical hardware verification.
 The earlier 193/193 native acceptance remains its dated observation. H2 closure
 still requires the full provider/revision, backend, loudness, plugin and memory
 criteria in the register, and the broader agent-native commission remains open.
+
+### Native musical preference memory restart acceptance (2026-10-16)
+
+GATE-018's existing `session.memory.set` implementation now has dedicated native
+process evidence for its complete explicit-preference criterion. No C++ runtime
+behavior, native capability schema or resource format changed. The test fixture
+uses the actual executable under QCoreApplication, reads `session.inspect`, and
+independently reads the native committed `session.json`; it never writes a
+substitute memory store or modifies a recovery manifest.
+
+From base revision f1caaea91, the native `lmms` target rebuilt successfully on
+macOS arm64 / Qt 5.15.19 Debug. The dedicated command passed in **7.460 seconds**:
+
+```sh
+python3 tests/studio_memory_process_test.py --lmms build/native/lmms --output build/studio-memory-evidence
+```
+
+The run started **seven native processes across two independent session
+directories**, with **18 exact memory/manifest observations**, six clean exit-zero
+shutdowns and one deliberate SIGKILL exit -9. Rich favorite-instrument lists,
+nested sound palettes, scale preferences, compositional rules, stylistic
+heuristics and Unicode notes survived repeated clean restarts. Acknowledged
+replacement survived an abrupt restart alongside the native tempo and note
+state. Independent sessions remained isolated, including when both used the
+same request ID. Invalid setter arguments and conflicting request-ID content
+preserved current memory; an old acknowledged setter replay returned its old
+response without overwriting newer preferences. Project undo preserved current
+memory, and explicit clearing remained empty after another restart.
+
+The [completion receipt](evidence/test-runs/20261016-gate018-memory-restart.json)
+binds the command, exact criterion, platform, base revision, tested source hashes,
+executable hash and [observations](evidence/test-runs/20261016-gate018-memory-observations.json).
+Raw protocol traces, session files and native diagnostics remain local test
+artifacts; the retained public observations contain fixture values and hashes.
+The CTest registration also executed successfully: **StudioMemoryProcessTest,
+1/1 passed in 6.46 seconds**. This adds test 194 to the configured suite; the
+complete 194-test suite was not run, and the previous 193/193 acceptance retains
+its original scope and date.
+
+After reviewing the full explicit-memory criterion, GATE-018 was completed using
+the registered receipt. H2 now has one of five gates complete (**20%**) and
+remains active. The schema/feature freeze remains in force. These results cover
+local explicit preference persistence, not automatic taste inference, power-loss
+durability, arbitrary file tampering, physical hardware, real-provider musical
+acceptance or other platforms. The remaining H2 and strategic architecture gates
+continue to govern the broader commission.

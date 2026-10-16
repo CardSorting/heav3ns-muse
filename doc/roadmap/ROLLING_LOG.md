@@ -351,3 +351,22 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
   native features remain frozen. These Python observations do not replace the
   dated native acceptance or establish real-provider, hardware or musical
   acceptance; see the [engineering record](../agent-native-architecture.md#roadmap-transition-and-evidence-governance-2026-10-16).
+
+### 2026-10-16 — GATE-018 explicit musical memory verified
+
+- Added a native process fixture for favorite instruments, sound palettes, scale
+  preferences, compositional rules and stylistic heuristics across repeated
+  studio restarts. The existing memory operation and native capability schema
+  are unchanged; preferences are stored in the native session manifest.
+- The native `lmms` target rebuilt successfully. Seven QCoreApplication process
+  starts across two independent sessions passed 18 exact protocol/manifest
+  comparisons in 7.460 seconds, including clean restarts, deliberate SIGKILL
+  recovery, replacement, clearing, invalid requests, replay and project undo.
+- The new CTest registration passed separately, 1/1 in 6.46 seconds. This is
+  focused test-194 coverage, not a complete 194-test-suite result.
+- Closed **GATE-018** with a registered, hash-bound
+  [completion receipt](../evidence/test-runs/20261016-gate018-memory-restart.json)
+  and [observations](../evidence/test-runs/20261016-gate018-memory-observations.json).
+  H2 remains active at **20%**. Feature development remains frozen; physical
+  hardware, real-provider musical acceptance, automatic taste inference,
+  power-loss and other-platform claims are outside this observation.
