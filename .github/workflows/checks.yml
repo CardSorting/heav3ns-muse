@@ -55,6 +55,8 @@ jobs:
           node-version: '20'
       - name: Run Knowledge Guard Unit Tests
         run: python3 tests/test_docs_kb.py
+      - name: Run Roadmap Transition and Evidence Tests
+        run: python3 tests/test_roadmap_sync.py
       - name: Verify Documentation Scopes, Links & ADRs
         run: python3 scripts/verify-docs.py
       - name: Validate Cryptographic Reviews & Domain Freshness

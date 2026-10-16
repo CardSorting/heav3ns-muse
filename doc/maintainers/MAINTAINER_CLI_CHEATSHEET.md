@@ -46,10 +46,10 @@ Private CLI navigation cheatsheet for HEAV3NS-MUSE maintainers. Covers CMake bui
 
 | Task | Command | Notes |
 | :--- | :--- | :--- |
-| **Check Roadmap Integrity** | `npm run roadmap:check` | Validates 21 gates, horizons, and JSON schemas |
-| **Synchronize Roadmap Views** | `npm run roadmap:sync` | Recalculates progress percentages, updates `ROADMAP.md` |
-| **Advance a Roadmap Gate** | `npm run roadmap:roll -- --gate <id> --status completed --note "<evidence>"` | Transitions gate, logs event in `events.jsonl` |
-| **Inspect Gate Status** | `python3 scripts/roadmap-sync.py status` | CLI summary of open, in-progress, and closed gates |
+| **Check Roadmap Integrity** | `npm run roadmap:check` | Validates registered gates, horizon state, generated views and referenced completion receipts |
+| **Synchronize Roadmap Views** | `npm run roadmap:sync` | Recalculates horizon state and updates `ROADMAP.md` and `OPEN_ITEMS.md`; never executes tests |
+| **Advance a Roadmap Gate** | Follow the [completion procedure](../how-to/change-with-documentation.md#close-a-roadmap-gate) | `roll --status completed` requires a registered `--receipt` and criterion review note |
+| **Inspect Gate Status** | Read [open actions](../roadmap/OPEN_ITEMS.md) and run `python3 scripts/roadmap-sync.py check` | Check generated state and referenced receipts; verification commands are not executed |
 
 ---
 

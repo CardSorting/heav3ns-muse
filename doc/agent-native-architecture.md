@@ -13089,3 +13089,39 @@ advancing any roadmap gate. This acceptance establishes the requested local
 compile/run and complete-suite result, not continuous verification, other
 platforms, sanitizers, physical MIDI input/output, hard latency bounds or
 real-provider musical acceptance.
+
+### Roadmap transition and evidence governance (2026-10-16)
+
+At base revision 87824f773, source review found that roadmap validation accepted
+source-file existence as completion evidence, synchronization did not generate
+open actions or log horizon transitions, and fixed status labels contradicted
+the register. The working-tree governance changes now derive horizon state and
+both public views from registered gates. Repeat synchronization leaves unchanged
+files and events intact; the completed-all case has no active horizon.
+
+New gate completions require a registered execution receipt with matching gate,
+command and exact criterion, integer zero exit status, dated platform/revision,
+reviewed scope and limitations, verified invariants, and separate retained output
+bound by SHA-256. A criterion review note is required for the transition. Hashes
+validate artifact integrity; they do not establish that an execution or a human
+review proves the full musical or hardware criterion. Existing pre-2026-10-16
+closure events retain their historical dates and claims without being recertified.
+The validator reports those 13 historical closures explicitly.
+
+The [retained test receipt](evidence/test-runs/20261016-roadmap-governance.json)
+and [execution output](evidence/test-runs/20261016-roadmap-governance.txt) record
+**19/19 Python governance tests passing** on macOS arm64. Coverage includes
+completion rejection, modified receipts/output, path boundaries, generated-view
+drift, advancement/reopening events, idempotent sync and reopening a gate whose
+evidence no longer validates. Source hashes identify the tested working tree;
+the receipt's revision identifies its base commit. The tests are wired into the
+local documentation/knowledge checks and governance CI workflow. A monitored
+roadmap-governance domain makes later source or guide changes require review.
+
+H2 is now correctly derived as in progress at zero completed H2 gates. Gate
+statuses and prior completion dates are unchanged. Feature development remains
+frozen; this work changes no native capability or resource format and runs no
+native build, external-provider acceptance or physical hardware verification.
+The earlier 193/193 native acceptance remains its dated observation. H2 closure
+still requires the full provider/revision, backend, loudness, plugin and memory
+criteria in the register, and the broader agent-native commission remains open.

@@ -1,25 +1,25 @@
 {
   "studio-runtime": {
-    "reviewer": "Build Stabilization",
-    "note": "Final semantic review of frozen native startup/resource/MIDI/render fixes and synchronized guides; complete build and 193/193 combined tests passed at dce3396ef, latest bundle render/live-output/desktop startup observed; historical failures, transport skips and platform limits retained; capability schema unchanged and no roadmap gate advanced.",
-    "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-14",
+    "reviewer": "Roadmap Governance Review",
+    "note": "Reviewed documentation-only updates to roadmap maintenance, evidence, reopening commands and policy; native runtime source remains unchanged and prior frozen acceptance remains dated evidence.",
+    "reviewed_at": "2026-10-16",
+    "review_by": "2026-11-15",
     "files": {
-      "doc/DOCUMENTATION_POLICY.md": "30728aa988e8eac734c04989a68775cf675f11b4c9624f2950a77c3b2bf31ce6",
+      "doc/DOCUMENTATION_POLICY.md": "8b0ef4e6e84a203f8651102ce327adccc779b55174a0e5712b089fe0ef29fc65",
       "doc/adr/0002-in-process-qcoreapplication-headless-studio.md": "30960d99a6f0b525025f9d9dbfedb45a22097bcc10471152e50b8f28cb96ec56",
       "doc/maintainers/CI_CD_RULES_AND_REQUIRED_CHECKS.md": "3482ca3b9207474ddf495525e6e53fa03c9aef4d46b4c43763f73d3b76ef8f85",
       "doc/maintainers/DAY_1_TO_30_ONBOARDING_ROADMAP.md": "39f04fea29b3300c64b0b117e66b9dae4521c460305a29eac22e0b030bc0a92c",
       "doc/maintainers/DEBUGGING_AND_DIAGNOSTIC_RUNBOOKS.md": "7eede7c87895a5a2955580f5d47734afe6e609862f67eefbbd23507e8060127b",
       "doc/maintainers/GIT_WORKFLOWS_AND_HOOKS.md": "ff0311634e527902e9fee009a933ca46e6ce06fcd375a35a82360a90c81e3d9b",
-      "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md": "1d449ebbc5dec35ea47b4918ff25d30c7cd7c312ff1a4c36391daf1e7778e181",
-      "doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md": "6dd28766601898d4ccfa36febeb9303116a4d731884cf509795ae28243199298",
+      "doc/maintainers/MAINTAINER_CLI_CHEATSHEET.md": "f1ee9abff567564d6c3262669de0aaf969d96fc7a18a1cf51a6cfc9f66194a4f",
+      "doc/maintainers/RELEASE_ENGINEERING_AND_VERSIONING.md": "257d0545c6af4d368ea581472f33d7eb3ca5f011370340ad7126f22e79a16003",
       "doc/maintainers/SUBSYSTEM_INTERNALS_AND_DEPENDENCY_GRAPH.md": "2a0d81fe064c1eb22364487a5c6285b3aae49f716f0025b7dda52f102538301e",
       "doc/native-studio-protocol.md": "1f47aa57cec9dedafe4e730440d83604f8fd3ce722e1bb9ee9d6e125f2a93ae8",
       "doc/playbooks/01-provisioning-and-preflight.md": "b851e3522dd3e12da604c314dd384a035e01df56c7df001a8eae50a7569f66fe",
       "doc/roadmap/MILESTONES.md": "7a25d530a81addb597a80e23a2eeb22d79e7c933c9bfda5cc920cd35dedeb0db",
       "doc/runbooks/ci-failure-and-recovery.md": "af99fc0e4df25157a49bca876009119ae2f5b39cd46a8d84cc20558f4e912cd9",
       "doc/runbooks/knowledge-maintenance.md": "b6df1999d933a3630065ea3c4afda3fcfc3da7ef5f00d2b7a9df06fe1d2a56e8",
-      "doc/runbooks/weekly-knowledge-audit.md": "d5ef71a8fa870a15e584043681e1cc662e34f7f417e80b646e0f0dfa7bec9ceb",
+      "doc/runbooks/weekly-knowledge-audit.md": "b74ffbcbe1f92cb480f84236660ee0db0b7e0085b489822850865b6e3db41440",
       "include/Lv2Options.h": "dc47dedfcc90e87f7a7139bac2c6e1ffe6b4b7ef6bc29f77f051a61ee82b5fe4",
       "include/RemotePlugin.h": "84633ca242e27319053f054d05ad09da574bb65058a9260dc88f390ac0ed75e9",
       "include/StudioRuntime.h": "4e71c40cd19c8d6ece47c714cb46a99145328e79f4c7eeb8b68b7d1e0965b2dc",
@@ -40,14 +40,14 @@
       "tests/src/core/StudioShutdownTest.cpp": "df98788d2cb6480cd0585e8d4282fcacf7197ec3cf81e10063dcfd5ebc1c196f"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640"
+      "doc/evidence/test-runs/20261016-roadmap-governance.json": "3e7da532e32784cd164fd17274d3a92db9cdd4b171b9be997c7952b4c234f787"
     }
   },
   "capabilities": {
-    "reviewer": "Build Stabilization",
-    "note": "Final semantic review of frozen native startup/resource/MIDI/render fixes and synchronized guides; complete build and 193/193 combined tests passed at dce3396ef, latest bundle render/live-output/desktop startup observed; historical failures, transport skips and platform limits retained; capability schema unchanged and no roadmap gate advanced.",
-    "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-14",
+    "reviewer": "Roadmap Governance Review",
+    "note": "Reviewed the appended roadmap governance record against unchanged capability source/guide fingerprints; prior native acceptance remains dated, and the new Python results make no capability completion claim.",
+    "reviewed_at": "2026-10-16",
+    "review_by": "2026-11-15",
     "files": {
       "doc/adr/0001-native-dsp-model-authority.md": "54842d0c55d43c1522a5ffd0dcace1d02d0448118b8813accacd787356d7e343",
       "doc/maintainers/MAINTAINER_GLOSSARY_AND_LEXICON.md": "6b1ba7b056d59acd8cb1f5435d1bddd9bf663457a7337394cefefd8562793179",
@@ -70,46 +70,46 @@
       "tests/src/gui/MixerViewLifecycleTest.cpp": "bbfbb9cfb59bb65ed5c94c83015217ae55f41685ff9ac34ee7bb8504ab834567"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640"
+      "doc/agent-native-architecture.md": "7c31407f3f10f0d316ea21afe277e33b55fcb84669f056a503c555410516fabf"
     }
   },
   "agent-coordinator": {
-    "reviewer": "Build Stabilization",
-    "note": "Final semantic review of frozen native startup/resource/MIDI/render fixes and synchronized guides; complete build and 193/193 combined tests passed at dce3396ef, latest bundle render/live-output/desktop startup observed; historical failures, transport skips and platform limits retained; capability schema unchanged and no roadmap gate advanced.",
-    "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-14",
+    "reviewer": "Roadmap Governance Review",
+    "note": "Reviewed appended governance observation and evidence catalog limitations; coordinator implementation and capability contract remain unchanged, and no fixture is represented as provider or musical acceptance.",
+    "reviewed_at": "2026-10-16",
+    "review_by": "2026-11-15",
     "files": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640",
+      "doc/agent-native-architecture.md": "7c31407f3f10f0d316ea21afe277e33b55fcb84669f056a503c555410516fabf",
       "doc/evidence/CI_CD_THREE_PASS_AUDIT_REPORT.md": "97eab677d434664f24941848e9cc3fa698bdda93dab52a56eaef26792032c08e",
-      "doc/evidence/README.md": "e8e72f455ca5dc8eaa6fb6da797578e6798c91a55f2e7975a76ae1d848520012",
+      "doc/evidence/README.md": "0ad33fddc82190f0dbdd2bb8da1eab98965254efb13ac21d8ffb2db2e996c64e",
       "doc/maintainers/AI_AGENT_PAIR_PROGRAMMING_AND_GOVERNANCE.md": "e66e354e92163214f56886ff3f82ac2214c37ae703a4e69ff117e7513a1afe66",
       "doc/maintainers/CONTRACTED_AGENT_ANCHOR_PROTOCOL.md": "6637df3a2afecb1270273f5546c6668673661c498900dad54ce30ef52418c7b7",
       "include/StudioAgent.h": "0d4af7772e9ca062be7a66999e4b795ff754ac92c896a3ee53788e59494b3212",
       "src/core/StudioAgent.cpp": "b3b649be39471c97d302b6021e110b92fea0807151fe6cf3fd7c12593f41e4a6"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640"
+      "doc/evidence/test-runs/20261016-roadmap-governance.json": "3e7da532e32784cd164fd17274d3a92db9cdd4b171b9be997c7952b4c234f787"
     }
   },
   "inference-adapters": {
-    "reviewer": "Build Stabilization",
-    "note": "Final semantic review of frozen native startup/resource/MIDI/render fixes and synchronized guides; complete build and 193/193 combined tests passed at dce3396ef, latest bundle render/live-output/desktop startup observed; historical failures, transport skips and platform limits retained; capability schema unchanged and no roadmap gate advanced.",
-    "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-14",
+    "reviewer": "Roadmap Governance Review",
+    "note": "Reviewed appended engineering record preserving external-provider and musical acceptance limits; inference source and prior observations remain unchanged.",
+    "reviewed_at": "2026-10-16",
+    "review_by": "2026-11-15",
     "files": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640",
+      "doc/agent-native-architecture.md": "7c31407f3f10f0d316ea21afe277e33b55fcb84669f056a503c555410516fabf",
       "include/StudioInference.h": "ee6fcff4d167dfdc0f6585b0d9a18c429148507c8488ed8508a7e08ec10f6c1b",
       "src/core/StudioInference.cpp": "7a9a7998f5f7e3fd6005fd5ba1ff74c0e9827a90a9c83160428cffa6bf104942"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640"
+      "doc/evidence/test-runs/20261016-roadmap-governance.json": "3e7da532e32784cd164fd17274d3a92db9cdd4b171b9be997c7952b4c234f787"
     }
   },
   "audio-dsp": {
-    "reviewer": "Build Stabilization",
-    "note": "Final semantic review of frozen native startup/resource/MIDI/render fixes and synchronized guides; complete build and 193/193 combined tests passed at dce3396ef, latest bundle render/live-output/desktop startup observed; historical failures, transport skips and platform limits retained; capability schema unchanged and no roadmap gate advanced.",
-    "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-14",
+    "reviewer": "Roadmap Governance Review",
+    "note": "Reviewed the appended roadmap governance record; all monitored DSP source/guide fingerprints remain unchanged. Earlier native and render measurements remain historical; no new DSP verification claimed.",
+    "reviewed_at": "2026-10-16",
+    "review_by": "2026-11-15",
     "files": {
       "doc/adr/0004-two-stage-audio-understanding.md": "1b087da411eff38d677fa4752c3848c4a2d4554f8218f879579f4fd6ff03c17e",
       "doc/maintainers/PERFORMANCE_BENCHMARKING_AND_SLOS.md": "82f18995d7d09062afe62b8be6ca3435cf8a021db6a10e99da4f38ee00e0712d",
@@ -138,14 +138,14 @@
       "tests/src/plugins/TripleOscillatorResourceTest.cpp": "a73f2e8430b7fa4992b0be59177db3f45f6383b77b5ae829e13204a92d9094b2"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640"
+      "doc/agent-native-architecture.md": "7c31407f3f10f0d316ea21afe277e33b55fcb84669f056a503c555410516fabf"
     }
   },
   "session-durability": {
-    "reviewer": "Build Stabilization",
-    "note": "Final semantic review of frozen native startup/resource/MIDI/render fixes and synchronized guides; complete build and 193/193 combined tests passed at dce3396ef, latest bundle render/live-output/desktop startup observed; historical failures, transport skips and platform limits retained; capability schema unchanged and no roadmap gate advanced.",
-    "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-14",
+    "reviewer": "Roadmap Governance Review",
+    "note": "Reviewed the appended governance observation preserving native durability limits; monitored source/guide fingerprints are unchanged and no persistence feature or gate closure was added.",
+    "reviewed_at": "2026-10-16",
+    "review_by": "2026-11-15",
     "files": {
       "doc/adr/0003-atomic-manifest-and-single-writer-persistence.md": "efd9d2065cf8b51c21e744c4366adebac535e2e86b5447a8b59bbbcc730a9b98",
       "doc/maintainers/RELEASE_PROVENANCE_AND_ARCHIVAL.md": "c835f8f156d4df3cc26e037009aff2c7f4e30ca5763e31f52963a74039635181",
@@ -166,14 +166,14 @@
       "tests/src/core/StudioAssetsTest.cpp": "b87c77c9dd99c097ca1ee93186b6fe325385d67d81f859aff7b99ca5f9792c54"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640"
+      "doc/agent-native-architecture.md": "7c31407f3f10f0d316ea21afe277e33b55fcb84669f056a503c555410516fabf"
     }
   },
   "live-capture": {
-    "reviewer": "Build Stabilization",
-    "note": "Final semantic review of frozen native startup/resource/MIDI/render fixes and synchronized guides; complete build and 193/193 combined tests passed at dce3396ef, latest bundle render/live-output/desktop startup observed; historical failures, transport skips and platform limits retained; capability schema unchanged and no roadmap gate advanced.",
-    "reviewed_at": "2026-10-15",
-    "review_by": "2026-11-14",
+    "reviewer": "Roadmap Governance Review",
+    "note": "Reviewed the appended governance observation preserving physical audio/MIDI limitations; monitored capture source/guide fingerprints are unchanged and no hardware verification claimed.",
+    "reviewed_at": "2026-10-16",
+    "review_by": "2026-11-15",
     "files": {
       "doc/maintainers/LIVE_RECORDING_AND_CAPTURE_PIPELINE.md": "e61907fea24f17777500e148a37e94d93c6303fced3e0589b776b593cfcd053c",
       "doc/native-studio-protocol.md": "1f47aa57cec9dedafe4e730440d83604f8fd3ce722e1bb9ee9d6e125f2a93ae8",
@@ -200,7 +200,23 @@
       "tests/src/core/StudioMidiRecordingTest.cpp": "bdc1822208731f179e8d814f1ca9284d8b51b690d84c952a75b66833c8284b40"
     },
     "evidence": {
-      "doc/agent-native-architecture.md": "63ff7ee41af47fe259a5b77ea21e5a29b53f8a1254a285fe2cebdaeea4016640"
+      "doc/agent-native-architecture.md": "7c31407f3f10f0d316ea21afe277e33b55fcb84669f056a503c555410516fabf"
+    }
+  },
+  "roadmap-governance": {
+    "reviewer": "Roadmap Governance Review",
+    "note": "Reviewed roadmap derivation, new completion receipt enforcement, legacy dated claims, generated-view checks and recovery against the 19 passing isolated CLI tests; no native capability or H2 completion claim.",
+    "reviewed_at": "2026-10-16",
+    "review_by": "2026-11-15",
+    "files": {
+      "doc/DOCUMENTATION_POLICY.md": "8b0ef4e6e84a203f8651102ce327adccc779b55174a0e5712b089fe0ef29fc65",
+      "doc/evidence/README.md": "0ad33fddc82190f0dbdd2bb8da1eab98965254efb13ac21d8ffb2db2e996c64e",
+      "doc/how-to/change-with-documentation.md": "4a46490f830c56de34672cee55a923462c8e2f6dfada175e6af128566c81349e",
+      "scripts/roadmap-sync.py": "57e96fe4940c591f67509ca66965cbac193d3570e0cb9a54036f370a17a7ffec",
+      "tests/test_roadmap_sync.py": "246c567099895b0bab45547aba482bab3f7dba52495aa2333d28cc5676ad84bd"
+    },
+    "evidence": {
+      "doc/evidence/test-runs/20261016-roadmap-governance.json": "3e7da532e32784cd164fd17274d3a92db9cdd4b171b9be997c7952b4c234f787"
     }
   }
 }

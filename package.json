@@ -27,7 +27,7 @@
   "private": true,
   "scripts": {
     "docs:sync": "python3 scripts/docs-kb.py sync && python3 scripts/roadmap-sync.py sync",
-    "docs:check": "python3 tests/test_docs_kb.py && python3 scripts/verify-docs.py && python3 scripts/docs-kb.py check && python3 scripts/roadmap-sync.py check",
+    "docs:check": "python3 tests/test_docs_kb.py && python3 tests/test_roadmap_sync.py && python3 scripts/verify-docs.py && python3 scripts/docs-kb.py check && python3 scripts/roadmap-sync.py check",
     "docs:status": "python3 scripts/docs-kb.py status",
     "docs:impact": "python3 scripts/docs-kb.py impact",
     "docs:review": "python3 scripts/docs-kb.py review",

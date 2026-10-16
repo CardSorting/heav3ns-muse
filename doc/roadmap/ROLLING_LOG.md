@@ -333,3 +333,21 @@ Auto-generated from [events.jsonl](events.jsonl) and [register.json](register.js
 - Feature development remains frozen and the capability schema is byte-identical
   to bc741e610. See the [acceptance record](../agent-native-architecture.md#frozen-build-acceptance-2026-10-15)
   for platform, commands, transport skips and limits. No roadmap gate advanced.
+
+### 2026-10-16 — Roadmap transitions and retained-evidence enforcement
+
+- Replaced fixed status labels with derived horizon state and generated open
+  actions. Repeated sync is idempotent; horizon advancement/reopening appends an
+  event, and all-complete state has no active horizon.
+- New completion transitions require a registered, hash-checked receipt and
+  separate retained output, matching command/criterion, dated scope and a review
+  note. Existing closure events retain their dates as historical claims.
+- All **19 governance fixture tests passed** on macOS arm64; the
+  [test receipt](../evidence/test-runs/20261016-roadmap-governance.json) and
+  [raw output](../evidence/test-runs/20261016-roadmap-governance.txt) retain that
+  execution. The tests cover invalid evidence, generated-view drift and recovery
+  from broken completion evidence while preserving original events.
+- H2 now derives as in progress at zero completed gates. No gate status changed;
+  native features remain frozen. These Python observations do not replace the
+  dated native acceptance or establish real-provider, hardware or musical
+  acceptance; see the [engineering record](../agent-native-architecture.md#roadmap-transition-and-evidence-governance-2026-10-16).

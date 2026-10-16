@@ -64,6 +64,15 @@
       "sha256": "f2eb8fb23d386efdd2280066b0fd1b53076dc62812df8b8ca771a9fb999263ea",
       "status": "pass",
       "note": "Local pre-commit check"
+    },
+    "doc/evidence/test-runs/20261016-roadmap-governance.json": {
+      "gate": "roadmap-governance",
+      "recorded_at": "2026-10-16T15:22:56Z",
+      "command": "python3 tests/test_roadmap_sync.py",
+      "platform": "macOS arm64",
+      "sha256": "3e7da532e32784cd164fd17274d3a92db9cdd4b171b9be997c7952b4c234f787",
+      "status": "verified",
+      "note": "Nineteen roadmap governance fixture tests passed; no native or milestone completion claim."
     }
   }
 }

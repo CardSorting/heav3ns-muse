@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Auto-rolling roadmap synchronization and gate verification for HEAV3NS-MUSE."""
+"""Synchronize the roadmap and validate retained gate evidence without running tests."""
 
 import argparse
-from datetime import datetime, timezone
+import copy
+from datetime import date, datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import sys
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS_DIR = ROOT / ("doc" if (ROOT / "doc").is_dir() else "docs")
-REGISTER = DOCS_DIR / "roadmap/register.json"
-EVENTS = DOCS_DIR / "roadmap/events.jsonl"
-OPEN_ITEMS = DOCS_DIR / "roadmap/OPEN_ITEMS.md"
-ROLLING_LOG = DOCS_DIR / "roadmap/ROLLING_LOG.md"
-PUBLIC_ROADMAP = ROOT / "ROADMAP.md"
+STATUSES = {"completed", "in-progress", "open", "deferred"}
+# Preserve pre-policy closure claims as history, not freshly verified outcomes.
+RECEIPT_POLICY_DATE = date(2026, 10, 16)
 
 
 def read_json(path):
@@ -24,182 +24,274 @@ def dump_json(value):
     return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
 
 
-def make_progress_bar(percentage, width=20):
-    filled = int(round((percentage / 100.0) * width))
-    empty = width - filled
-    return "█" * filled + "░" * empty
+def safe_file(root, name):
+    if not isinstance(name, str) or not name or Path(name).is_absolute():
+        raise ValueError(f"Expected repository-relative file: {name!r}")
+    path = (root / name).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
+        raise ValueError(f"Missing or out-of-repository file: {name}")
+    return path
 
 
-def sync_roadmap(register, events):
-    # Recalculate horizon percentages
-    horizons = register.get("horizons", {})
-    gates = register.get("gates", [])
+def timestamp():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    for h_id, horizon in horizons.items():
-        h_gates = [g for g in gates if g.get("horizon") == h_id]
-        if not h_gates:
-            horizon["completion_percentage"] = 0
-            continue
-        completed_count = sum(1 for g in h_gates if g.get("status") == "completed")
-        pct = int(round((completed_count / len(h_gates)) * 100))
-        horizon["completion_percentage"] = pct
-        if pct == 100:
+
+def parse_timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("Expected an ISO execution timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Execution timestamps must include a timezone")
+    return parsed
+
+
+def normalize(register):
+    result = copy.deepcopy(register)
+    for h_id, horizon in result["horizons"].items():
+        gates = [g for g in result["gates"] if g["horizon"] == h_id]
+        completed = sum(g["status"] == "completed" for g in gates)
+        horizon["completion_percentage"] = round(100 * completed / len(gates)) if gates else 0
+        if gates and completed == len(gates):
             horizon["status"] = "completed"
-        elif pct > 0:
+        elif any(g["status"] in {"completed", "in-progress"} for g in gates):
             horizon["status"] = "in-progress"
+        elif gates and all(g["status"] == "deferred" for g in gates):
+            horizon["status"] = "deferred"
+        else:
+            horizon["status"] = "open"
+    ordered = sorted(result["horizons"], key=lambda h: int(h[1:]))
+    result["active_horizon"] = next(
+        (h for h in ordered if result["horizons"][h]["status"] != "completed"), None)
+    return result
 
-    # Determine active horizon: lowest incomplete horizon
-    active_h = "H0"
-    for h_id in ["H0", "H1", "H2", "H3"]:
-        if horizons.get(h_id, {}).get("status") != "completed":
-            active_h = h_id
-            break
-    register["active_horizon"] = active_h
-    register["last_updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Generate ROADMAP.md
-    today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    h0_bar = make_progress_bar(horizons["H0"]["completion_percentage"])
-    h1_bar = make_progress_bar(horizons["H1"]["completion_percentage"])
-    h2_bar = make_progress_bar(horizons["H2"]["completion_percentage"])
-    h3_bar = make_progress_bar(horizons["H3"]["completion_percentage"])
+def legacy_closure(gate, events):
+    """Only an unchanged, dated, pre-policy completion event is grandfathered."""
+    for event in reversed(events):
+        if event.get("gate_id") != gate["id"]:
+            continue
+        observed = parse_timestamp(event["timestamp"]).date()
+        return (event.get("status") == "completed" and observed < RECEIPT_POLICY_DATE
+                and str(observed) == gate.get("completed_at"))
+    return False
 
-    roadmap_content = f"""# 🗺️ HEAV3NS-MUSE Auto-Rolling Roadmap
 
-<!-- docs-scope: current-guide -->
+def validate_receipt(root, gate, name):
+    receipt = read_json(safe_file(root, name))
+    registry = read_json(root / "doc/evidence/registry.json").get("receipts", {})
+    entry = registry.get(name, {})
+    if not isinstance(receipt, dict) or not isinstance(entry, dict):
+        raise ValueError("Completion receipt and registry entry must be JSON objects")
+    digest = hashlib.sha256(safe_file(root, name).read_bytes()).hexdigest()
+    if entry.get("sha256") != digest or entry.get("status") != "verified":
+        raise ValueError("Completion receipt must have a matching verified SHA-256 registry entry")
+    for source in (receipt, entry):
+        if source.get("gate") != gate["id"] or source.get("command") != gate.get("verification"):
+            raise ValueError("Receipt gate and command must match the roadmap gate")
+    if receipt.get("criterion") != gate.get("criterion"):
+        raise ValueError("Completion receipt must identify the exact reviewed gate criterion")
+    if type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 0:
+        raise ValueError("Completion receipt must retain an integer exit_code of zero")
+    executed = parse_timestamp(receipt["executed_at"])
+    if executed > datetime.now(timezone.utc):
+        raise ValueError("Completion receipt execution date is in the future")
+    for field in ("platform", "revision", "scope", "limitations"):
+        if not isinstance(receipt.get(field), str) or not receipt[field].strip():
+            raise ValueError(f"Completion receipt must describe {field}")
+    invariants = receipt.get("verified_invariants")
+    if not isinstance(invariants, list) or not invariants or not all(
+            isinstance(item, str) and item.strip() for item in invariants):
+        raise ValueError("Completion receipt must list verified_invariants for criterion review")
+    output = receipt["output"]
+    if not isinstance(output, dict):
+        raise ValueError("Receipt output must identify a retained file and SHA-256")
+    output_file = safe_file(root, output["path"])
+    if not output_file.stat().st_size or hashlib.sha256(output_file.read_bytes()).hexdigest() != output["sha256"]:
+        raise ValueError("Retained output must be nonempty and match its SHA-256 fingerprint")
+    if output_file == safe_file(root, name):
+        raise ValueError("Receipt must reference a separate execution output artifact")
 
-*An evidence-backed, auto-rolling milestone roadmap for the agent-native digital audio workstation initiative.*
 
----
+def validate(register, events, root):
+    errors = []
+    horizons = register.get("horizons", {})
+    if not horizons or any(not h.startswith("H") or not h[1:].isdigit() for h in horizons):
+        return ["Horizons must use H<number> identifiers"]
+    seen = set()
+    for gate in register.get("gates", []):
+        gate_id = gate.get("id")
+        if not gate_id or gate_id in seen:
+            errors.append(f"Duplicate or missing gate ID: {gate_id}")
+        seen.add(gate_id)
+        if gate.get("horizon") not in horizons or gate.get("status") not in STATUSES:
+            errors.append(f"{gate_id}: unknown horizon or status")
+        if gate.get("status") == "completed":
+            try:
+                date.fromisoformat(gate.get("completed_at", ""))
+                safe_file(root, gate.get("evidence"))
+                if not gate.get("verification"):
+                    raise ValueError("Missing verification command")
+                if gate.get("completion_receipt"):
+                    validate_receipt(root, gate, gate["completion_receipt"])
+                elif not legacy_closure(gate, events):
+                    raise ValueError("Completed gate requires a completion_receipt; source presence is insufficient")
+            except (ValueError, TypeError, KeyError, OSError) as exc:
+                errors.append(f"{gate_id}: {exc}")
+        elif gate.get("completed_at") or gate.get("completion_receipt"):
+            errors.append(f"{gate_id}: incomplete gate retains current completion fields")
+    event_ids = set()
+    for event in events:
+        event_id = event.get("event_id")
+        if not event_id or event_id in event_ids:
+            errors.append(f"Duplicate or missing event ID: {event_id}")
+        event_ids.add(event_id)
+        try:
+            parse_timestamp(event["timestamp"])
+        except (ValueError, TypeError, KeyError) as exc:
+            errors.append(f"{event_id}: invalid timestamp: {exc}")
+    return errors
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                 CURRENT ROLLING HORIZON                                         │
-│                                                                                                 │
-│   [{h0_bar}] {horizons['H0']['completion_percentage']:>3}%  Horizon 0: {horizons['H0']['title']} ({horizons['H0']['status'].capitalize()})
-│   [{h1_bar}] {horizons['H1']['completion_percentage']:>3}%  Horizon 1: {horizons['H1']['title']} ({horizons['H1']['status'].capitalize()})
-│   [{h2_bar}] {horizons['H2']['completion_percentage']:>3}%  Horizon 2: {horizons['H2']['title']} ({horizons['H2']['status'].capitalize()})
-│   [{h3_bar}] {horizons['H3']['completion_percentage']:>3}%  Horizon 3: {horizons['H3']['title']} ({horizons['H3']['status'].capitalize()})
-└─────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
 
-Last synchronized: **{today_date}** • Machine Authority: [doc/roadmap/register.json](doc/roadmap/register.json) • Event Log: [doc/roadmap/ROLLING_LOG.md](doc/roadmap/ROLLING_LOG.md)
+def cell(value):
+    return str(value).replace("|", "\\|").replace("\n", " ")
 
----
 
-## 🧭 Horizon Breakdown
-
-### Horizon 0: {horizons['H0']['title']}
-**Status: ✅ {horizons['H0']['completion_percentage']}% Completed**
-
-{horizons['H0']['description']}
-
-### Horizon 1: {horizons['H1']['title']}
-**Status: 🔄 {horizons['H1']['completion_percentage']}% In-Progress**
-
-{horizons['H1']['description']}
-
-### Horizon 2: {horizons['H2']['title']}
-**Status: 🚀 Active Focus ({horizons['H2']['completion_percentage']}% Complete)**
-
-{horizons['H2']['description']}
-
-### Horizon 3: {horizons['H3']['title']}
-**Status: 🔮 Strategic Roadmap**
-
-{horizons['H3']['description']}
-
----
-
-## 📊 Milestone Gate Verification Register
-
-| Gate ID | Horizon | Title | Status | Verification Command | Closure Evidence |
-| :---: | :---: | :--- | :---: | :--- | :--- |
-"""
+def render(register):
+    horizons, gates = register["horizons"], register["gates"]
+    active = register["active_horizon"] or "All horizons complete"
+    lines = ["# 🗺️ HEAV3NS-MUSE Auto-Rolling Roadmap", "", "<!-- docs-scope: current-guide -->", "",
+             "*An evidence-backed, auto-rolling milestone roadmap for the agent-native digital audio workstation initiative.*", "",
+             f"Active horizon: **{active}** • Last synchronized: **{register['last_updated'][:10]}**", "",
+             "Machine authority: [register.json](doc/roadmap/register.json) • "
+             "[Open actions](doc/roadmap/OPEN_ITEMS.md) • [Engineering evidence](doc/agent-native-architecture.md) • "
+             "[Event log](doc/roadmap/events.jsonl)", "", "## Current rolling horizon", "", "```text"]
+    for h_id in sorted(horizons, key=lambda h: int(h[1:])):
+        h = horizons[h_id]
+        pct = h["completion_percentage"]
+        filled = round(pct / 5)
+        lines.append(f"[{('█' * filled + '░' * (20 - filled))}] {pct:>3}%  {h_id}: {h['title']} ({h['status']})")
+    lines.extend(["```", "", "## Horizon breakdown", ""])
+    for h_id in sorted(horizons, key=lambda h: int(h[1:])):
+        h = horizons[h_id]
+        lines.extend([f"### {h_id}: {h['title']}", "", f"**Status: {h['status']} ({h['completion_percentage']}% complete)**", "", h["description"], ""])
+    lines.extend(["## Milestone gate register", "", "| Gate | Horizon | Title | Status | Verification command | Implementation / retained receipt |",
+                  "| :--- | :--- | :--- | :--- | :--- | :--- |"])
     for g in gates:
-        cmd = f"`{g['verification']}`" if g.get("verification") else "*N/A*"
-        ev = f"`{g['evidence']}`" if g.get("evidence") else "*Future planning*"
-        roadmap_content += f"| `{g['id']}` | {g['horizon']} | {g['title']} | `{g['status']}` | {cmd} | {ev} |\n"
+        ev = g.get("completion_receipt") or g.get("evidence")
+        evidence = f"[{cell(ev)}]({ev})" if ev else "Future planning"
+        # ROADMAP.md is at the repository root.
+        lines.append(f"| `{g['id']}` | {g['horizon']} | {cell(g['title'])} | `{g['status']}` | {cell(g.get('verification') or 'N/A')} | {evidence} |")
+    lines.extend(["", "## Auto-rolling governance", "",
+                  "1. New completions require a registered, hash-checked execution receipt and retained output, plus a maintainer's criterion review. Source files alone do not close gates.",
+                  "2. Pre-2026-10-16 completion claims remain dated history. Their original events and dates are preserved; synchronization does not reverify them.",
+                  "3. Synchronization derives horizon status, percentages and the first incomplete horizon from gate state. Horizon changes append an event; repeated synchronization without changes writes nothing.",
+                  "4. `python3 scripts/roadmap-sync.py check` validates register consistency, generated views and referenced completion receipts. It does not execute verification commands or establish continuous runtime coverage.",
+                  "5. Use `python3 scripts/roadmap-sync.py sync` after register edits. [Completion procedure](doc/how-to/change-with-documentation.md) and [append-only rolling log](doc/roadmap/ROLLING_LOG.md).", ""])
+    roadmap = "\n".join(lines)
+    lines = ["# Active Roadmap Actions & Open Gates", "", "<!-- docs-scope: current-guide -->", "",
+             "Generated from [register.json](register.json). Dates are review targets, not delivery promises.", "",
+             "[Engineering record](../agent-native-architecture.md) describes observed results and current limitations.", "",
+             "| Gate | Horizon | Status | Owner | Target date | Description and closure criterion |",
+             "| :--- | :--- | :--- | :--- | :--- | :--- |"]
+    for g in gates:
+        if g["status"] != "completed":
+            lines.append(f"| **{g['id']}** | {g['horizon']} | {g['status']} | {cell(g['owner'])} | {g.get('target_date') or 'Unscheduled'} | **{cell(g['title'])}**: {cell(g['criterion'])} |")
+    if all(g["status"] == "completed" for g in gates):
+        lines.extend(["", "All registered gates are complete."])
+    lines.append("")
+    return {"ROADMAP.md": roadmap, "doc/roadmap/OPEN_ITEMS.md": "\n".join(lines)}
 
-    roadmap_content += """
----
 
-## ⚙️ Auto-Rolling Governance Rules
+def sync_roadmap(root, register, pending_events=()):
+    normalized = normalize(register)
+    views = render(normalized)
+    changed = normalized != register or any(
+        not (root / name).is_file() or (root / name).read_text(encoding="utf-8") != content
+        for name, content in views.items())
+    new_events = list(pending_events)
+    if register.get("active_horizon") != normalized["active_horizon"]:
+        new_events.append({"event_id": f"EVT-{uuid.uuid4().hex}", "timestamp": timestamp(),
+                           "type": "horizon-changed", "from_horizon": register.get("active_horizon"),
+                           "to_horizon": normalized["active_horizon"]})
+    if changed or new_events:
+        normalized["last_updated"] = timestamp()
+        views = render(normalized)
+        (root / "doc/roadmap/register.json").write_text(dump_json(normalized), encoding="utf-8")
+        for name, content in views.items():
+            (root / name).write_text(content, encoding="utf-8")
+        if new_events:
+            with (root / "doc/roadmap/events.jsonl").open("a", encoding="utf-8") as stream:
+                for event in new_events:
+                    stream.write(json.dumps(event) + "\n")
+    return normalized
 
-1. **Evidence-Backed Advancements**: A gate is never marked `completed` based on source code alone. It requires an executable verification script with retained test output or passing exit code `0`.
-2. **Deterministic Roll**: When all gates within a Horizon transition to `completed`, `scripts/roadmap-sync.py` automatically rolls the active horizon forward, updates percentages, and logs an event in [doc/roadmap/events.jsonl](doc/roadmap/events.jsonl).
-3. **No Retrospective History Editing**: Progress logs in [doc/roadmap/ROLLING_LOG.md](doc/roadmap/ROLLING_LOG.md) are append-only.
-4. **Maintenance Invariant**: Run `python3 scripts/roadmap-sync.py sync` to synchronize this document whenever [register.json](doc/roadmap/register.json) is modified.
-"""
-    PUBLIC_ROADMAP.write_text(roadmap_content, encoding="utf-8")
-    REGISTER.write_text(dump_json(register), encoding="utf-8")
 
-
-def main():
+def main(argv=None, root=ROOT):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("sync", help="Synchronize register, compute horizon percentages, and refresh ROADMAP.md")
-    sub.add_parser("check", help="Validate roadmap register consistency against evidence files")
-
-    roll_parser = sub.add_parser("roll", help="Roll a milestone gate to a new status and record event")
-    roll_parser.add_argument("--gate", required=True, help="Gate identifier, e.g. GATE-014")
-    roll_parser.add_argument("--status", required=True, choices=["completed", "in-progress", "open", "deferred"])
-    roll_parser.add_argument("--note", required=True, help="Description of milestone progress and evidence")
-
-    args = parser.parse_args()
-    register = read_json(REGISTER)
-    event_lines = [json.loads(line) for line in EVENTS.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-    if args.command == "sync":
-        sync_roadmap(register, event_lines)
-        print(f"Roadmap synchronized. Active Horizon: {register['active_horizon']}.")
-        return 0
-
-    if args.command == "check":
-        errors = []
-        gates = register.get("gates", [])
-        for g in gates:
-            if g.get("status") == "completed":
-                if not g.get("completed_at"):
-                    errors.append(f"{g['id']}: completed gate missing completed_at date")
-                if g.get("evidence"):
-                    ev_path = ROOT / g["evidence"]
-                    if not ev_path.exists():
-                        errors.append(f"{g['id']}: cited evidence does not exist: {g['evidence']}")
-        if errors:
-            print("\n".join(errors), file=sys.stderr)
-            return 1
-        print(f"Roadmap validation passed: {len(gates)} gates verified across {len(register.get('horizons', {}))} horizons.")
-        return 0
-
-    if args.command == "roll":
-        gate_found = False
-        for g in register.get("gates", []):
-            if g["id"] == args.gate:
-                gate_found = True
-                old_status = g["status"]
-                g["status"] = args.status
+    sub.add_parser("sync", help="Derive horizon state and generate roadmap/open actions")
+    sub.add_parser("check", help="Validate register, generated views and retained receipts; never run tests")
+    roll = sub.add_parser("roll", help="Change a gate status with retained evidence for completions")
+    roll.add_argument("--gate", required=True)
+    roll.add_argument("--status", required=True, choices=sorted(STATUSES))
+    roll.add_argument("--note", required=True, help="Criterion review and limitations")
+    roll.add_argument("--receipt", help="Registered execution receipt required for completion")
+    args = parser.parse_args(argv)
+    try:
+        register = read_json(root / "doc/roadmap/register.json")
+        events = [json.loads(line) for line in (root / "doc/roadmap/events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        if args.command == "check":
+            errors = validate(register, events, root)
+            if errors:
+                raise ValueError("\n".join(errors))
+            normalized = normalize(register)
+            if normalized != register:
+                errors.append("Derived horizon state is stale; run roadmap-sync.py sync")
+            for name, content in render(normalized).items():
+                if not (root / name).is_file() or (root / name).read_text(encoding="utf-8") != content:
+                    errors.append(f"{name} is stale; run roadmap-sync.py sync")
+            if errors:
+                raise ValueError("\n".join(errors))
+            legacy = sum(g["status"] == "completed" and not g.get("completion_receipt") for g in register["gates"])
+            print(f"Roadmap consistent: {len(register['gates'])} gates; {legacy} historical closures without current receipt validation. No verification commands executed.")
+        else:
+            pending = []
+            if args.command == "roll":
+                gate = next((g for g in register["gates"] if g["id"] == args.gate), None)
+                if gate is None:
+                    raise ValueError(f"Unknown gate: {args.gate}")
+                if not args.note.strip():
+                    raise ValueError("A nonempty criterion review note is required")
                 if args.status == "completed":
-                    g["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                # Record event
-                evt_id = f"EVT-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{args.gate}"
-                new_evt = {
-                    "event_id": evt_id,
-                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "gate_id": args.gate,
-                    "status": args.status,
-                    "note": args.note
-                }
-                with open(EVENTS, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(new_evt) + "\n")
-                print(f"Rolled gate {args.gate} from '{old_status}' to '{args.status}'. Event: {evt_id}.")
-                break
-        if not gate_found:
-            print(f"Gate {args.gate} not found in register", file=sys.stderr)
-            return 1
-        sync_roadmap(register, event_lines)
-        return 0
-
+                    if not args.receipt:
+                        raise ValueError("Completion requires --receipt; run and retain verification first")
+                    validate_receipt(root, gate, args.receipt)
+                elif args.receipt:
+                    raise ValueError("--receipt applies only to completed gates")
+                if gate["status"] == args.status and gate.get("completion_receipt") == args.receipt:
+                    errors = validate(register, events, root)
+                    if errors:
+                        raise ValueError("\n".join(errors))
+                    print(f"{gate['id']} already has the requested status and receipt; no event added.")
+                    return 0
+                old_status = gate["status"]
+                gate["status"] = args.status
+                gate["completed_at"] = timestamp()[:10] if args.status == "completed" else None
+                gate.pop("completion_receipt", None)
+                if args.receipt:
+                    gate["completion_receipt"] = args.receipt
+                pending.append({"event_id": f"EVT-{uuid.uuid4().hex}", "timestamp": timestamp(),
+                                "gate_id": gate["id"], "from_status": old_status, "status": args.status,
+                                "note": args.note, "completion_receipt": args.receipt})
+            errors = validate(register, events, root)
+            if errors:
+                raise ValueError("\n".join(errors))
+            result = sync_roadmap(root, register, pending)
+            print(f"Roadmap synchronized. Active horizon: {result['active_horizon'] or 'all complete'}.")
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return 0
 
 

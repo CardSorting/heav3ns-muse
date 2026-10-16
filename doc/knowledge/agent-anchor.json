@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Machine-readable ground truth anchor for autonomous AI agents and maintainers",
-  "compiled_at": "2026-10-15T23:30:43Z",
+  "compiled_at": "2026-10-16T15:24:29Z",
   "active_horizon": "H2",
   "invariants": {
     "model_authority": "Native LMMS C++ models (Engine::getSong(), Mixer, PatternStore, AudioEngine) are the sole and final authority. Agents must NEVER invent shadow ASTs or external state.",
@@ -84,7 +84,7 @@
     },
     "H2": {
       "title": "Production Hardening, Multimodal Audio & Hardware",
-      "status": "open",
+      "status": "in-progress",
       "completion_percentage": 0
     },
     "H3": {
@@ -280,6 +280,12 @@
       "sha256": ""
     },
     {
+      "gate": "roadmap-governance",
+      "artifact": "doc/evidence/test-runs/20261016-roadmap-governance.json",
+      "command": "python3 tests/test_roadmap_sync.py",
+      "sha256": "3e7da532e327"
+    },
+    {
       "gate": "summary",
       "artifact": "doc/evidence/ci-runs/20261015_185214-summary.json",
       "command": "local-verification",
@@ -290,8 +296,8 @@
     "studio-runtime": {
       "title": "Studio Runtime & Process Lifecycle",
       "status": "reviewed",
-      "reviewer": "Build Stabilization",
-      "review_by": "2026-11-14",
+      "reviewer": "Roadmap Governance Review",
+      "review_by": "2026-11-15",
       "guides_count": 15,
       "sources_patterns": [
         "src/core/StudioRuntime.*",
@@ -317,8 +323,8 @@
     "capabilities": {
       "title": "Native DAW Capabilities & Operation Dispatch",
       "status": "reviewed",
-      "reviewer": "Build Stabilization",
-      "review_by": "2026-11-14",
+      "reviewer": "Roadmap Governance Review",
+      "review_by": "2026-11-15",
       "guides_count": 4,
       "sources_patterns": [
         "src/core/StudioCapabilities.*",
@@ -341,8 +347,8 @@
     "agent-coordinator": {
       "title": "Agent Execution & Job Lifecycle",
       "status": "reviewed",
-      "reviewer": "Build Stabilization",
-      "review_by": "2026-11-14",
+      "reviewer": "Roadmap Governance Review",
+      "review_by": "2026-11-15",
       "guides_count": 5,
       "sources_patterns": [
         "src/core/StudioAgent.*",
@@ -352,8 +358,8 @@
     "inference-adapters": {
       "title": "Conversational & Multimodal Inference Adapters",
       "status": "reviewed",
-      "reviewer": "Build Stabilization",
-      "review_by": "2026-11-14",
+      "reviewer": "Roadmap Governance Review",
+      "review_by": "2026-11-15",
       "guides_count": 1,
       "sources_patterns": [
         "src/core/StudioInference.*",
@@ -363,8 +369,8 @@
     "audio-dsp": {
       "title": "Audio Synthesis, Rendering & Technical Analysis",
       "status": "reviewed",
-      "reviewer": "Build Stabilization",
-      "review_by": "2026-11-14",
+      "reviewer": "Roadmap Governance Review",
+      "review_by": "2026-11-15",
       "guides_count": 4,
       "sources_patterns": [
         "src/core/StudioAudio.*",
@@ -393,8 +399,8 @@
     "session-durability": {
       "title": "Session Durability, Manifests & Storage",
       "status": "reviewed",
-      "reviewer": "Build Stabilization",
-      "review_by": "2026-11-14",
+      "reviewer": "Roadmap Governance Review",
+      "review_by": "2026-11-15",
       "guides_count": 2,
       "sources_patterns": [
         "src/core/StudioStorage.*",
@@ -414,11 +420,22 @@
         "tests/src/core/StudioAssetsTest.cpp"
       ]
     },
+    "roadmap-governance": {
+      "title": "Roadmap Transitions & Completion Evidence",
+      "status": "reviewed",
+      "reviewer": "Roadmap Governance Review",
+      "review_by": "2026-11-15",
+      "guides_count": 3,
+      "sources_patterns": [
+        "scripts/roadmap-sync.py",
+        "tests/test_roadmap_sync.py"
+      ]
+    },
     "live-capture": {
       "title": "Live Recording, MIDI Ingestion & Automation Capture",
       "status": "reviewed",
-      "reviewer": "Build Stabilization",
-      "review_by": "2026-11-14",
+      "reviewer": "Roadmap Governance Review",
+      "review_by": "2026-11-15",
       "guides_count": 2,
       "sources_patterns": [
         "src/core/StudioRecording.*",

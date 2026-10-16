@@ -45,7 +45,8 @@ KNOWLEDGE_PATTERNS = [
     "doc/runbooks/**",
     "scripts/docs-kb.py",
     "scripts/roadmap-sync.py",
-    "tests/test_docs_kb.py"
+    "tests/test_docs_kb.py",
+    "tests/test_roadmap_sync.py"
 ]
 
 RUNTIME_PATTERNS = [

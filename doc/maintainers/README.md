@@ -63,6 +63,8 @@ npm run docs:sync
 # Inspect domain freshness and source drift
 npm run docs:status
 
-# Advance roadmap gates backed by physical verification
-npm run roadmap:roll -- --gate GATE-014 --status completed --note "Audio perception verification passing"
 ```
+
+For gate closure, follow the [completion procedure](../how-to/change-with-documentation.md#close-a-roadmap-gate).
+`roadmap:roll --status completed` requires a registered `--receipt`, retained
+execution output and a review note covering the complete criterion.

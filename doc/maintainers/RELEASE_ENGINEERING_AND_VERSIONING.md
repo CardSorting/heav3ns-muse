@@ -68,5 +68,6 @@ In the event of a critical regression (e.g., DSP audio corruption, memory leaks 
    - Document the failure mode, affected users, and commit hash in [doc/roadmap/ROLLING_LOG.md](../roadmap/ROLLING_LOG.md).
    - Reopen the corresponding evidentiary gate in [doc/roadmap/register.json](../roadmap/register.json) using:
      ```sh
-     npm run roadmap:roll -- --gate <GATE_ID> --status in_progress --note "Reopened due to release regression"
+     npm run roadmap:roll -- --gate GATE-014 --status in-progress --note "Reopened due to release regression"
      ```
+     Substitute the affected gate ID. The original completion event remains in history.

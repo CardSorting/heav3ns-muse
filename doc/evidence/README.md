@@ -8,15 +8,20 @@
 
 ## 1. Artifact Retention & Invariant Contract
 
-The evidence pipeline provides immutable proof of completed milestones, ensuring high-velocity codebase changes remain anchored to verified reality:
+The evidence pipeline retains observations for review. A hash establishes artifact
+integrity; a maintainer must assess whether an observation covers a milestone:
 
 1. **Permanence of Historical Evidence**: When a roadmap gate passes, its output log, execution receipt, and SHA-256 fingerprint are permanently retained under `doc/evidence/test-runs/`. Newer test runs append new receipts rather than overwriting historical artifacts.
-2. **Cryptographic Binding**: Receipts are recorded in `doc/evidence/registry.json` and hashed using SHA-256. Any modification to a recorded test output triggers a validation failure in `npm run docs:check`.
-3. **Traceability from Horizon to Command**: Every closed gate in `ROADMAP.md` links to a specific entry in `doc/roadmap/register.json` and its backing evidence receipt.
+2. **Cryptographic Binding**: New completion receipts are recorded in `doc/evidence/registry.json` and hashed using SHA-256. `roadmap-sync.py check` verifies referenced completion receipts and their separate output hashes. Earlier registry entries without hashes are historical claims, not cryptographically validated output.
+3. **Traceability from Horizon to Command**: New closures in `ROADMAP.md` link to their completion receipt. Pre-2026-10-16 closures retain their original source links and dated events without retroactively claiming receipt validation.
 
 ---
 
-## 2. Retained Verification Artifacts
+## 2. Historical Verification Artifacts
+
+The following table preserves the original observations and gate labels. Its
+older labels and aggregate claims do not override the current gate criteria in
+[the register](../roadmap/register.json) or establish coverage of those criteria.
 
 | Date | Gate ID | Target Platform | Verifying Command | Receipt Artifact | Status |
 | :--- | :---: | :--- | :--- | :--- | :---: |
@@ -30,13 +35,22 @@ The evidence pipeline provides immutable proof of completed milestones, ensuring
 
 ## 3. Recording New Evidence
 
-Contracted agents and maintainers must record physical evidence upon completing any roadmap gate:
+Follow the [gate completion procedure](../how-to/change-with-documentation.md#close-a-roadmap-gate)
+to execute verification, review its scope, and create a dated JSON receipt with
+a hash-bound output artifact. Registering an artifact records its hash and does
+not execute the command or prove that its contents cover the gate criterion.
+Replace the example date and note with the actual observation:
 
 ```sh
-# Record test execution artifact and update registry
 python3 scripts/docs-kb.py record-evidence \
   --gate GATE-014 \
   --command "python3 tests/studio_process_test.py" \
-  --artifact doc/evidence/test-runs/20261015-gate014-verification.json \
-  --note "Verified live multimodal audio perception pipeline"
+  --artifact doc/evidence/test-runs/YYYYMMDD-gate014.json \
+  --platform "Actual observed platform" \
+  --note "Describe observed coverage and limitations"
 ```
+
+Then use `roadmap-sync.py roll --status completed --receipt` with that registered
+receipt and a criterion review note. A successful register update cannot replace
+the real-provider audio, revised project, hardware, or reference-audio evidence
+required by the relevant gate.

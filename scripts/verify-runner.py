@@ -114,7 +114,11 @@ def run_knowledge_gate():
     total_dur = 0
 
     # 1. Knowledge guard unit tests
-    ok, _, dur = run_step("Knowledge Guard Unit Tests (8/8)", ["python3", "tests/test_docs_kb.py"])
+    ok, _, dur = run_step("Knowledge Guard Unit Tests", ["python3", "tests/test_docs_kb.py"])
+    success = success and ok
+    total_dur += dur
+
+    ok, _, dur = run_step("Roadmap Transition and Evidence Tests", ["python3", "tests/test_roadmap_sync.py"])
     success = success and ok
     total_dur += dur
 
@@ -123,8 +127,8 @@ def run_knowledge_gate():
     success = success and ok
     total_dur += dur
 
-    # 3. Cryptographic reviews & 7 domains
-    ok, _, dur = run_step("Cryptographic Domain Reviews (7 Domains)", ["python3", "scripts/docs-kb.py", "check"])
+    # 3. Cryptographic domain reviews
+    ok, _, dur = run_step("Cryptographic Domain Reviews", ["python3", "scripts/docs-kb.py", "check"])
     success = success and ok
     total_dur += dur
 

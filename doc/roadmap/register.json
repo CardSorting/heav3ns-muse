@@ -2,7 +2,7 @@
   "version": 1,
   "initiative": "HEAV3NS-MUSE Agent-Native DAW",
   "active_horizon": "H2",
-  "last_updated": "2026-10-15T18:23:50Z",
+  "last_updated": "2026-10-16T15:24:29Z",
   "horizons": {
     "H0": {
       "title": "Foundation & Headless Wire Protocol",
@@ -18,7 +18,7 @@
     },
     "H2": {
       "title": "Production Hardening, Multimodal Audio & Hardware",
-      "status": "open",
+      "status": "in-progress",
       "completion_percentage": 0,
       "description": "Real-time multimodal audio critique loop, hardware audio/MIDI hot-swapping, VST3/CLAP hosting via Carla, and automated mastering compliance."
     },
@@ -180,9 +180,10 @@
       "owner": "AI Inference Maintainers",
       "status": "in-progress",
       "completed_at": null,
-      "verification": "tests/studio_process_test.py",
+      "verification": "python3 tests/studio_process_test.py",
       "evidence": "src/core/StudioInference.cpp",
-      "criterion": "audio.listen submits rendered PCM to multimodal audio model and incorporates aesthetic feedback into revised composition."
+      "criterion": "audio.listen submits rendered audio to a real multimodal audio model, receives qualitative aesthetic critique and incorporates it into an automated composition revision. Retain an end-to-end trace, the submitted audio file and a verified revised .mmp project.",
+      "target_date": "2026-10-25"
     },
     {
       "id": "GATE-015",
@@ -191,9 +192,10 @@
       "owner": "Hardware Maintainers",
       "status": "in-progress",
       "completed_at": null,
-      "verification": "tests/studio_process_test.py",
+      "verification": "python3 tests/studio_process_test.py",
       "evidence": "src/core/StudioCapabilities.cpp",
-      "criterion": "Dynamic backend switching between PortAudio, ALSA, and JACK while running without crashing or corrupting timeline state."
+      "criterion": "Dynamic audio.backend.select and midi.backend.select switching between PortAudio, ALSA and JACK under load without crashes, dropped transport state or timeline corruption. Retain passing dynamic backend switch tests on the observed hardware and platforms.",
+      "target_date": "2026-10-30"
     },
     {
       "id": "GATE-016",
@@ -202,9 +204,10 @@
       "owner": "Audio DSP Maintainers",
       "status": "open",
       "completed_at": null,
-      "verification": "tests/studio_process_test.py",
+      "verification": "python3 tests/studio_process_test.py",
       "evidence": "src/core/StudioAudio.cpp",
-      "criterion": "Simultaneous multi-stem rendering with automated LUFS integrated loudness and true-peak compliance checking."
+      "criterion": "Simultaneous multi-track stem rendering with EBU R128 / ITU-R BS.1770 integrated LUFS loudness and true-peak compliance measurement. Retain a passing C++ accuracy test against reference audio.",
+      "target_date": "2026-11-05"
     },
     {
       "id": "GATE-017",
@@ -213,9 +216,10 @@
       "owner": "Plugin Host Maintainers",
       "status": "open",
       "completed_at": null,
-      "verification": "tests/studio_vst_process_test.py",
+      "verification": "python3 tests/studio_vst_process_test.py",
       "evidence": "src/core/StudioCapabilities.cpp",
-      "criterion": "Host VST3/CLAP plugins headlessly with parameter inspection and automation modulation."
+      "criterion": "Headless Carla scanning and hosting of external VST3 and CLAP instruments with parameter discovery and automation modulation. Retain a passing headless Carla VST3 process test with decoded audio verification and explicit CLAP coverage.",
+      "target_date": "2026-11-15"
     },
     {
       "id": "GATE-018",
@@ -224,9 +228,10 @@
       "owner": "Agent Systems Maintainers",
       "status": "open",
       "completed_at": null,
-      "verification": "tests/studio_process_test.py",
+      "verification": "python3 tests/studio_process_test.py",
       "evidence": "src/core/StudioStorage.cpp",
-      "criterion": "session.memory.set preserves compositional rules, favorite instruments, and sound palettes across studio restarts."
+      "criterion": "session.memory.set preserves compositional rules, favorite instruments, sound palettes, scale preferences and stylistic heuristics across studio restarts. Retain a multi-session restart test asserting recalled memory.",
+      "target_date": "2026-11-20"
     },
     {
       "id": "GATE-019",

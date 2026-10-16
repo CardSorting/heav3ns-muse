@@ -1,0 +1,27 @@
+{
+  "kind": "governance-verification",
+  "gate": "roadmap-governance",
+  "command": "python3 tests/test_roadmap_sync.py",
+  "executed_at": "2026-10-16T15:22:56Z",
+  "exit_code": 0,
+  "platform": "Darwin arm64, Python 3.14.7",
+  "revision": "87824f773b1254dc607fc8401f147df4b4033ac6",
+  "working_tree_sources": {
+    "scripts/roadmap-sync.py": "57e96fe4940c591f67509ca66965cbac193d3570e0cb9a54036f370a17a7ffec",
+    "tests/test_roadmap_sync.py": "246c567099895b0bab45547aba482bab3f7dba52495aa2333d28cc5676ad84bd"
+  },
+  "scope": "Nineteen Python tests of roadmap state derivation, CLI transitions, receipt enforcement, generated-view drift and recovery using isolated temporary repositories.",
+  "limitations": "Governance fixtures only; no native rebuild, provider, musical acceptance, physical audio/MIDI or H2 gate closure. Revision is the base commit; source hashes identify the tested working-tree changes.",
+  "verified_invariants": [
+    "Unchanged sync and read-only check do not modify files or append duplicate events.",
+    "Completion requires exact gate, command and criterion, successful dated execution, scope and SHA-256-bound receipt/output.",
+    "Horizon advancement and reopening append transitions while preserving earlier events.",
+    "Historical completion dates require matching pre-policy events; reopening prevents reuse.",
+    "Generated roadmap and open-action drift is rejected.",
+    "Broken completion evidence can be reopened without erasing its original event."
+  ],
+  "output": {
+    "path": "doc/evidence/test-runs/20261016-roadmap-governance.txt",
+    "sha256": "5640244ac8e678082c7e97bcd8cccde71483fb4de34baf1cb3f6ba9f184360ec"
+  }
+}

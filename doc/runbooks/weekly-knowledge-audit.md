@@ -33,8 +33,8 @@ Scheduled weekly maintenance procedure for maintainers and autonomous monitoring
 
 ## Recovery and rollback
 
-- If drift is detected, open an issue in `doc/roadmap/OPEN_ITEMS.md` and execute [knowledge-maintenance.md](knowledge-maintenance.md).
-- If a gate lacks physical verification evidence, reopen it via `npm run roadmap:roll -- --gate <ID> --status in_progress`.
+- If drift is detected, record follow-up in `doc/roadmap/register.json`, regenerate open actions with `npm run roadmap:sync`, and execute [knowledge-maintenance.md](knowledge-maintenance.md). `OPEN_ITEMS.md` is generated.
+- If a gate lacks physical verification evidence, reopen it via `npm run roadmap:roll -- --gate GATE-014 --status in-progress --note "Describe the missing evidence"`, substituting the affected gate ID. Prior completion events remain historical records.
 
 ## Verification and evidence
 

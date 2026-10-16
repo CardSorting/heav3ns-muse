@@ -77,6 +77,16 @@ Owner role: **Session Storage Maintainers**. Domain: `session-durability`.
 
 Relevant checks: `python3 tests/studio_process_test.py`.
 
+## Roadmap Transitions & Completion Evidence
+
+Owner role: **Roadmap Maintainers**. Domain: `roadmap-governance`.
+
+- [Documentation authority and maintenance](../../doc/DOCUMENTATION_POLICY.md)
+- [Maintain knowledge with a change](../../doc/how-to/change-with-documentation.md)
+- [Evidence Catalog & Execution Artifact Registry](../../doc/evidence/README.md)
+
+Relevant checks: `python3 tests/test_roadmap_sync.py`.
+
 ## Live Recording, MIDI Ingestion & Automation Capture
 
 Owner role: **Live Capture Maintainers**. Domain: `live-capture`.
